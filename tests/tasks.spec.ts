@@ -8,6 +8,8 @@ import {
   recordChildRunFinished,
   recordChildRunStarted,
 } from '../packages/host/src/tasks.ts'
+import { workspaceStateSchema } from '../packages/host/src/spec.ts'
+import { recallAgentEvents } from '../packages/host/src/memory.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 
 const javaEngineer = {
@@ -124,7 +126,12 @@ describe('one-shot child records', () => {
       status: 'completed',
       result: 'The API implementation is ready.',
     })
-    expect(terminalEvent).toMatchObject({ type: 'child/run-finished', subjectId: started.childRunId, text: 'The API implementation is ready.' })
+    expect(terminalEvent).toMatchObject({
+      type: 'child/run-finished',
+      subjectId: started.childRunId,
+      childRunStatus: 'completed',
+      text: 'The API implementation is ready.',
+    })
     expect(finished.state.memoryEntries).toContainEqual(expect.objectContaining({
       agentId: workspace.managerId,
       eventId: terminalEvent?.id,
@@ -135,5 +142,89 @@ describe('one-shot child records', () => {
       status: 'completed',
       result: 'A second result.',
     })).toThrow(/already terminal/)
+  })
+
+  test('records every terminal child status in a schema-valid canonical event', () => {
+    const workspace = createWorkspace()
+    const root = assignHumanTask(workspace.state, {
+      humanId: HumanId('owner'),
+      assigneeAgentId: workspace.managerId,
+      title: 'Deliver the release',
+    })
+    const started = recordChildRunStarted(root.state, {
+      parentAgentId: workspace.managerId,
+      taskId: root.taskId,
+    })
+
+    for (const status of ['completed', 'failed', 'cancelled'] as const) {
+      const finished = recordChildRunFinished(started.state, {
+        childRunId: started.childRunId,
+        status,
+        result: `${status} child result`,
+      })
+      const childRun = finished.state.childRuns[started.childRunId]
+      if (childRun === undefined || childRun.status === 'running') throw new Error('expected terminal child run')
+      const { result: _result, ...terminalRunWithoutResult } = childRun
+
+      expect(finished.state.events.at(-1)).toMatchObject({ type: 'child/run-finished', childRunStatus: status })
+      expect(workspaceStateSchema.safeParse(finished.state).success).toBe(true)
+      expect(workspaceStateSchema.safeParse({
+        ...finished.state,
+        childRuns: {
+          ...finished.state.childRuns,
+          [started.childRunId]: { ...childRun, status: 'running', result: `${status} child result` },
+        },
+      }).success).toBe(false)
+      expect(workspaceStateSchema.safeParse({
+        ...finished.state,
+        childRuns: { ...finished.state.childRuns, [started.childRunId]: terminalRunWithoutResult },
+      }).success).toBe(false)
+      const terminalEvent = finished.state.events.at(-1)
+      if (terminalEvent === undefined) throw new Error('expected terminal child event')
+      expect(workspaceStateSchema.safeParse({
+        ...finished.state,
+        events: [...finished.state.events.slice(0, -1), { ...terminalEvent, childRunStatus: 'running' }],
+      }).success).toBe(false)
+      const room = mutateWorkspace(finished.state, { type: 'room/create', kind: 'group', name: 'Engineering' })
+      const recalled = recallAgentEvents(room.state, {
+        agentId: workspace.managerId,
+        roomId: room.roomId,
+        query: '',
+        characterBudget: 1_000,
+      })
+      expect(recalled.entries.find(entry => entry.eventId === terminalEvent.id)?.rendered).toContain(`child-status:${status}`)
+    }
+  })
+
+  test('rejects a child result while its parent is departed and permits the re-employed identity to finish', () => {
+    const workspace = createWorkspace()
+    const root = assignHumanTask(workspace.state, {
+      humanId: HumanId('owner'),
+      assigneeAgentId: workspace.managerId,
+      title: 'Deliver the release',
+    })
+    const started = recordChildRunStarted(root.state, {
+      parentAgentId: workspace.managerId,
+      taskId: root.taskId,
+    })
+    const departed = mutateWorkspace(started.state, { type: 'agent/depart', agentId: workspace.managerId })
+    const eventCountBeforeFinish = departed.state.events.length
+    const memoryCountBeforeFinish = departed.state.memoryEntries.length
+
+    expect(() => recordChildRunFinished(departed.state, {
+      childRunId: started.childRunId,
+      status: 'completed',
+      result: 'The API implementation is ready.',
+    })).toThrow(/is departed/)
+    expect(departed.state.events).toHaveLength(eventCountBeforeFinish)
+    expect(departed.state.memoryEntries).toHaveLength(memoryCountBeforeFinish)
+
+    const reemployed = mutateWorkspace(departed.state, { type: 'agent/employ', agentId: workspace.managerId })
+    const finished = recordChildRunFinished(reemployed.state, {
+      childRunId: started.childRunId,
+      status: 'completed',
+      result: 'The API implementation is ready.',
+    })
+    expect(finished.state.childRuns[started.childRunId]).toMatchObject({ status: 'completed' })
   })
 })

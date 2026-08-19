@@ -130,5 +130,6 @@ function fitRecall(
 }
 
 function renderEvent(event: WorkspaceEvent, entry: AgentMemoryEntry): string {
-  return `[event:${event.id} sequence:${event.sequence} acquired:${entry.acquiredBy} type:${event.type}] ${event.text ?? ''}`
+  const childRunStatus = event.childRunStatus === undefined ? '' : ` child-status:${event.childRunStatus}`
+  return `[event:${event.id} sequence:${event.sequence} acquired:${entry.acquiredBy} type:${event.type}${childRunStatus}] ${event.text ?? ''}`
 }

@@ -95,6 +95,7 @@ export interface RecordChildRunFinishedRequest {
  * @param state Immutable workspace state.
  * @param request Human assignment fields.
  * @returns The updated state and durable task identifiers.
+ * @throws {Error} When the assignee is not employed or the title is blank.
  */
 export function assignHumanTask(state: WorkspaceState, request: AssignHumanTaskRequest): AssignHumanTaskResult {
   requireText('task title', request.title)
@@ -123,6 +124,7 @@ export function assignHumanTask(state: WorkspaceState, request: AssignHumanTaskR
  * @param state Immutable workspace state.
  * @param request Human grant fields.
  * @returns The updated state and durable grant identifier.
+ * @throws {Error} When the root task is not open or the grantee is not employed.
  */
 export function grantTaskDelegation(state: WorkspaceState, request: GrantTaskDelegationRequest): GrantTaskDelegationResult {
   const rootTask = requireRootTask(state, request.rootTaskId)
@@ -147,6 +149,7 @@ export function grantTaskDelegation(state: WorkspaceState, request: GrantTaskDel
  * @param state Immutable workspace state.
  * @param request Delegated assignment fields.
  * @returns The updated state and durable task identifiers.
+ * @throws {Error} When either agent is not employed or no matching active human grant exists.
  */
 export function assignDelegatedTask(state: WorkspaceState, request: AssignDelegatedTaskRequest): AssignDelegatedTaskResult {
   requireText('task title', request.title)
@@ -183,6 +186,7 @@ export function assignDelegatedTask(state: WorkspaceState, request: AssignDelega
  * @param state Immutable workspace state.
  * @param request Completion fields.
  * @returns The updated workspace state.
+ * @throws {Error} When the agent is not employed, is not assigned the task, or it is terminal.
  */
 export function completeTask(state: WorkspaceState, request: CompleteTaskRequest): { readonly state: WorkspaceState } {
   requireEmployedAgent(state, request.actorAgentId)
@@ -214,6 +218,7 @@ export function completeTask(state: WorkspaceState, request: CompleteTaskRequest
  * @param state Immutable workspace state.
  * @param request Child-run start fields.
  * @returns The updated state and durable child-run identifier.
+ * @throws {Error} When the parent is not employed or the task is not open.
  */
 export function recordChildRunStarted(state: WorkspaceState, request: RecordChildRunStartedRequest): RecordChildRunStartedResult {
   requireEmployedAgent(state, request.parentAgentId)
@@ -234,15 +239,20 @@ export function recordChildRunStarted(state: WorkspaceState, request: RecordChil
  * @param state Immutable workspace state.
  * @param request Terminal child-run fields.
  * @returns The updated workspace state.
+ * @throws {Error} When the parent is departed, the run is missing or terminal, or the result is blank.
  */
 export function recordChildRunFinished(state: WorkspaceState, request: RecordChildRunFinishedRequest): { readonly state: WorkspaceState } {
   const childRun = state.childRuns[request.childRunId]
   if (childRun === undefined) throw new Error(`child run '${request.childRunId}' does not exist`)
   if (childRun.status !== 'running') throw new Error(`child run '${request.childRunId}' is already terminal`)
+  requireEmployedAgent(state, childRun.parentAgentId)
   requireText('child run result', request.result)
   let changed = beginWorkspaceMutation(state)
   let event: WorkspaceEvent
-  ;[changed, event] = appendWorkspaceEvent(changed, 'child/run-finished', childRun.id, { text: request.result })
+  ;[changed, event] = appendWorkspaceEvent(changed, 'child/run-finished', childRun.id, {
+    childRunStatus: request.status,
+    text: request.result,
+  })
   changed = {
     ...changed,
     childRuns: {

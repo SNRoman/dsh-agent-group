@@ -34,6 +34,7 @@ const taskAssignmentId = z.string().min(1).transform(TaskAssignmentId)
 const delegationGrantId = z.string().min(1).transform(DelegationGrantId)
 const childRunId = z.string().min(1).transform(ChildRunId)
 const humanId = z.string().min(1).transform(HumanId)
+const childRunTerminalStatus = z.enum(['completed', 'failed', 'cancelled'])
 
 const membershipMemoryStart = z.discriminatedUnion('type', [
   z.object({ type: z.literal('new-events') }),
@@ -101,6 +102,7 @@ export const workspaceStateSchema = z.object({
     type: z.string().min(1),
     subjectId: workspaceSubjectId.optional(),
     definitionRevisionId: definitionRevisionId.optional(),
+    childRunStatus: childRunTerminalStatus.optional(),
     actor: workspaceActor.optional(),
     text: z.string().min(1).optional(),
     mentions: z.array(agentId).optional(),
@@ -109,12 +111,15 @@ export const workspaceStateSchema = z.object({
   tasks: z.record(z.string(), z.object({ id: taskId, rootTaskId: taskId, title: z.string(), status: z.enum(['open', 'completed', 'cancelled']) })),
   taskAssignments: z.record(z.string(), z.object({ id: taskAssignmentId, taskId, rootTaskId: taskId, assigneeAgentId: agentId, grantId: delegationGrantId.optional() })),
   delegationGrants: z.record(z.string(), z.object({ id: delegationGrantId, rootTaskId: taskId, granteeAgentId: agentId, grantedByHumanId: humanId, status: z.enum(['active', 'expired']) })),
-  childRuns: z.record(z.string(), z.object({ id: childRunId, parentAgentId: agentId, taskId, status: z.enum(['running', 'completed', 'failed', 'cancelled']), result: z.string().optional() })),
+  childRuns: z.record(z.string(), z.union([
+    z.object({ id: childRunId, parentAgentId: agentId, taskId, status: z.literal('running') }).strict(),
+    z.object({ id: childRunId, parentAgentId: agentId, taskId, status: childRunTerminalStatus, result: z.string().min(1) }).strict(),
+  ])),
 }) satisfies z.ZodType<WorkspaceState>
 
 /** One-table storage declaration: every workspace mutation replaces its aggregate atomically. */
 export const agentWorkspaceSpec = defineDomain({
-  name: 'agent-workspace',
+  name: 'agent_workspace',
   version: 0,
   tables: { workspaces: domainTable<WorkspaceId, WorkspaceState>(workspaceStateSchema) },
 })

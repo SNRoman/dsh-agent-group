@@ -99,6 +99,7 @@ export interface WorkspaceEvent {
   readonly type: string
   readonly subjectId?: WorkspaceSubjectId | undefined
   readonly definitionRevisionId?: DefinitionRevisionId | undefined
+  readonly childRunStatus?: ChildRunTerminalStatus | undefined
   readonly actor?: WorkspaceActor | undefined
   readonly text?: string | undefined
   readonly mentions?: readonly AgentId[] | undefined
@@ -167,14 +168,29 @@ export interface DelegationGrant {
   readonly status: 'active' | 'expired'
 }
 
-/** A one-shot child-agent execution owned by a top-level agent. */
-export interface ChildRun {
+/** A terminal outcome for a one-shot child-agent execution. */
+export type ChildRunTerminalStatus = 'completed' | 'failed' | 'cancelled'
+
+/** A one-shot child-agent execution that has not returned a result. */
+export interface RunningChildRun {
   readonly id: ChildRunId
   readonly parentAgentId: AgentId
   readonly taskId: TaskId
-  readonly status: 'running' | 'completed' | 'failed' | 'cancelled'
-  readonly result?: string | undefined
+  readonly status: 'running'
+  readonly result?: never
 }
+
+/** A one-shot child-agent execution with its terminal result. */
+export interface TerminalChildRun {
+  readonly id: ChildRunId
+  readonly parentAgentId: AgentId
+  readonly taskId: TaskId
+  readonly status: ChildRunTerminalStatus
+  readonly result: string
+}
+
+/** A one-shot child-agent execution owned by a top-level agent. */
+export type ChildRun = RunningChildRun | TerminalChildRun
 
 /** The one-record durable aggregate for a workspace. */
 export interface WorkspaceState {

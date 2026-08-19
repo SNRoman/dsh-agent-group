@@ -131,7 +131,7 @@ export function appendWorkspaceEvent(
   state: WorkspaceState,
   type: string,
   subjectId?: WorkspaceSubjectId,
-  details?: Pick<WorkspaceEvent, 'actor' | 'definitionRevisionId' | 'text' | 'mentions'>,
+  details?: Pick<WorkspaceEvent, 'actor' | 'childRunStatus' | 'definitionRevisionId' | 'text' | 'mentions'>,
 ): readonly [WorkspaceState, WorkspaceEvent] {
   const event: WorkspaceEvent = {
     id: WorkspaceEventId(`event-${state.nextSequence}`),
