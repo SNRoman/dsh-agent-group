@@ -55,6 +55,17 @@ describe('WorkspaceState mutations', () => {
     expect(revised.state.agents[alice.agentId]?.definitionRevisionId).toBe(revised.definitionRevisionId)
     expect(revised.state.memoryEntries).toEqual(memoriesBeforeRevision)
     expect(revised.state.events.at(-1)?.type).toBe('agent/definition-revision-assigned')
+    expect(revised.state.events.at(-1)?.definitionRevisionId).toBe(revised.definitionRevisionId)
+
+    const restored = mutateWorkspace(revised.state, {
+      type: 'definition/synchronize',
+      definitionId: definition.definitionId,
+      definitionRevisionId: definition.definitionRevisionId,
+      agentIds: [alice.agentId],
+    })
+
+    expect(restored.state.agents[alice.agentId]?.definitionRevisionId).toBe(definition.definitionRevisionId)
+    expect(restored.state.events.at(-1)?.definitionRevisionId).toBe(definition.definitionRevisionId)
   })
 
   test('rejects agent names that collide case-insensitively within a workspace', () => {

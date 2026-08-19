@@ -100,6 +100,7 @@ export const workspaceStateSchema = z.object({
     sequence: z.number().int().positive(),
     type: z.string().min(1),
     subjectId: workspaceSubjectId.optional(),
+    definitionRevisionId: definitionRevisionId.optional(),
     actor: workspaceActor.optional(),
     text: z.string().min(1).optional(),
     mentions: z.array(agentId).optional(),

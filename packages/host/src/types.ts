@@ -98,6 +98,7 @@ export interface WorkspaceEvent {
   readonly sequence: number
   readonly type: string
   readonly subjectId?: WorkspaceSubjectId | undefined
+  readonly definitionRevisionId?: DefinitionRevisionId | undefined
   readonly actor?: WorkspaceActor | undefined
   readonly text?: string | undefined
   readonly mentions?: readonly AgentId[] | undefined

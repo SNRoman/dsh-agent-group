@@ -96,7 +96,7 @@ function appendEvent(
   state: WorkspaceState,
   type: string,
   subjectId?: WorkspaceSubjectId,
-  details?: Pick<WorkspaceEvent, 'actor' | 'text' | 'mentions'>,
+  details?: Pick<WorkspaceEvent, 'actor' | 'definitionRevisionId' | 'text' | 'mentions'>,
 ): readonly [WorkspaceState, WorkspaceEvent] {
   const event: WorkspaceEvent = {
     id: WorkspaceEventId(`event-${state.nextSequence}`),
@@ -170,7 +170,7 @@ function assignRevision(state: WorkspaceState, definitionId: DefinitionId, revis
     if (agent.definitionId !== definitionId) {
       throw new Error(`agent '${agentId}' does not use definition '${definitionId}'`)
     }
-    ;[changed] = appendEvent(changed, 'agent/definition-revision-assigned', agentId)
+    ;[changed] = appendEvent(changed, 'agent/definition-revision-assigned', agentId, { definitionRevisionId: revisionId })
     changed = { ...changed, agents: { ...changed.agents, [agentId]: { ...agent, definitionRevisionId: revisionId } } }
   }
   return changed
