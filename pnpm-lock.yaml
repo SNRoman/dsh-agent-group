@@ -4,10 +4,20 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@deepseek-ai/cordis': link:../../deepseek-harness/vendor/cordis
+  '@deepseek-ai/dsh-typert-generator': link:../../deepseek-harness/packages/typert/generator
+
 importers:
 
   .:
     devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../deepseek-harness/vendor/cordis
+        version: link:../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/dsh-typert-generator':
+        specifier: link:../../deepseek-harness/packages/typert/generator
+        version: link:../../deepseek-harness/packages/typert/generator
       '@types/node':
         specifier: ^22.20.0
         version: 22.20.1
@@ -23,28 +33,28 @@ importers:
 
   packages/bundle:
     dependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../../deepseek-harness/vendor/cordis
+        version: link:../../../../deepseek-harness/vendor/cordis
       '@dsh-agent-workspace/host':
         specifier: workspace:^
         version: link:../host
       '@dsh-agent-workspace/web':
         specifier: workspace:^
         version: link:../web
-    devDependencies:
-      '@deepseek-ai/cordis':
-        specifier: link:../../../../deepseek-harness/vendor/cordis
-        version: link:../../../../deepseek-harness/vendor/cordis
 
   packages/host:
-    devDependencies:
+    dependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
         version: link:../../../../deepseek-harness/vendor/cordis
+    devDependencies:
       '@deepseek-ai/dsh-typert-generator':
         specifier: link:../../../../deepseek-harness/packages/typert/generator
         version: link:../../../../deepseek-harness/packages/typert/generator
 
   packages/web:
-    devDependencies:
+    dependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
         version: link:../../../../deepseek-harness/vendor/cordis

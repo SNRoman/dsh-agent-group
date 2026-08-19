@@ -1,2 +1,6 @@
 packages:
   - packages/*
+
+overrides:
+  '@deepseek-ai/cordis': link:../../deepseek-harness/vendor/cordis
+  '@deepseek-ai/dsh-typert-generator': link:../../deepseek-harness/packages/typert/generator
