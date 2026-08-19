@@ -6,6 +6,8 @@ settings:
 
 overrides:
   '@deepseek-ai/cordis': link:../../deepseek-harness/vendor/cordis
+  '@deepseek-ai/dsh-brand': link:../../deepseek-harness/packages/util/brand
+  '@deepseek-ai/dsh-storage-domain': link:../../deepseek-harness/packages/storage/storage-domain
   '@deepseek-ai/dsh-typert-generator': link:../../deepseek-harness/packages/typert/generator
 
 importers:
@@ -15,6 +17,12 @@ importers:
       '@deepseek-ai/cordis':
         specifier: link:../../deepseek-harness/vendor/cordis
         version: link:../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/dsh-brand':
+        specifier: link:../../deepseek-harness/packages/util/brand
+        version: link:../../deepseek-harness/packages/util/brand
+      '@deepseek-ai/dsh-storage-domain':
+        specifier: link:../../deepseek-harness/packages/storage/storage-domain
+        version: link:../../deepseek-harness/packages/storage/storage-domain
       '@deepseek-ai/dsh-typert-generator':
         specifier: link:../../deepseek-harness/packages/typert/generator
         version: link:../../deepseek-harness/packages/typert/generator
@@ -48,6 +56,15 @@ importers:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
         version: link:../../../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/dsh-brand':
+        specifier: link:../../../../deepseek-harness/packages/util/brand
+        version: link:../../../../deepseek-harness/packages/util/brand
+      '@deepseek-ai/dsh-storage-domain':
+        specifier: link:../../../../deepseek-harness/packages/storage/storage-domain
+        version: link:../../../../deepseek-harness/packages/storage/storage-domain
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@deepseek-ai/dsh-typert-generator':
         specifier: link:../../../../deepseek-harness/packages/typert/generator
@@ -725,6 +742,9 @@ packages:
   yuku-parser@0.8.7:
     resolution: {integrity: sha512-vRD9nwt4L3aYpxNqeSC4WqLv58xrXef0Ong1Mc45CTXTIpvLafx7JO05sczmQZwdLEZvywrLOGdNC5+Rp5N1BQ==}
 
+  zod@4.4.3:
+    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+
 snapshots:
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
@@ -1195,3 +1215,5 @@ snapshots:
       '@yuku-parser/binding-linux-x64-musl': 0.8.7
       '@yuku-parser/binding-win32-arm64': 0.8.7
       '@yuku-parser/binding-win32-x64': 0.8.7
+
+  zod@4.4.3: {}

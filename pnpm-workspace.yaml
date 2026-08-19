@@ -3,4 +3,6 @@ packages:
 
 overrides:
   '@deepseek-ai/cordis': link:../../deepseek-harness/vendor/cordis
+  '@deepseek-ai/dsh-brand': link:../../deepseek-harness/packages/util/brand
+  '@deepseek-ai/dsh-storage-domain': link:../../deepseek-harness/packages/storage/storage-domain
   '@deepseek-ai/dsh-typert-generator': link:../../deepseek-harness/packages/typert/generator
