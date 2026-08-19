@@ -64,7 +64,7 @@ export function appendMemoryEntries(state: WorkspaceState, acquisitions: readonl
   const entries: AgentMemoryEntry[] = []
   for (const acquisition of acquisitions) {
     let memoryEntryId: ReturnType<typeof AgentMemoryEntryId>
-    ;[changed, memoryEntryId] = mintId(changed, 'memory', AgentMemoryEntryId)
+    ;[changed, memoryEntryId] = mintWorkspaceId(changed, 'memory', AgentMemoryEntryId)
     entries.push({ id: memoryEntryId, ...acquisition })
   }
   return entries.length === 0 ? changed : { ...changed, memoryEntries: [...changed.memoryEntries, ...entries] }
@@ -98,16 +98,36 @@ export function mutateWorkspace(state: WorkspaceState, command: WorkspaceCommand
   }
 }
 
-function beginMutation(state: WorkspaceState): WorkspaceState {
+/**
+ * Start one immutable aggregate mutation and advance its revision exactly once.
+ * @param state Immutable workspace state.
+ * @returns The next aggregate revision.
+ */
+export function beginWorkspaceMutation(state: WorkspaceState): WorkspaceState {
   return { ...state, revision: state.revision + 1 }
 }
 
-function mintId<T extends string>(state: WorkspaceState, prefix: string, brand: (value: string) => T): readonly [WorkspaceState, T] {
+/**
+ * Mint one branded aggregate identifier without changing event sequence.
+ * @param state Immutable workspace state.
+ * @param prefix Durable identifier prefix.
+ * @param brand Branded identifier constructor.
+ * @returns State with the next identifier consumed and the minted identifier.
+ */
+export function mintWorkspaceId<T extends string>(state: WorkspaceState, prefix: string, brand: (value: string) => T): readonly [WorkspaceState, T] {
   const value = brand(`${prefix}-${state.nextId}`)
   return [{ ...state, nextId: state.nextId + 1 }, value]
 }
 
-function appendEvent(
+/**
+ * Append one sequence-ordered canonical workspace event.
+ * @param state Immutable workspace state.
+ * @param type Event discriminator.
+ * @param subjectId Optional aggregate record identified by the event.
+ * @param details Additional canonical event fields.
+ * @returns State with the next sequence consumed and the appended event.
+ */
+export function appendWorkspaceEvent(
   state: WorkspaceState,
   type: string,
   subjectId?: WorkspaceSubjectId,
@@ -125,12 +145,12 @@ function appendEvent(
 
 function createDefinition(state: WorkspaceState, command: CreateDefinitionCommand): CreateDefinitionResult {
   requireText('definition name', command.name)
-  let changed = beginMutation(state)
+  let changed = beginWorkspaceMutation(state)
   let definitionId: DefinitionId
-  ;[changed, definitionId] = mintId(changed, 'definition', AgentDefinitionId)
+  ;[changed, definitionId] = mintWorkspaceId(changed, 'definition', AgentDefinitionId)
   let definitionRevisionId: RevisionId
-  ;[changed, definitionRevisionId] = mintId(changed, 'definition-revision', DefinitionRevisionId)
-  ;[changed] = appendEvent(changed, 'definition/created', definitionId)
+  ;[changed, definitionRevisionId] = mintWorkspaceId(changed, 'definition-revision', DefinitionRevisionId)
+  ;[changed] = appendWorkspaceEvent(changed, 'definition/created', definitionId)
   const definition: AgentDefinition = { id: definitionId, name: command.name, revisionIds: [definitionRevisionId], currentRevisionId: definitionRevisionId }
   const revision: DefinitionRevision = { id: definitionRevisionId, definitionId, number: 1, description: command.description, instructions: command.instructions }
   return {
@@ -146,10 +166,10 @@ function createDefinition(state: WorkspaceState, command: CreateDefinitionComman
 
 function reviseDefinition(state: WorkspaceState, command: ReviseDefinitionCommand): ReviseDefinitionResult {
   const definition = requireDefinition(state, command.definitionId)
-  let changed = beginMutation(state)
+  let changed = beginWorkspaceMutation(state)
   let definitionRevisionId: RevisionId
-  ;[changed, definitionRevisionId] = mintId(changed, 'definition-revision', DefinitionRevisionId)
-  ;[changed] = appendEvent(changed, 'definition/revised', command.definitionId)
+  ;[changed, definitionRevisionId] = mintWorkspaceId(changed, 'definition-revision', DefinitionRevisionId)
+  ;[changed] = appendWorkspaceEvent(changed, 'definition/revised', command.definitionId)
   const revision: DefinitionRevision = {
     id: definitionRevisionId,
     definitionId: command.definitionId,
@@ -175,7 +195,7 @@ function synchronizeDefinition(state: WorkspaceState, command: SynchronizeDefini
   if (command.agentIds.length === 0) {
     throw new Error(`definition synchronization for '${command.definitionId}' needs at least one agent`)
   }
-  return { state: assignRevision(beginMutation(state), command.definitionId, command.definitionRevisionId, command.agentIds) }
+  return { state: assignRevision(beginWorkspaceMutation(state), command.definitionId, command.definitionRevisionId, command.agentIds) }
 }
 
 function assignRevision(state: WorkspaceState, definitionId: DefinitionId, revisionId: RevisionId, agentIds: readonly InstanceId[]): WorkspaceState {
@@ -185,7 +205,7 @@ function assignRevision(state: WorkspaceState, definitionId: DefinitionId, revis
     if (agent.definitionId !== definitionId) {
       throw new Error(`agent '${agentId}' does not use definition '${definitionId}'`)
     }
-    ;[changed] = appendEvent(changed, 'agent/definition-revision-assigned', agentId, { definitionRevisionId: revisionId })
+    ;[changed] = appendWorkspaceEvent(changed, 'agent/definition-revision-assigned', agentId, { definitionRevisionId: revisionId })
     changed = { ...changed, agents: { ...changed.agents, [agentId]: { ...agent, definitionRevisionId: revisionId } } }
   }
   return changed
@@ -198,13 +218,13 @@ function createAgent(state: WorkspaceState, command: CreateAgentCommand): Create
   if (collision !== undefined) {
     throw new Error(`agent name '${command.name}' is already used in workspace '${state.workspaceId}'`)
   }
-  let changed = beginMutation(state)
+  let changed = beginWorkspaceMutation(state)
   let agentId: InstanceId
-  ;[changed, agentId] = mintId(changed, 'agent', AgentId)
+  ;[changed, agentId] = mintWorkspaceId(changed, 'agent', AgentId)
   let employmentPeriodId: ReturnType<typeof EmploymentPeriodId>
-  ;[changed, employmentPeriodId] = mintId(changed, 'employment', EmploymentPeriodId)
+  ;[changed, employmentPeriodId] = mintWorkspaceId(changed, 'employment', EmploymentPeriodId)
   let event: WorkspaceEvent
-  ;[changed, event] = appendEvent(changed, 'agent/created', agentId)
+  ;[changed, event] = appendWorkspaceEvent(changed, 'agent/created', agentId)
   const agent: AgentInstance = {
     id: agentId,
     name: command.name,
@@ -219,9 +239,9 @@ function createAgent(state: WorkspaceState, command: CreateAgentCommand): Create
 function departAgent(state: WorkspaceState, agentId: InstanceId): MutationResult {
   const agent = requireAgent(state, agentId)
   requireEmployment(agent, 'employed')
-  let changed = beginMutation(state)
+  let changed = beginWorkspaceMutation(state)
   let event: WorkspaceEvent
-  ;[changed, event] = appendEvent(changed, 'agent/departed', agentId)
+  ;[changed, event] = appendWorkspaceEvent(changed, 'agent/departed', agentId)
   const employmentPeriods = agent.employmentPeriods.map(period => period.endedEventId === undefined ? { ...period, endedEventId: event.id } : period)
   const memberships = Object.fromEntries(Object.entries(changed.memberships).map(([id, membership]) => [
     id,
@@ -239,11 +259,11 @@ function departAgent(state: WorkspaceState, agentId: InstanceId): MutationResult
 function employAgent(state: WorkspaceState, agentId: InstanceId): MutationResult {
   const agent = requireAgent(state, agentId)
   requireEmployment(agent, 'departed')
-  let changed = beginMutation(state)
+  let changed = beginWorkspaceMutation(state)
   let employmentPeriodId: ReturnType<typeof EmploymentPeriodId>
-  ;[changed, employmentPeriodId] = mintId(changed, 'employment', EmploymentPeriodId)
+  ;[changed, employmentPeriodId] = mintWorkspaceId(changed, 'employment', EmploymentPeriodId)
   let event: WorkspaceEvent
-  ;[changed, event] = appendEvent(changed, 'agent/employed', agentId)
+  ;[changed, event] = appendWorkspaceEvent(changed, 'agent/employed', agentId)
   return {
     state: {
       ...changed,
@@ -257,10 +277,10 @@ function employAgent(state: WorkspaceState, agentId: InstanceId): MutationResult
 
 function createRoom(state: WorkspaceState, command: CreateRoomCommand): CreateRoomResult {
   if (command.kind === 'group') requireText('room name', command.name ?? '')
-  let changed = beginMutation(state)
+  let changed = beginWorkspaceMutation(state)
   let roomId: WorkspaceRoomId
-  ;[changed, roomId] = mintId(changed, 'room', RoomId)
-  ;[changed] = appendEvent(changed, 'room/created', roomId)
+  ;[changed, roomId] = mintWorkspaceId(changed, 'room', RoomId)
+  ;[changed] = appendWorkspaceEvent(changed, 'room/created', roomId)
   return { state: { ...changed, rooms: { ...changed.rooms, [roomId]: { id: roomId, kind: command.kind, ...(command.name === undefined ? {} : { name: command.name }) } } }, roomId }
 }
 
@@ -276,11 +296,11 @@ function joinRoom(state: WorkspaceState, roomId: WorkspaceRoomId, agentId: Insta
   if (memoryStart.type === 'event-range' && memoryStart.startSequence > memoryStart.endSequence) {
     throw new Error(`room '${roomId}' membership history range is invalid`)
   }
-  let changed = beginMutation(state)
+  let changed = beginWorkspaceMutation(state)
   let membershipId: RoomMembershipId
-  ;[changed, membershipId] = mintId(changed, 'membership', MembershipId)
+  ;[changed, membershipId] = mintWorkspaceId(changed, 'membership', MembershipId)
   let event: WorkspaceEvent
-  ;[changed, event] = appendEvent(changed, 'room/member-joined', membershipId)
+  ;[changed, event] = appendWorkspaceEvent(changed, 'room/member-joined', membershipId)
   const membership: RoomMembership = { id: membershipId, roomId, agentId, memoryStart, joinedEventId: event.id }
   return { state: { ...changed, memberships: { ...changed.memberships, [membershipId]: membership } } }
 }
@@ -289,9 +309,9 @@ function leaveRoom(state: WorkspaceState, membershipId: RoomMembershipId): Mutat
   const membership = state.memberships[membershipId]
   if (membership === undefined) throw new Error(`room membership '${membershipId}' does not exist`)
   if (membership.leftEventId !== undefined) throw new Error(`room membership '${membershipId}' has already ended`)
-  let changed = beginMutation(state)
+  let changed = beginWorkspaceMutation(state)
   let event: WorkspaceEvent
-  ;[changed, event] = appendEvent(changed, 'room/member-left', membershipId)
+  ;[changed, event] = appendWorkspaceEvent(changed, 'room/member-left', membershipId)
   return { state: { ...changed, memberships: { ...changed.memberships, [membershipId]: { ...membership, leftEventId: event.id } } } }
 }
 
@@ -303,9 +323,9 @@ function appendRoomMessageEvent(state: WorkspaceState, command: RoomMessageComma
     const agent = requireAgent(state, agentId)
     if (agent.employmentStatus === 'departed') throw new Error(`mentioned agent '${agentId}' is departed`)
   }
-  let changed = beginMutation(state)
+  let changed = beginWorkspaceMutation(state)
   let event: WorkspaceEvent
-  ;[changed, event] = appendEvent(changed, 'room/message', command.roomId, {
+  ;[changed, event] = appendWorkspaceEvent(changed, 'room/message', command.roomId, {
     actor: command.actor,
     text: command.text,
     mentions: command.mentions,

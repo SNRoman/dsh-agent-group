@@ -107,8 +107,8 @@ export const workspaceStateSchema = z.object({
   })),
   memoryEntries: z.array(z.object({ id: memoryEntryId, agentId, eventId, acquiredBy: z.enum(['room-membership', 'history-sync', 'task', 'child-result']) })),
   tasks: z.record(z.string(), z.object({ id: taskId, rootTaskId: taskId, title: z.string(), status: z.enum(['open', 'completed', 'cancelled']) })),
-  taskAssignments: z.record(z.string(), z.object({ id: taskAssignmentId, taskId, assigneeAgentId: agentId, grantId: delegationGrantId.optional() })),
-  delegationGrants: z.record(z.string(), z.object({ id: delegationGrantId, rootTaskId: taskId, granteeAgentId: agentId, status: z.enum(['active', 'expired']) })),
+  taskAssignments: z.record(z.string(), z.object({ id: taskAssignmentId, taskId, rootTaskId: taskId, assigneeAgentId: agentId, grantId: delegationGrantId.optional() })),
+  delegationGrants: z.record(z.string(), z.object({ id: delegationGrantId, rootTaskId: taskId, granteeAgentId: agentId, grantedByHumanId: humanId, status: z.enum(['active', 'expired']) })),
   childRuns: z.record(z.string(), z.object({ id: childRunId, parentAgentId: agentId, taskId, status: z.enum(['running', 'completed', 'failed', 'cancelled']), result: z.string().optional() })),
 }) satisfies z.ZodType<WorkspaceState>
 

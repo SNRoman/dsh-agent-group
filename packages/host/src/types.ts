@@ -153,6 +153,7 @@ export interface WorkspaceTask {
 export interface TaskAssignment {
   readonly id: TaskAssignmentId
   readonly taskId: TaskId
+  readonly rootTaskId: TaskId
   readonly assigneeAgentId: AgentId
   readonly grantId?: DelegationGrantId | undefined
 }
@@ -162,6 +163,7 @@ export interface DelegationGrant {
   readonly id: DelegationGrantId
   readonly rootTaskId: TaskId
   readonly granteeAgentId: AgentId
+  readonly grantedByHumanId: HumanId
   readonly status: 'active' | 'expired'
 }
 
