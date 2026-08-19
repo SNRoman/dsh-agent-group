@@ -185,6 +185,21 @@ describe('one-shot child records', () => {
         ...finished.state,
         events: [...finished.state.events.slice(0, -1), { ...terminalEvent, childRunStatus: 'running' }],
       }).success).toBe(false)
+      const { childRunStatus: _childRunStatus, ...terminalEventWithoutStatus } = terminalEvent
+      expect(workspaceStateSchema.safeParse({
+        ...finished.state,
+        events: [...finished.state.events.slice(0, -1), terminalEventWithoutStatus],
+      }).success).toBe(false)
+      const unrelatedEvent = finished.state.events.find(event => event.type !== 'child/run-finished')
+      if (unrelatedEvent === undefined) throw new Error('expected unrelated event')
+      expect(workspaceStateSchema.safeParse({
+        ...finished.state,
+        events: finished.state.events.map(event => event.id === unrelatedEvent.id ? { ...event, childRunStatus: status } : event),
+      }).success).toBe(false)
+      expect(workspaceStateSchema.safeParse({
+        ...finished.state,
+        childRuns: { ...finished.state.childRuns, [started.childRunId]: { ...childRun, result: '   ' } },
+      }).success).toBe(false)
       const room = mutateWorkspace(finished.state, { type: 'room/create', kind: 'group', name: 'Engineering' })
       const recalled = recallAgentEvents(room.state, {
         agentId: workspace.managerId,

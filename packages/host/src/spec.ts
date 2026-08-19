@@ -60,6 +60,31 @@ const workspaceSubjectId = z.union([
   childRunId,
 ])
 
+const workspaceEvent = z.union([
+  z.object({
+    id: eventId,
+    sequence: z.number().int().positive(),
+    type: z.literal('child/run-finished'),
+    subjectId: workspaceSubjectId.optional(),
+    definitionRevisionId: definitionRevisionId.optional(),
+    childRunStatus: childRunTerminalStatus,
+    actor: workspaceActor.optional(),
+    text: z.string().min(1).optional(),
+    mentions: z.array(agentId).optional(),
+  }),
+  z.object({
+    id: eventId,
+    sequence: z.number().int().positive(),
+    type: z.string().min(1).refine(value => value !== 'child/run-finished', 'child/run-finished event requires a terminal status'),
+    subjectId: workspaceSubjectId.optional(),
+    definitionRevisionId: definitionRevisionId.optional(),
+    childRunStatus: z.never().optional(),
+    actor: workspaceActor.optional(),
+    text: z.string().min(1).optional(),
+    mentions: z.array(agentId).optional(),
+  }),
+])
+
 /** Validates the complete one-record durable workspace aggregate. */
 export const workspaceStateSchema = z.object({
   workspaceId,
@@ -96,24 +121,14 @@ export const workspaceStateSchema = z.object({
     joinedEventId: eventId,
     leftEventId: eventId.optional(),
   })),
-  events: z.array(z.object({
-    id: eventId,
-    sequence: z.number().int().positive(),
-    type: z.string().min(1),
-    subjectId: workspaceSubjectId.optional(),
-    definitionRevisionId: definitionRevisionId.optional(),
-    childRunStatus: childRunTerminalStatus.optional(),
-    actor: workspaceActor.optional(),
-    text: z.string().min(1).optional(),
-    mentions: z.array(agentId).optional(),
-  })),
+  events: z.array(workspaceEvent),
   memoryEntries: z.array(z.object({ id: memoryEntryId, agentId, eventId, acquiredBy: z.enum(['room-membership', 'history-sync', 'task', 'child-result']) })),
   tasks: z.record(z.string(), z.object({ id: taskId, rootTaskId: taskId, title: z.string(), status: z.enum(['open', 'completed', 'cancelled']) })),
   taskAssignments: z.record(z.string(), z.object({ id: taskAssignmentId, taskId, rootTaskId: taskId, assigneeAgentId: agentId, grantId: delegationGrantId.optional() })),
   delegationGrants: z.record(z.string(), z.object({ id: delegationGrantId, rootTaskId: taskId, granteeAgentId: agentId, grantedByHumanId: humanId, status: z.enum(['active', 'expired']) })),
   childRuns: z.record(z.string(), z.union([
     z.object({ id: childRunId, parentAgentId: agentId, taskId, status: z.literal('running') }).strict(),
-    z.object({ id: childRunId, parentAgentId: agentId, taskId, status: childRunTerminalStatus, result: z.string().min(1) }).strict(),
+    z.object({ id: childRunId, parentAgentId: agentId, taskId, status: childRunTerminalStatus, result: z.string().refine(value => value.trim() !== '', 'child run result must not be blank') }).strict(),
   ])),
 }) satisfies z.ZodType<WorkspaceState>
 

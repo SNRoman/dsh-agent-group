@@ -92,18 +92,31 @@ export type WorkspaceSubjectId =
   | DelegationGrantId
   | ChildRunId
 
-/** One immutable, sequence-ordered workspace fact. */
-export interface WorkspaceEvent {
+/** Fields shared by all immutable, sequence-ordered workspace facts. */
+export interface WorkspaceEventBase {
   readonly id: WorkspaceEventId
   readonly sequence: number
   readonly type: string
   readonly subjectId?: WorkspaceSubjectId | undefined
   readonly definitionRevisionId?: DefinitionRevisionId | undefined
-  readonly childRunStatus?: ChildRunTerminalStatus | undefined
   readonly actor?: WorkspaceActor | undefined
   readonly text?: string | undefined
   readonly mentions?: readonly AgentId[] | undefined
 }
+
+/** A terminal child result fact with its required terminal status. */
+export interface ChildRunFinishedEvent extends WorkspaceEventBase {
+  readonly type: 'child/run-finished'
+  readonly childRunStatus: ChildRunTerminalStatus
+}
+
+/** A workspace fact that is not a terminal child result. */
+export interface OtherWorkspaceEvent extends WorkspaceEventBase {
+  readonly childRunStatus?: never | undefined
+}
+
+/** One immutable, sequence-ordered workspace fact. */
+export type WorkspaceEvent = ChildRunFinishedEvent | OtherWorkspaceEvent
 
 /** A durable association between an agent and an event it can recall. */
 export interface AgentMemoryEntry {

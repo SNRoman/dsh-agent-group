@@ -133,13 +133,19 @@ export function appendWorkspaceEvent(
   subjectId?: WorkspaceSubjectId,
   details?: Pick<WorkspaceEvent, 'actor' | 'childRunStatus' | 'definitionRevisionId' | 'text' | 'mentions'>,
 ): readonly [WorkspaceState, WorkspaceEvent] {
-  const event: WorkspaceEvent = {
+  const base = {
     id: WorkspaceEventId(`event-${state.nextSequence}`),
     sequence: state.nextSequence,
-    type,
     ...(subjectId === undefined ? {} : { subjectId }),
-    ...(details ?? {}),
   }
+  const { childRunStatus, ...eventDetails } = details ?? {}
+  if (type === 'child/run-finished') {
+    if (childRunStatus === undefined) throw new Error('child/run-finished event requires a terminal status')
+    const event: WorkspaceEvent = { ...base, type: 'child/run-finished', childRunStatus, ...eventDetails }
+    return [{ ...state, nextSequence: state.nextSequence + 1, events: [...state.events, event] }, event]
+  }
+  if (childRunStatus !== undefined) throw new Error(`workspace event '${type}' cannot carry a child-run status`)
+  const event: WorkspaceEvent = { ...base, type, ...eventDetails }
   return [{ ...state, nextSequence: state.nextSequence + 1, events: [...state.events, event] }, event]
 }
 
