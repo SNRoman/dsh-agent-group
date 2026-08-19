@@ -112,6 +112,35 @@ export interface AgentMemoryEntry {
   readonly acquiredBy: 'room-membership' | 'history-sync' | 'task' | 'child-result'
 }
 
+/** The data required to associate one agent with an existing workspace event. */
+export interface AgentMemoryAcquisition {
+  readonly agentId: AgentId
+  readonly eventId: WorkspaceEventId
+  readonly acquiredBy: AgentMemoryEntry['acquiredBy']
+}
+
+/** The request used to select personal memory for an awakened agent. */
+export interface RecallAgentEventsRequest {
+  readonly agentId: AgentId
+  readonly roomId: RoomId
+  readonly query: string
+  readonly characterBudget: number
+}
+
+/** One event selected for a DSH memory input. */
+export interface RecalledAgentEvent {
+  readonly eventId: WorkspaceEventId
+  readonly provenance: AgentMemoryEntry['acquiredBy']
+  readonly rendered: string
+}
+
+/** The selected personal-memory events and their rendered DSH input. */
+export interface AgentEventRecall {
+  readonly eventIds: readonly WorkspaceEventId[]
+  readonly entries: readonly RecalledAgentEvent[]
+  readonly rendered: string
+}
+
 /** A formal root or derived task. */
 export interface WorkspaceTask {
   readonly id: TaskId

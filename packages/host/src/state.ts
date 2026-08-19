@@ -3,6 +3,7 @@
 import {
   AgentDefinitionId,
   AgentId,
+  AgentMemoryEntryId,
   DefinitionRevisionId,
   EmploymentPeriodId,
   MembershipId,
@@ -11,6 +12,8 @@ import {
 } from './ids.ts'
 import type {
   AgentDefinition,
+  AgentMemoryAcquisition,
+  AgentMemoryEntry,
   AgentInstance,
   CreateAgentCommand,
   CreateAgentResult,
@@ -53,6 +56,18 @@ export function createInitialState(workspaceId: WorkspaceId): WorkspaceState {
     delegationGrants: {},
     childRuns: {},
   }
+}
+
+/** Add durable memory associations while preserving the aggregate revision of the enclosing command. */
+export function appendMemoryEntries(state: WorkspaceState, acquisitions: readonly AgentMemoryAcquisition[]): WorkspaceState {
+  let changed = state
+  const entries: AgentMemoryEntry[] = []
+  for (const acquisition of acquisitions) {
+    let memoryEntryId: ReturnType<typeof AgentMemoryEntryId>
+    ;[changed, memoryEntryId] = mintId(changed, 'memory', AgentMemoryEntryId)
+    entries.push({ id: memoryEntryId, ...acquisition })
+  }
+  return entries.length === 0 ? changed : { ...changed, memoryEntries: [...changed.memoryEntries, ...entries] }
 }
 
 /** Mutate the aggregate and expose the id minted by definition creation. */
