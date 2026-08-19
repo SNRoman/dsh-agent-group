@@ -66,6 +66,24 @@ describe('unified event memory', () => {
     expect(result.wakeAgentIds).toEqual([workspace.aliceId])
   })
 
+  test('projects a room message appended through the public workspace mutation path into every active member memory', () => {
+    const workspace = createWorkspace()
+    const room = mutateWorkspace(workspace.state, { type: 'room/create', kind: 'group', name: 'Engineering' })
+    const joinedAlice = join(room.state, room.roomId, workspace.aliceId)
+    const joinedBoth = join(joinedAlice, room.roomId, workspace.bobId)
+
+    const result = mutateWorkspace(joinedBoth, {
+      type: 'room/message',
+      roomId: room.roomId,
+      actor: { type: 'human', id: HumanId('owner') },
+      text: 'Record this through the aggregate',
+      mentions: [],
+    })
+
+    expect(memoryEventIds(result.state, workspace.aliceId)).toContain(result.eventId)
+    expect(memoryEventIds(result.state, workspace.bobId)).toContain(result.eventId)
+  })
+
   test('keeps a new-events-only join empty and synchronizes only the selected inclusive room history', () => {
     const workspace = createWorkspace()
     const room = mutateWorkspace(workspace.state, { type: 'room/create', kind: 'group', name: 'Engineering' })
@@ -102,6 +120,36 @@ describe('unified event memory', () => {
     expect(memoryEventIds(historical.state, workspace.bobId)).toEqual([earlier.eventId])
     expect(historical.state.memoryEntries[0]?.acquiredBy).toBe('history-sync')
     expect(historical.state.events.find(event => event.id === earlier.eventId)).toBe(earlierEvent)
+  })
+
+  test('does not duplicate an event when a re-employed member synchronizes an overlapping history range', () => {
+    const workspace = createWorkspace()
+    const room = mutateWorkspace(workspace.state, { type: 'room/create', kind: 'group', name: 'Engineering' })
+    const earlier = appendRoomMessage(room.state, {
+      roomId: room.roomId,
+      actor: { type: 'human', id: HumanId('owner') },
+      text: 'Earlier planning note',
+      mentions: [],
+    })
+    const earlierEvent = earlier.state.events.find(event => event.id === earlier.eventId)
+    if (earlierEvent === undefined) throw new Error('expected earlier room event')
+    const firstJoin = joinRoomWithMemory(earlier.state, {
+      type: 'room/join',
+      roomId: room.roomId,
+      agentId: workspace.aliceId,
+      memoryStart: { type: 'event-range', startSequence: earlierEvent.sequence, endSequence: earlierEvent.sequence },
+    })
+    const departed = mutateWorkspace(firstJoin.state, { type: 'agent/depart', agentId: workspace.aliceId })
+    const reemployed = mutateWorkspace(departed.state, { type: 'agent/employ', agentId: workspace.aliceId })
+
+    const rejoined = joinRoomWithMemory(reemployed.state, {
+      type: 'room/join',
+      roomId: room.roomId,
+      agentId: workspace.aliceId,
+      memoryStart: { type: 'event-range', startSequence: earlierEvent.sequence, endSequence: earlierEvent.sequence },
+    })
+
+    expect(memoryEventIds(rejoined.state, workspace.aliceId)).toEqual([earlier.eventId])
   })
 
   test('recalls current-room events before case-insensitive matches and other personal events across every acquisition source', () => {

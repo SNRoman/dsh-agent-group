@@ -310,7 +310,18 @@ function appendRoomMessageEvent(state: WorkspaceState, command: RoomMessageComma
     text: command.text,
     mentions: command.mentions,
   })
+  changed = appendMemoryEntries(changed, activeRoomMemberIds(changed, command.roomId).map(agentId => ({
+    agentId,
+    eventId: event.id,
+    acquiredBy: 'room-membership',
+  })))
   return { state: changed, eventId: event.id }
+}
+
+function activeRoomMemberIds(state: WorkspaceState, roomId: WorkspaceRoomId): readonly InstanceId[] {
+  return Object.values(state.memberships)
+    .filter(membership => membership.roomId === roomId && membership.leftEventId === undefined)
+    .map(membership => membership.agentId)
 }
 
 function requireDefinition(state: WorkspaceState, definitionId: DefinitionId): AgentDefinition {

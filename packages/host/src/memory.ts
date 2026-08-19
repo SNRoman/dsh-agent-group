@@ -27,13 +27,8 @@ export type AppendRoomMessageCommand = Omit<RoomMessageCommand, 'type'>
 /** Append one canonical room event and associate it with every active member. */
 export function appendRoomMessage(state: WorkspaceState, command: AppendRoomMessageCommand): AppendRoomMessageResult {
   const appended = mutateWorkspace(state, { type: 'room/message', ...command })
-  const acquisitions: AgentMemoryAcquisition[] = activeMemberIds(state, command.roomId).map(agentId => ({
-    agentId,
-    eventId: appended.eventId,
-    acquiredBy: 'room-membership',
-  }))
   return {
-    state: appendMemoryEntries(appended.state, acquisitions),
+    state: appended.state,
     eventId: appended.eventId,
     wakeAgentIds: uniqueAgentIds(command.mentions),
   }
@@ -44,10 +39,18 @@ export function joinRoomWithMemory(state: WorkspaceState, command: JoinRoomComma
   const joined = mutateWorkspace(state, command)
   const memoryStart = command.memoryStart
   if (memoryStart.type === 'new-events') return joined
+  const rememberedEventIds = new Set(state.memoryEntries
+    .filter(entry => entry.agentId === command.agentId)
+    .map(entry => entry.eventId))
   const acquisitions: AgentMemoryAcquisition[] = state.events
-    .filter(event => event.subjectId === command.roomId
-      && event.sequence >= memoryStart.startSequence
-      && event.sequence <= memoryStart.endSequence)
+    .filter(event => {
+      if (event.subjectId !== command.roomId
+        || event.sequence < memoryStart.startSequence
+        || event.sequence > memoryStart.endSequence
+        || rememberedEventIds.has(event.id)) return false
+      rememberedEventIds.add(event.id)
+      return true
+    })
     .map(event => ({ agentId: command.agentId, eventId: event.id, acquiredBy: 'history-sync' }))
   return { state: appendMemoryEntries(joined.state, acquisitions) }
 }
@@ -80,12 +83,6 @@ export class MemoryReader {
   recall(request: RecallAgentEventsRequest): AgentEventRecall {
     return recallAgentEvents(this.state, request)
   }
-}
-
-function activeMemberIds(state: WorkspaceState, roomId: JoinRoomCommand['roomId']): readonly AgentId[] {
-  return Object.values(state.memberships)
-    .filter(membership => membership.roomId === roomId && membership.leftEventId === undefined)
-    .map(membership => membership.agentId)
 }
 
 function uniqueAgentIds(agentIds: readonly AgentId[]): readonly AgentId[] {
