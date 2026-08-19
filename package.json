@@ -1,0 +1,24 @@
+{
+  "name": "dsh-agent-workspace-root",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build:host": "pnpm --filter @dsh-agent-workspace/host run build",
+    "build:web": "pnpm --filter @dsh-agent-workspace/web run build",
+    "build:bundle": "pnpm --filter dsh-agent-workspace run build",
+    "build": "pnpm build:host && pnpm build:web && pnpm build:bundle",
+    "test": "vitest run",
+    "typecheck": "tsc -b tsconfig.host.json && tsc -b packages/web/tsconfig.client.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}
