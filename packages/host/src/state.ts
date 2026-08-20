@@ -29,6 +29,7 @@ import type {
   RoomMessageCommand,
   RoomMessageResult,
   RoomMembership,
+  StopConversationCommand,
   SynchronizeDefinitionCommand,
   WorkspaceCommand,
   WorkspaceEvent,
@@ -98,6 +99,7 @@ export function mutateWorkspace(state: WorkspaceState, command: WorkspaceCommand
     case 'room/leave': return leaveRoom(state, command.membershipId)
     case 'room/message': return appendRoomMessageEvent(state, command)
     case 'runtime/session-bound': return recordSessionBinding(state, command)
+    case 'conversation/stop': return stopConversation(state, command)
   }
 }
 
@@ -403,6 +405,13 @@ function recordSessionBinding(state: WorkspaceState, command: RecordSessionBindi
       sessionBindings: { ...changed.sessionBindings, [command.agentId]: command.sessionId },
     },
   }
+}
+
+function stopConversation(state: WorkspaceState, command: StopConversationCommand): MutationResult {
+  requireRoom(state, command.roomId)
+  let changed = beginWorkspaceMutation(state)
+  ;[changed] = appendWorkspaceEvent(changed, 'conversation/stopped', command.roomId)
+  return { state: changed }
 }
 
 function normalizeName(value: string): string {

@@ -1,6 +1,12 @@
 /** Durable Agent Workspace aggregate records and pure mutation commands. */
 
 import type { SessionId } from '@deepseek-ai/dsh-session'
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'agent-workspace-delivery': { kind: 'agent-workspace-delivery' }
+    'agent-workspace-recall': { kind: 'agent-workspace-recall' }
+  }
+}
 import type {
   AgentDefinitionId,
   AgentId,
@@ -280,6 +286,12 @@ export interface RecordSessionBindingCommand {
   readonly sessionId: SessionId
 }
 
+/** Record that an agent-to-agent chain stopped at the shared budget. */
+export interface StopConversationCommand {
+  readonly type: 'conversation/stop'
+  readonly roomId: RoomId
+}
+
 /** Append a room message fact without projecting it into agent memory. */
 export interface RoomMessageCommand {
   readonly type: 'room/message'
@@ -302,6 +314,7 @@ export type WorkspaceCommand =
   | LeaveRoomCommand
   | RoomMessageCommand
   | RecordSessionBindingCommand
+  | StopConversationCommand
 
 /** Common result returned by a successful aggregate mutation. */
 export interface MutationResult { readonly state: WorkspaceState }

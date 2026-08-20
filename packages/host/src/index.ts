@@ -12,7 +12,9 @@ import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
-import { AgentId, WorkspaceId } from './ids.ts'
+import { AgentId, HumanId, RoomId, TaskId, WorkspaceId } from './ids.ts'
+import { WorkspaceDispatcher } from './dispatcher.ts'
+import type { DispatcherLimits, SubagentRuntimeLike } from './dispatcher.ts'
 import { EmployeeAgentPool } from './runtime.ts'
 import type { AgentLifecycle } from './runtime.ts'
 import { agentWorkspaceSpec } from './spec.ts'
@@ -30,6 +32,9 @@ declare module '@deepseek-ai/cordis' {
 /** Key of the single local workspace record in the domain table. */
 export const LOCAL_WORKSPACE_ID = WorkspaceId('local')
 
+/** MVP mention-chain and recall bounds fixed by the specification. */
+const DISPATCHER_LIMITS: DispatcherLimits = { maxAgentHops: 3, maxRepliesPerRoot: 8, recallCharacterBudget: 4000 }
+
 /**
  * Serialized, durable access to one local Workspace aggregate, plus the
  * employee runtime that gives each employed top-level agent one stable DSH
@@ -42,6 +47,7 @@ export class AgentWorkspaceDomainService extends Service {
 
   private table?: KvTable<WorkspaceId, WorkspaceState>
   private pool?: EmployeeAgentPool
+  private dispatcher?: WorkspaceDispatcher
   private readonly trackers = new Map<AgentId, WorkspaceTurnTracker>()
 
   constructor(ctx: Context) {
@@ -57,7 +63,8 @@ export class AgentWorkspaceDomainService extends Service {
       await this.table.put(LOCAL_WORKSPACE_ID, createInitialState(LOCAL_WORKSPACE_ID))
     }
     const agents = this.ctx.get('agents') as AgentLifecycle | undefined
-    if (agents !== undefined) {
+    const subagents = this.ctx.get('subagents') as SubagentRuntimeLike | undefined
+    if (agents !== undefined && subagents !== undefined) {
       this.pool = new EmployeeAgentPool(agents, this, (agentId) => (agentCtx) => {
         const tracker = new WorkspaceTurnTracker()
         tracker.install(agentCtx)
@@ -66,6 +73,7 @@ export class AgentWorkspaceDomainService extends Service {
           this.trackers.delete(agentId)
         })
       })
+      this.dispatcher = new WorkspaceDispatcher(this, subagents, 'spawn-in-process', DISPATCHER_LIMITS)
       this.ctx.effect(() => async () => {
         await this.pool?.disposeAll()
       })
@@ -82,6 +90,12 @@ export class AgentWorkspaceDomainService extends Service {
   /** Apply one command durably and return the detached committed aggregate. */
   async execute(command: WorkspaceCommand): Promise<WorkspaceState> {
     const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => mutateWorkspace(current, command).state)
+    return structuredClone(next)
+  }
+
+  /** Apply an arbitrary pure mutation durably and return the detached committed aggregate. */
+  async apply(mutation: (state: WorkspaceState) => WorkspaceState): Promise<WorkspaceState> {
+    const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => mutation(current))
     return structuredClone(next)
   }
 
@@ -128,6 +142,21 @@ export class AgentWorkspaceDomainService extends Service {
   private requirePool(): EmployeeAgentPool {
     if (this.pool === undefined) throw new Error('agent workspace service is not started yet')
     return this.pool
+  }
+
+  private requireDispatcher(): WorkspaceDispatcher {
+    if (this.dispatcher === undefined) throw new Error('agent workspace dispatcher is not available without the agent and subagent services')
+    return this.dispatcher
+  }
+
+  /** Record a human room message and wake its explicitly mentioned agents. */
+  async postHumanMessage(roomId: RoomId, humanId: HumanId, text: string, mentions: readonly AgentId[]): Promise<void> {
+    await this.requireDispatcher().postHumanMessage(roomId, humanId, text, mentions)
+  }
+
+  /** Run one one-shot child for a parent agent and record its terminal result. */
+  async runChild(parentAgentId: AgentId, taskId: TaskId, prompt: string): Promise<string> {
+    return await this.requireDispatcher().runChild(parentAgentId, taskId, prompt)
   }
 }
 
