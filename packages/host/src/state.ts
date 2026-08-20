@@ -80,8 +80,8 @@ export function mutateWorkspace(state: WorkspaceState, command: CreateAgentComma
 export function mutateWorkspace(state: WorkspaceState, command: CreateRoomCommand): CreateRoomResult
 /** Mutate the aggregate and expose the event id minted by room message append. */
 export function mutateWorkspace(state: WorkspaceState, command: RoomMessageCommand): RoomMessageResult
-/** Mutate the aggregate for all commands that mint no externally needed id. */
-export function mutateWorkspace(state: WorkspaceState, command: Exclude<WorkspaceCommand, CreateDefinitionCommand | ReviseDefinitionCommand | CreateAgentCommand | CreateRoomCommand | RoomMessageCommand>): MutationResult
+/** Mutate the aggregate for any command, returning only the common result. */
+export function mutateWorkspace(state: WorkspaceState, command: WorkspaceCommand): MutationResult
 /** Apply one invariant-preserving command without mutating its input aggregate. */
 export function mutateWorkspace(state: WorkspaceState, command: WorkspaceCommand): MutationResult {
   switch (command.type) {

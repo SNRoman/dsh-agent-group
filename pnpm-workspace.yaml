@@ -3,6 +3,11 @@ packages:
 
 overrides:
   '@deepseek-ai/cordis': link:../../deepseek-harness/vendor/cordis
+  '@deepseek-ai/cosmokit': link:../../deepseek-harness/vendor/cosmokit
   '@deepseek-ai/dsh-brand': link:../../deepseek-harness/packages/util/brand
+  '@deepseek-ai/dsh-invariants': link:../../deepseek-harness/packages/runtime-diagnostics/invariants
+  '@deepseek-ai/dsh-storage': link:../../deepseek-harness/packages/storage/storage
   '@deepseek-ai/dsh-storage-domain': link:../../deepseek-harness/packages/storage/storage-domain
+  '@deepseek-ai/dsh-storage-json': link:../../deepseek-harness/packages/storage/storage-json
   '@deepseek-ai/dsh-typert-generator': link:../../deepseek-harness/packages/typert/generator
+  '@deepseek-ai/schemastery': link:../../deepseek-harness/vendor/schemastery
