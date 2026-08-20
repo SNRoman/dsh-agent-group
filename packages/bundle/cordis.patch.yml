@@ -1,0 +1,24 @@
+# The dsh-agent-workspace bundle: one insert over a profile that already
+# provides the DSH core. Mounts the storage hub, JSON backend, and domain form
+# the Host service injects, then the Host domain service and its Browser
+# overlay. Rows are addressed by id, so a profile patch above this bundle can
+# replace any row's config.
+- insert:
+    - id: storage
+      name: '@deepseek-ai/dsh-storage'
+
+    - id: storage-json
+      name: '@deepseek-ai/dsh-storage-json'
+      config:
+        root: !!js dshHomePath('agent-workspace')
+
+    - id: storage-domain
+      name: '@deepseek-ai/dsh-storage-domain'
+      config:
+        backend: json
+
+    - id: agent-workspace
+      name: '@dsh-agent-workspace/host'
+
+    - id: agent-workspace-web
+      name: '@dsh-agent-workspace/web'
