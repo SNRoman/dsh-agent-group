@@ -1,5 +1,6 @@
 /** Durable Agent Workspace aggregate records and pure mutation commands. */
 
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {
   AgentDefinitionId,
   AgentId,
@@ -222,6 +223,7 @@ export interface WorkspaceState {
   readonly taskAssignments: Readonly<Record<TaskAssignmentId, TaskAssignment>>
   readonly delegationGrants: Readonly<Record<DelegationGrantId, DelegationGrant>>
   readonly childRuns: Readonly<Record<ChildRunId, ChildRun>>
+  readonly sessionBindings: Readonly<Record<AgentId, SessionId>>
 }
 
 /** Create a reusable agent role. */
@@ -271,6 +273,13 @@ export interface JoinRoomCommand {
 }
 /** End an active room membership period. */
 export interface LeaveRoomCommand { readonly type: 'room/leave'; readonly membershipId: MembershipId }
+/** Record the durable DSH session id bound to one materialized top-level agent. */
+export interface RecordSessionBindingCommand {
+  readonly type: 'runtime/session-bound'
+  readonly agentId: AgentId
+  readonly sessionId: SessionId
+}
+
 /** Append a room message fact without projecting it into agent memory. */
 export interface RoomMessageCommand {
   readonly type: 'room/message'
@@ -292,6 +301,7 @@ export type WorkspaceCommand =
   | JoinRoomCommand
   | LeaveRoomCommand
   | RoomMessageCommand
+  | RecordSessionBindingCommand
 
 /** Common result returned by a successful aggregate mutation. */
 export interface MutationResult { readonly state: WorkspaceState }

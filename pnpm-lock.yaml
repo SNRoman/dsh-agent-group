@@ -7,12 +7,20 @@ settings:
 overrides:
   '@deepseek-ai/cordis': link:../../deepseek-harness/vendor/cordis
   '@deepseek-ai/cosmokit': link:../../deepseek-harness/vendor/cosmokit
+  '@deepseek-ai/dsh-agent': link:../../deepseek-harness/packages/core/agent
+  '@deepseek-ai/dsh-attachment': link:../../deepseek-harness/packages/attachment/attachment
   '@deepseek-ai/dsh-brand': link:../../deepseek-harness/packages/util/brand
   '@deepseek-ai/dsh-invariants': link:../../deepseek-harness/packages/runtime-diagnostics/invariants
+  '@deepseek-ai/dsh-llm': link:../../deepseek-harness/packages/llm/llm
+  '@deepseek-ai/dsh-scope': link:../../deepseek-harness/packages/core/scope
+  '@deepseek-ai/dsh-session': link:../../deepseek-harness/packages/core/session
   '@deepseek-ai/dsh-storage': link:../../deepseek-harness/packages/storage/storage
   '@deepseek-ai/dsh-storage-domain': link:../../deepseek-harness/packages/storage/storage-domain
   '@deepseek-ai/dsh-storage-json': link:../../deepseek-harness/packages/storage/storage-json
+  '@deepseek-ai/dsh-system-prompt': link:../../deepseek-harness/packages/core/system-prompt
+  '@deepseek-ai/dsh-timeout': link:../../deepseek-harness/packages/util/timeout
   '@deepseek-ai/dsh-typert-generator': link:../../deepseek-harness/packages/typert/generator
+  '@deepseek-ai/dsh-typert-protocol': link:../../deepseek-harness/packages/typert/protocol
   '@deepseek-ai/schemastery': link:../../deepseek-harness/vendor/schemastery
 
 importers:
@@ -25,12 +33,27 @@ importers:
       '@deepseek-ai/cosmokit':
         specifier: link:../../deepseek-harness/vendor/cosmokit
         version: link:../../deepseek-harness/vendor/cosmokit
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../deepseek-harness/packages/core/agent
+        version: link:../../deepseek-harness/packages/core/agent
+      '@deepseek-ai/dsh-attachment':
+        specifier: link:../../deepseek-harness/packages/attachment/attachment
+        version: link:../../deepseek-harness/packages/attachment/attachment
       '@deepseek-ai/dsh-brand':
         specifier: link:../../deepseek-harness/packages/util/brand
         version: link:../../deepseek-harness/packages/util/brand
       '@deepseek-ai/dsh-invariants':
         specifier: link:../../deepseek-harness/packages/runtime-diagnostics/invariants
         version: link:../../deepseek-harness/packages/runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../../deepseek-harness/packages/llm/llm
+        version: link:../../deepseek-harness/packages/llm/llm
+      '@deepseek-ai/dsh-scope':
+        specifier: link:../../deepseek-harness/packages/core/scope
+        version: link:../../deepseek-harness/packages/core/scope
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../deepseek-harness/packages/core/session
+        version: link:../../deepseek-harness/packages/core/session
       '@deepseek-ai/dsh-storage':
         specifier: link:../../deepseek-harness/packages/storage/storage
         version: link:../../deepseek-harness/packages/storage/storage
@@ -40,9 +63,18 @@ importers:
       '@deepseek-ai/dsh-storage-json':
         specifier: link:../../deepseek-harness/packages/storage/storage-json
         version: link:../../deepseek-harness/packages/storage/storage-json
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: link:../../deepseek-harness/packages/core/system-prompt
+        version: link:../../deepseek-harness/packages/core/system-prompt
+      '@deepseek-ai/dsh-timeout':
+        specifier: link:../../deepseek-harness/packages/util/timeout
+        version: link:../../deepseek-harness/packages/util/timeout
       '@deepseek-ai/dsh-typert-generator':
         specifier: link:../../deepseek-harness/packages/typert/generator
         version: link:../../deepseek-harness/packages/typert/generator
+      '@deepseek-ai/dsh-typert-protocol':
+        specifier: link:../../deepseek-harness/packages/typert/protocol
+        version: link:../../deepseek-harness/packages/typert/protocol
       '@deepseek-ai/schemastery':
         specifier: link:../../deepseek-harness/vendor/schemastery
         version: link:../../deepseek-harness/vendor/schemastery
@@ -76,9 +108,18 @@ importers:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
         version: link:../../../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../../deepseek-harness/packages/core/agent
+        version: link:../../../../deepseek-harness/packages/core/agent
       '@deepseek-ai/dsh-brand':
         specifier: link:../../../../deepseek-harness/packages/util/brand
         version: link:../../../../deepseek-harness/packages/util/brand
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../../../../deepseek-harness/packages/llm/llm
+        version: link:../../../../deepseek-harness/packages/llm/llm
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../../deepseek-harness/packages/core/session
+        version: link:../../../../deepseek-harness/packages/core/session
       '@deepseek-ai/dsh-storage-domain':
         specifier: link:../../../../deepseek-harness/packages/storage/storage-domain
         version: link:../../../../deepseek-harness/packages/storage/storage-domain

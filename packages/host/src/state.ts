@@ -23,6 +23,7 @@ import type {
   CreateRoomResult,
   DefinitionRevision,
   MutationResult,
+  RecordSessionBindingCommand,
   ReviseDefinitionCommand,
   ReviseDefinitionResult,
   RoomMessageCommand,
@@ -55,6 +56,7 @@ export function createInitialState(workspaceId: WorkspaceId): WorkspaceState {
     taskAssignments: {},
     delegationGrants: {},
     childRuns: {},
+    sessionBindings: {},
   }
 }
 
@@ -95,6 +97,7 @@ export function mutateWorkspace(state: WorkspaceState, command: WorkspaceCommand
     case 'room/join': return joinRoom(state, command.roomId, command.agentId, command.memoryStart)
     case 'room/leave': return leaveRoom(state, command.membershipId)
     case 'room/message': return appendRoomMessageEvent(state, command)
+    case 'runtime/session-bound': return recordSessionBinding(state, command)
   }
 }
 
@@ -387,6 +390,19 @@ function requireEmployment(agent: AgentInstance, expected: AgentInstance['employ
 
 function requireText(subject: string, value: string): void {
   if (value.trim() === '') throw new Error(`${subject} must not be empty`)
+}
+
+function recordSessionBinding(state: WorkspaceState, command: RecordSessionBindingCommand): MutationResult {
+  const agent = requireAgent(state, command.agentId)
+  requireEmployment(agent, 'employed')
+  let changed = beginWorkspaceMutation(state)
+  ;[changed] = appendWorkspaceEvent(changed, 'runtime/session-bound', command.agentId)
+  return {
+    state: {
+      ...changed,
+      sessionBindings: { ...changed.sessionBindings, [command.agentId]: command.sessionId },
+    },
+  }
 }
 
 function normalizeName(value: string): string {

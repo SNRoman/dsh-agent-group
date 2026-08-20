@@ -19,11 +19,13 @@ import {
   WorkspaceId,
 } from './ids.ts'
 import type { WorkspaceState } from './types.ts'
+import { SessionId } from '@deepseek-ai/dsh-session'
 
 const workspaceId = z.string().min(1).transform(WorkspaceId)
 const definitionId = z.string().min(1).transform(AgentDefinitionId)
 const definitionRevisionId = z.string().min(1).transform(DefinitionRevisionId)
 const agentId = z.string().min(1).transform(AgentId)
+const sessionId = z.string().min(1).transform(SessionId)
 const employmentPeriodId = z.string().min(1).transform(EmploymentPeriodId)
 const roomId = z.string().min(1).transform(RoomId)
 const membershipId = z.string().min(1).transform(MembershipId)
@@ -130,6 +132,7 @@ export const workspaceStateSchema = z.object({
     z.object({ id: childRunId, parentAgentId: agentId, taskId, status: z.literal('running') }).strict(),
     z.object({ id: childRunId, parentAgentId: agentId, taskId, status: childRunTerminalStatus, result: z.string().refine(value => value.trim() !== '', 'child run result must not be blank') }).strict(),
   ])),
+  sessionBindings: z.record(z.string(), sessionId),
 }) satisfies z.ZodType<WorkspaceState>
 
 /** One-table storage declaration: every workspace mutation replaces its aggregate atomically. */
