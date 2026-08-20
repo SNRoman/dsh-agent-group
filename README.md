@@ -58,7 +58,7 @@ pnpm test
 ## Known Limitations and Deferred Work
 
 - **Single local workspace** — the domain table holds one aggregate keyed `local`; multi-workspace discovery is not implemented.
-- **No Typert Remote yet** — exposing `snapshot`/`execute` through Typert requires exporting the Remote types from a public `./types` subpath and satisfying the generator's type-model requirements; the generator currently reports the decorators as absent.
+- **No Typert Remote yet** — exposing `snapshot`/`execute` through Typert requires the Host package to extend `TypertRemoteService`, but the Typert generator's `loadRegistrations` only registers packages whose root is inside the workspace `packages/` directory (`analyzer.ts` `isWithin(packageRoot, packages/)`). The plugin links `@deepseek-ai/dsh-typert-protocol` from an adjacent DSH clone, so its `Remote` symbol is never recognized and the `@Remote` decorators are skipped. Enabling the Remote needs either vendoring the DSH packages into this repository's `packages/` or developing inside the DSH workspace.
 - **Web overlay is a scaffold** — the Browser package registers nothing; the UI is not implemented.
 - **No per-agent model/tool/skill selection** — every top-level agent shares the deployment's model, tools, skills, and permissions.
 - **No hard room secrecy** — an agent's unified memory can recall a direct-message event while replying in a group; secrecy is the model's own judgment, not an enforced boundary.
