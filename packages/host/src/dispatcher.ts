@@ -103,13 +103,14 @@ export class WorkspaceDispatcher {
    */
   async runChild(parentAgentId: AgentId, taskId: TaskId, prompt: string, signal: AbortSignal = new AbortController().signal): Promise<string> {
     const handle = await this.host.ensureEmployee(parentAgentId)
-    let childRunId: ChildId | undefined
+    let publishedChildRunId: ChildId | undefined
     await this.host.apply(current => {
       const started = recordChildRunStarted(current, { parentAgentId, taskId })
-      childRunId = started.childRunId
+      publishedChildRunId = started.childRunId
       return started.state
     })
-    if (childRunId === undefined) throw new Error('child run start did not publish an id')
+    if (publishedChildRunId === undefined) throw new Error('child run start did not publish an id')
+    const childRunId: ChildId = publishedChildRunId
 
     let run: OneShotSubagentRun | undefined
     let result: { readonly output: ContentBlock[]; readonly stopReason: string } | undefined
