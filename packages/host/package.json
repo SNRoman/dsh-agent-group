@@ -1,5 +1,5 @@
 {
-  "name": "@dsh-agent-workspace/host",
+  "name": "@dsh-agent-group/host",
   "version": "0.1.0",
   "type": "module",
   "main": "./lib/index.js",

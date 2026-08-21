@@ -1,4 +1,4 @@
-# dsh-agent-workspace
+# dsh-agent-group
 
 A persistent multi-agent workspace for DeepSeek Harness. It models a small organization: reusable role definitions, named agent instances with employment lifecycles, rooms and direct messages, unified per-agent event memory, mention-driven replies, human-authorized task delegation, and one-shot child agents.
 
@@ -14,9 +14,9 @@ A persistent multi-agent workspace for DeepSeek Harness. It models a small organ
 
 | Package | Role |
 |---|---|
-| `@dsh-agent-workspace/host` | Domain model, persistence, employee runtime, dispatcher, invariant |
-| `@dsh-agent-workspace/web` | Browser overlay (scaffold; not yet implemented) |
-| `dsh-agent-workspace` | Installable profile bundle mounting the Host and storage stack |
+| `@dsh-agent-group/host` | Domain model, persistence, employee runtime, dispatcher, invariant |
+| `@dsh-agent-group/web` | Browser overlay (scaffold; not yet implemented) |
+| `dsh-agent-group` | Installable profile bundle mounting the Host and storage stack |
 
 ## Installation
 
@@ -27,7 +27,7 @@ The bundle mounts the Host domain service and its Browser overlay. Add it to a p
 bundles:
   - '@deepseek-ai/dsh-base'
   - '@deepseek-ai/dsh-web-app'   # or '@deepseek-ai/dsh-headless'
-  - dsh-agent-workspace
+  - dsh-agent-group
 ```
 
 The bundle must not re-declare the `storage` / `storage-json` / `storage-domain` rows: those belong to the profile's mode bundle, and duplicating them would override the profile's persistence root. The Host service is reachable as `ctx.agentWorkspace`.

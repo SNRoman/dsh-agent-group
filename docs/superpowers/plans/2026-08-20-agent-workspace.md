@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- The project lives at `E:\003code\deepseek-harness-plugins\dsh-agent-workspace`; the adjacent DSH clone is read-only product source and local dependency evidence.
+- The project lives at `E:\003code\deepseek-harness-plugins\dsh-agent-group`; the adjacent DSH clone is read-only product source and local dependency evidence.
 - All top-level agents inherit the same Host model, tools, skills, and permissions; definitions contain only role description and instructions.
 - Only mentions wake agents. Unmentioned members receive memory without a model run.
 - Each employed agent owns one stable, persistent DSH `SessionId`; every workspace-derived model input must be appended to that session log.
@@ -25,7 +25,7 @@
 ## File map
 
 ```text
-dsh-agent-workspace/
+dsh-agent-group/
 ├── package.json                         # private pnpm workspace scripts
 ├── pnpm-workspace.yaml                  # host, web, and bundle packages
 ├── tsconfig.json                        # shared strict compiler options
@@ -33,7 +33,7 @@ dsh-agent-workspace/
 ├── vitest.config.ts                     # unit and integration tests
 ├── packages/
 │   ├── host/
-│   │   ├── package.json                 # @dsh-agent-workspace/host
+│   │   ├── package.json                 # @dsh-agent-group/host
 │   │   ├── tsconfig.json
 │   │   ├── tsdown.config.ts             # Host ESM + Typert artifacts
 │   │   └── src/
@@ -50,7 +50,7 @@ dsh-agent-workspace/
 │   │       ├── remote.ts                 # Typert Remote methods
 │   │       └── invariant.ts              # runtime relationship checks
 │   ├── web/
-│   │   ├── package.json                 # @dsh-agent-workspace/web
+│   │   ├── package.json                 # @dsh-agent-group/web
 │   │   ├── tsconfig.json
 │   │   ├── tsconfig.client.json
 │   │   ├── tsdown.config.ts             # Node stub + loader-compatible CJS
@@ -67,7 +67,7 @@ dsh-agent-workspace/
 │   │           ├── tasks.tsx             # assignments/grants/child activity
 │   │           └── styles.css             # inlined client CSS
 │   └── bundle/
-│       ├── package.json                 # installable dsh-agent-workspace
+│       ├── package.json                 # installable dsh-agent-group
 │       ├── cordis.patch.yml             # mounts Host and Browser entries
 │       └── src/{index,invariant}.ts     # bundle identity/invariant
 ├── tests/
@@ -118,11 +118,11 @@ Expected: FAIL because the root manifest and scripts do not exist.
 
 - [ ] **Step 3: Create the pnpm workspace and package manifests**
 
-Use `node ^22.19 || >=24`, `pnpm@11.7.0`, ESM everywhere, and semver peers `>=0.1.0-rc.7 <0.2.0` for DSH packages. Point matching dev dependencies at `link:../../../../deepseek-harness/...` from package directories. The installable bundle depends on `@dsh-agent-workspace/host` and `@dsh-agent-workspace/web` through `workspace:^`.
+Use `node ^22.19 || >=24`, `pnpm@11.7.0`, ESM everywhere, and semver peers `>=0.1.0-rc.7 <0.2.0` for DSH packages. Point matching dev dependencies at `link:../../../../deepseek-harness/...` from package directories. The installable bundle depends on `@dsh-agent-group/host` and `@dsh-agent-group/web` through `workspace:^`.
 
 - [ ] **Step 4: Configure ordered Host Typert and Browser builds**
 
-Host compilation emits declarations, then tsdown runs `typertPlugin({ mode: 'package', faces: ['host'] })`. Browser compilation runs only after Host generates `@dsh-agent-workspace/host/remote`; its client target is loader-compatible CJS wrapped by `window.__ModuleLoader__.load(...)`.
+Host compilation emits declarations, then tsdown runs `typertPlugin({ mode: 'package', faces: ['host'] })`. Browser compilation runs only after Host generates `@dsh-agent-group/host/remote`; its client target is loader-compatible CJS wrapped by `window.__ModuleLoader__.load(...)`.
 
 - [ ] **Step 5: Install and prove a clean-tree build**
 
@@ -391,7 +391,7 @@ git commit -m "feat: dispatch mentioned agents and child work"
 - Test: `tests/remote.spec.ts`
 
 **Interfaces:**
-- Produces: generated `@dsh-agent-workspace/host/remote`, snapshot and mutation request/response types, and a companion runtime invariant.
+- Produces: generated `@dsh-agent-group/host/remote`, snapshot and mutation request/response types, and a companion runtime invariant.
 
 - [ ] **Step 1: Write failing Remote tests**
 
@@ -422,7 +422,7 @@ git commit -m "feat: expose agent workspace remote API"
 - Test: `tests/web.spec.tsx`
 
 **Interfaces:**
-- Consumes: generated `@dsh-agent-workspace/host/remote` and Host wire types.
+- Consumes: generated `@dsh-agent-group/host/remote` and Host wire types.
 - Produces: one sidebar footer action and one full-screen overlay with polling snapshots and mutation forms.
 
 - [ ] **Step 1: Write failing component and registration tests**
@@ -460,7 +460,7 @@ git commit -m "feat: add agent workspace web interface"
 - Modify: all package manifests as required by packing evidence
 
 **Interfaces:**
-- Produces: installable `dsh-agent-workspace` bundle tarball and a runnable Web-profile composition.
+- Produces: installable `dsh-agent-group` bundle tarball and a runnable Web-profile composition.
 
 - [ ] **Step 1: Write a failing bundle composition test**
 
@@ -468,7 +468,7 @@ Pack all workspace packages, install the bundle tarball into a temporary DSH pro
 
 - [ ] **Step 2: Add the bundle patch and manifests**
 
-Mount `@dsh-agent-workspace/host` and `@dsh-agent-workspace/web`. Include compiled Host/UI artifacts and `cordis.patch.yml`; exclude sources, local links, credentials, test data, and DSH checkout paths from tarballs.
+Mount `@dsh-agent-group/host` and `@dsh-agent-group/web`. Include compiled Host/UI artifacts and `cordis.patch.yml`; exclude sources, local links, credentials, test data, and DSH checkout paths from tarballs.
 
 - [ ] **Step 3: Add an assembled keyless replay**
 

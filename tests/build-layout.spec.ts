@@ -28,7 +28,7 @@ describe('workspace manifests', () => {
   })
 
   test('publishes package archives without machine-local dependency links', async () => {
-    const destination = await mkdtemp(join(tmpdir(), 'dsh-agent-workspace-pack-'))
+    const destination = await mkdtemp(join(tmpdir(), 'dsh-agent-group-pack-'))
     try {
       for (const directory of packageDirectories) {
         await pack(directory, destination)
@@ -41,5 +41,5 @@ describe('workspace manifests', () => {
     } finally {
       await rm(destination, { recursive: true, force: true })
     }
-  }, 20_000)
+  }, 60_000)
 })

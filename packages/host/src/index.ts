@@ -4,7 +4,7 @@
  * boot, and exposes detached snapshots plus serialized command execution. It
  * also assembles the employee runtime: a pool of long-lived DSH agents and the
  * per-agent turn trackers that correlate a delivery with its reply.
- * @module @dsh-agent-workspace/host
+ * @module @dsh-agent-group/host
  */
 
 import { Context, Service } from '@deepseek-ai/cordis'

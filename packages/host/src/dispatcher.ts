@@ -2,7 +2,7 @@
  * The mention dispatcher: records room messages into every member's memory,
  * wakes only explicitly mentioned employed agents, bounds agent-to-agent
  * chains, and runs one-shot children through the DSH subagent seam.
- * @module @dsh-agent-workspace/host/dispatcher
+ * @module @dsh-agent-group/host/dispatcher
  */
 
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'

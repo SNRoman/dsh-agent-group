@@ -105,10 +105,10 @@ importers:
       '@deepseek-ai/dsh-storage-json':
         specifier: link:../../../../deepseek-harness/packages/storage/storage-json
         version: link:../../../../deepseek-harness/packages/storage/storage-json
-      '@dsh-agent-workspace/host':
+      '@dsh-agent-group/host':
         specifier: workspace:^
         version: link:../host
-      '@dsh-agent-workspace/web':
+      '@dsh-agent-group/web':
         specifier: workspace:^
         version: link:../web
 

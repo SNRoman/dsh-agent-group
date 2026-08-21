@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`dsh-agent-workspace` adds a persistent multi-agent workspace to DeepSeek Harness. A workspace models a small organization whose agent instances represent specific colleagues: each has a name, an employment lifecycle, a shared role definition, and a unified personal memory of the events it experienced.
+`dsh-agent-group` adds a persistent multi-agent workspace to DeepSeek Harness. A workspace models a small organization whose agent instances represent specific colleagues: each has a name, an employment lifecycle, a shared role definition, and a unified personal memory of the events it experienced.
 
 The first release uses the same model access, tools, skills, and system permissions for every top-level agent. Role definitions describe identity and work focus; they do not grant privileges or configure participation behavior.
 

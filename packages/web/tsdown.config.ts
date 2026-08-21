@@ -17,7 +17,7 @@ export default [
     clean: false,
     outputOptions: {
       entryFileNames: 'client.js',
-      banner: 'window.__ModuleLoader__.load({ id: "@dsh-agent-workspace/web", factory: (require) => {',
+      banner: 'window.__ModuleLoader__.load({ id: "@dsh-agent-group/web", factory: (require) => {',
       footer: 'return module.exports; } });',
       intro: 'var module = { exports: {} }; var exports = module.exports;',
     },

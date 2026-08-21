@@ -3,7 +3,7 @@
  * message naming the broken owned relationship; the runtime companion and the
  * test suite both call these so a corrupt state fails loudly rather than
  * silently projecting nonsense.
- * @module @dsh-agent-workspace/host/invariant
+ * @module @dsh-agent-group/host/invariant
  */
 
 import type { WorkspaceState } from './types.ts'

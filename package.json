@@ -1,5 +1,5 @@
 {
-  "name": "dsh-agent-workspace-root",
+  "name": "dsh-agent-group-root",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,9 +8,9 @@
     "node": "^22.19.0 || >=24.0.0"
   },
   "scripts": {
-    "build:host": "pnpm --filter @dsh-agent-workspace/host run build",
-    "build:web": "pnpm --filter @dsh-agent-workspace/web run build",
-    "build:bundle": "pnpm --filter dsh-agent-workspace run build",
+    "build:host": "pnpm --filter @dsh-agent-group/host run build",
+    "build:web": "pnpm --filter @dsh-agent-group/web run build",
+    "build:bundle": "pnpm --filter dsh-agent-group run build",
     "build": "pnpm build:host && pnpm build:web && pnpm build:bundle",
     "test": "vitest run",
     "typecheck": "tsc -b tsconfig.host.json && tsc -b packages/web/tsconfig.client.json"

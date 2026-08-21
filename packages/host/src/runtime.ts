@@ -2,7 +2,7 @@
  * Long-lived DSH employee pool: one stable {@link AgentHandle} per employed
  * top-level agent, created or resumed once with single-flight admission, and
  * disposed when the agent departs.
- * @module @dsh-agent-workspace/host/runtime
+ * @module @dsh-agent-group/host/runtime
  */
 
 import { randomUUID } from 'node:crypto'

@@ -3,7 +3,7 @@
  * assistant reply that turn produces. One tracker instance serves one agent:
  * `install` registers the agent-scoped listeners, `deliver` submits a delivery
  * (and optional recall) and resolves when the owning turn closes.
- * @module @dsh-agent-workspace/host/turn-tracker
+ * @module @dsh-agent-group/host/turn-tracker
  */
 
 import type { Context } from '@deepseek-ai/cordis'

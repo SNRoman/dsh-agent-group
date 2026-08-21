@@ -1,5 +1,5 @@
 {
-  "name": "dsh-agent-workspace",
+  "name": "dsh-agent-group",
   "version": "0.1.0",
   "type": "module",
   "main": "./lib/index.js",
@@ -28,8 +28,8 @@
     }
   },
   "dependencies": {
-    "@dsh-agent-workspace/host": "workspace:^",
-    "@dsh-agent-workspace/web": "workspace:^",
+    "@dsh-agent-group/host": "workspace:^",
+    "@dsh-agent-group/web": "workspace:^",
     "@deepseek-ai/dsh-storage": ">=0.1.0-rc.7 <0.2.0",
     "@deepseek-ai/dsh-storage-domain": ">=0.1.0-rc.7 <0.2.0",
     "@deepseek-ai/dsh-storage-json": ">=0.1.0-rc.7 <0.2.0"
