@@ -27,13 +27,14 @@ export interface EmployeeSessionSource {
 /**
  * Owns the live DSH handles for employed workspace agents. `ensure()` admits
  * one handle per agent (single-flight across concurrent calls), resuming a
- * materialized session or creating a fresh one. Departure disposes the handle
- * without deleting the durable binding, so re-employment resumes the same
- * conversation.
+ * materialized session or creating a fresh one. Departure invalidates any
+ * in-flight admission before disposing the resident handle, so an async create
+ * cannot publish a stale handle after the employee has been removed.
  */
 export class EmployeeAgentPool {
   private readonly handles = new Map<AgentId, AgentHandle>()
   private readonly inFlight = new Map<AgentId, Promise<AgentHandle>>()
+  private readonly generations = new Map<AgentId, number>()
 
   constructor(
     private readonly agents: AgentLifecycle,
@@ -52,30 +53,68 @@ export class EmployeeAgentPool {
     if (existing !== undefined) return existing
     const pending = this.inFlight.get(agentId)
     if (pending !== undefined) return pending
-    const promise = this.materialize(agentId)
-    this.inFlight.set(agentId, promise)
-    try {
-      const handle = await promise
+
+    const generation = this.generationOf(agentId)
+    const promise = this.materialize(agentId).then(async handle => {
+      if (this.generationOf(agentId) !== generation) {
+        try {
+          await handle.dispose()
+        } finally {
+          throw new Error(`agent '${agentId}' admission was invalidated by disposal`)
+        }
+      }
       this.handles.set(agentId, handle)
       return handle
+    })
+    this.inFlight.set(agentId, promise)
+    try {
+      return await promise
     } finally {
-      this.inFlight.delete(agentId)
+      if (this.inFlight.get(agentId) === promise) this.inFlight.delete(agentId)
     }
   }
 
-  /** Dispose one agent's handle; keeps its durable session binding for later resume. */
+  /** Dispose one agent's handle and invalidate any admission already in flight. */
   async dispose(agentId: AgentId): Promise<void> {
+    this.generations.set(agentId, this.generationOf(agentId) + 1)
     const handle = this.handles.get(agentId)
-    if (handle === undefined) return
+    const pending = this.inFlight.get(agentId)
     this.handles.delete(agentId)
-    await handle.dispose()
+
+    let disposeError: unknown
+    if (handle !== undefined) {
+      try {
+        await handle.dispose()
+      } catch (error) {
+        disposeError = error
+      }
+    }
+    if (pending !== undefined) {
+      try {
+        await pending
+      } catch {
+        // The stale admission rejects after disposing its unpublished handle.
+      }
+    }
+    if (disposeError !== undefined) throw disposeError
   }
 
-  /** Dispose every live handle and clear the pool. */
+  /** Dispose every live handle and invalidate every admission in flight. */
   async disposeAll(): Promise<void> {
+    const ids = new Set<AgentId>([...this.handles.keys(), ...this.inFlight.keys()])
+    for (const agentId of ids) this.generations.set(agentId, this.generationOf(agentId) + 1)
+
     const handles = [...this.handles.values()]
+    const pending = [...this.inFlight.values()]
     this.handles.clear()
-    await Promise.allSettled(handles.map(handle => handle.dispose()))
+    await Promise.allSettled([
+      ...handles.map(handle => handle.dispose()),
+      ...pending,
+    ])
+  }
+
+  private generationOf(agentId: AgentId): number {
+    return this.generations.get(agentId) ?? 0
   }
 
   private async materialize(agentId: AgentId): Promise<AgentHandle> {
