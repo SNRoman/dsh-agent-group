@@ -15,6 +15,9 @@ import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { AgentId, HumanId, RoomId, TaskId, WorkspaceId } from './ids.ts'
 import { WorkspaceDispatcher } from './dispatcher.ts'
 import type { DispatcherLimits, SubagentRuntimeLike } from './dispatcher.ts'
+import { assertWorkspaceInvariants } from './invariant.ts'
+import { joinRoomWithMemory } from './memory.ts'
+import { assertRoomMessageAuthorized } from './room-policy.ts'
 import { EmployeeAgentPool } from './runtime.ts'
 import type { AgentLifecycle } from './runtime.ts'
 import { agentWorkspaceSpec } from './spec.ts'
@@ -59,9 +62,15 @@ export class AgentWorkspaceDomainService extends Service {
     const domain = await this.ctx.storageDomain.open(agentWorkspaceSpec)
     this.ctx.effect(() => () => domain.close(), 'agentWorkspace.domainClose')
     this.table = domain.table('workspaces')
-    if (this.table.get(LOCAL_WORKSPACE_ID) === undefined) {
-      await this.table.put(LOCAL_WORKSPACE_ID, createInitialState(LOCAL_WORKSPACE_ID))
+    const stored = this.table.get(LOCAL_WORKSPACE_ID)
+    if (stored === undefined) {
+      const initial = createInitialState(LOCAL_WORKSPACE_ID)
+      assertWorkspaceInvariants(initial)
+      await this.table.put(LOCAL_WORKSPACE_ID, initial)
+    } else {
+      assertWorkspaceInvariants(stored)
     }
+
     const agents = this.ctx.get('agents') as AgentLifecycle | undefined
     const subagents = this.ctx.get('subagents') as SubagentRuntimeLike | undefined
     if (agents !== undefined && subagents !== undefined) {
@@ -89,13 +98,30 @@ export class AgentWorkspaceDomainService extends Service {
 
   /** Apply one command durably and return the detached committed aggregate. */
   async execute(command: WorkspaceCommand): Promise<WorkspaceState> {
-    const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => mutateWorkspace(current, command).state)
+    const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => {
+      if (command.type === 'room/message') {
+        assertRoomMessageAuthorized(current, command.roomId, command.actor, command.mentions)
+      }
+      const changed = command.type === 'room/join'
+        ? joinRoomWithMemory(current, command).state
+        : mutateWorkspace(current, command).state
+      assertWorkspaceInvariants(changed)
+      return changed
+    })
+
+    if (command.type === 'agent/depart') {
+      await this.pool?.dispose(command.agentId)
+    }
     return structuredClone(next)
   }
 
   /** Apply an arbitrary pure mutation durably and return the detached committed aggregate. */
   async apply(mutation: (state: WorkspaceState) => WorkspaceState): Promise<WorkspaceState> {
-    const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => mutation(current))
+    const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => {
+      const changed = mutation(current)
+      assertWorkspaceInvariants(changed)
+      return changed
+    })
     return structuredClone(next)
   }
 
@@ -111,6 +137,9 @@ export class AgentWorkspaceDomainService extends Service {
 
   /** Admit the live DSH handle for one employed agent, creating or resuming it once. */
   async ensureEmployee(agentId: AgentId): Promise<AgentHandle> {
+    const agent = this.snapshot().agents[agentId]
+    if (agent === undefined) throw new Error(`agent '${agentId}' does not exist`)
+    if (agent.employmentStatus !== 'employed') throw new Error(`agent '${agentId}' is departed and cannot be materialized`)
     return await this.requirePool().ensure(agentId)
   }
 
@@ -125,7 +154,7 @@ export class AgentWorkspaceDomainService extends Service {
    * the delivery.
    */
   async deliver(agentId: AgentId, delivery: UserMessage, recall?: UserMessage): Promise<DeliveryOutcome> {
-    const handle = await this.requirePool().ensure(agentId)
+    const handle = await this.ensureEmployee(agentId)
     const tracker = this.trackers.get(agentId)
     if (tracker === undefined) throw new Error(`agent '${agentId}' has no turn tracker`)
     const outcome = await tracker.deliver(handle.agent, delivery, recall)
@@ -140,7 +169,7 @@ export class AgentWorkspaceDomainService extends Service {
   }
 
   private requirePool(): EmployeeAgentPool {
-    if (this.pool === undefined) throw new Error('agent workspace service is not started yet')
+    if (this.pool === undefined) throw new Error('agent workspace runtime is not available without the agent and subagent services')
     return this.pool
   }
 
@@ -155,8 +184,8 @@ export class AgentWorkspaceDomainService extends Service {
   }
 
   /** Run one one-shot child for a parent agent and record its terminal result. */
-  async runChild(parentAgentId: AgentId, taskId: TaskId, prompt: string): Promise<string> {
-    return await this.requireDispatcher().runChild(parentAgentId, taskId, prompt)
+  async runChild(parentAgentId: AgentId, taskId: TaskId, prompt: string, signal?: AbortSignal): Promise<string> {
+    return await this.requireDispatcher().runChild(parentAgentId, taskId, prompt, signal)
   }
 }
 
