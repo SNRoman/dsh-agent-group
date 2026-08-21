@@ -33,9 +33,19 @@ jobs:
         with:
           node-version: '24'
           cache: pnpm
-          cache-dependency-path: plugin/dsh-agent-group/pnpm-lock.yaml
+          cache-dependency-path: |
+            deepseek-harness/pnpm-lock.yaml
+            plugin/dsh-agent-group/pnpm-lock.yaml
 
-      - name: Install dependencies
+      - name: Install Harness dependencies
+        working-directory: deepseek-harness
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Harness host libraries
+        working-directory: deepseek-harness
+        run: pnpm build:lib:host
+
+      - name: Install plugin dependencies
         working-directory: plugin/dsh-agent-group
         run: pnpm install --frozen-lockfile
 
