@@ -20,16 +20,17 @@ A persistent multi-agent workspace for DeepSeek Harness. It models a small organ
 
 ## Installation
 
-The bundle mounts the storage hub, the JSON backend, the domain form, and the Host service. Add it to a profile that already provides the DSH core:
+The bundle mounts the Host domain service and its Browser overlay. Add it to a profile that already provides the DSH core and the storage stack — the shipped `web` and `headless` templates do both, so list this bundle after them:
 
 ```yaml
 # profile bundles
 bundles:
   - '@deepseek-ai/dsh-base'
+  - '@deepseek-ai/dsh-web-app'   # or '@deepseek-ai/dsh-headless'
   - dsh-agent-workspace
 ```
 
-The Host service is reachable as `ctx.agentWorkspace`.
+The bundle must not re-declare the `storage` / `storage-json` / `storage-domain` rows: those belong to the profile's mode bundle, and duplicating them would override the profile's persistence root. The Host service is reachable as `ctx.agentWorkspace`.
 
 ## Service API
 
