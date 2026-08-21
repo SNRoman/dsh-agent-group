@@ -9,24 +9,41 @@ function text(value: string): UserMessage {
   return createUserMessage({ content: [{ type: 'text', text: value }], source: { kind: 'user' } })
 }
 
-function fakeContext(): Context {
-  return { on: vi.fn(() => () => {}) } as unknown as Context
+interface FakeEvents {
+  on: (event: string, listener: (...args: never[]) => unknown) => () => void
+  listenerFor: (event: string) => ((...args: never[]) => unknown) | undefined
+}
+
+function fakeEvents(): FakeEvents {
+  const listeners = new Map<string, (...args: never[]) => unknown>()
+  return {
+    on: (event, listener) => {
+      listeners.set(event, listener)
+      return () => listeners.delete(event)
+    },
+    listenerFor: event => listeners.get(event),
+  }
 }
 
 describe('WorkspaceTurnTracker delivery errors', () => {
-  test('a synchronous followup failure removes the pending delivery', async () => {
+  test('a synchronous followup failure removes the pending delivery and its recall', async () => {
+    const events = fakeEvents()
     const tracker = new WorkspaceTurnTracker()
-    tracker.install(fakeContext())
+    tracker.install(events as unknown as Context)
     const delivery = text('deliver')
+    const recall = text('stale recall must disappear')
     const agent = {
       followup: vi.fn(() => { throw new Error('followup failed') }),
     } as unknown as Agent
 
-    await expect(tracker.deliver(agent, delivery)).rejects.toThrow(/followup failed/)
+    await expect(tracker.deliver(agent, delivery, recall)).rejects.toThrow(/followup failed/)
 
-    // A second delivery using the same identified message must fail only for
-    // its own followup call, not because stale tracker state survived.
-    await expect(tracker.deliver(agent, delivery)).rejects.toThrow(/followup failed/)
-    expect(agent.followup).toHaveBeenCalledTimes(2)
+    const preStep = events.listenerFor('agent/pre-step')
+    if (preStep === undefined) throw new Error('expected pre-step listener')
+    const decision = await preStep(
+      { messages: [delivery] } as never,
+      (async () => ({ kind: 'enter', messages: [delivery] })) as never,
+    )
+    expect(decision).toEqual({ kind: 'enter', messages: [delivery] })
   })
 })
