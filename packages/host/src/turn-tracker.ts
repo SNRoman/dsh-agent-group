@@ -107,7 +107,8 @@ export class WorkspaceTurnTracker {
   /**
    * Submit one delivery to the agent and resolve when its turn closes. The
    * optional recall is injected by the `agent/pre-step` listener right after
-   * the delivery message, so it lands in the same durable turn.
+   * the delivery message, so it lands in the same durable turn. A synchronous
+   * inbox-admission error removes the pending correlation before rejecting.
    * @param agent - the live agent receiving the delivery.
    * @param delivery - the waking user message.
    * @param recall - optional model-visible context injected after the delivery.
@@ -117,7 +118,11 @@ export class WorkspaceTurnTracker {
     return new Promise<DeliveryOutcome>((resolve, reject) => {
       const pending: PendingDelivery = { messageId: delivery.id, recall, turn: undefined, output: [], resolve, reject }
       this.byMessage.set(delivery.id, pending)
-      agent.followup(delivery)
+      try {
+        agent.followup(delivery)
+      } catch (error) {
+        this.settleRejected(pending, error)
+      }
     })
   }
 
