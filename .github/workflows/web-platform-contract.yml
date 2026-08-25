@@ -1,0 +1,28 @@
+name: Web platform contract
+
+on:
+  push:
+    branches:
+      - feat/workspace-ui
+    paths:
+      - packages/web/tsdown.config.ts
+      - tests/web-bundle-platform.spec.ts
+      - .github/workflows/web-platform-contract.yml
+
+jobs:
+  shared-platform-module:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert DSH UI primitives stay external/shared
+        shell: bash
+        run: |
+          node <<'NODE'
+          const { readFileSync } = require('node:fs')
+          const source = readFileSync('packages/web/tsdown.config.ts', 'utf8')
+          const expected = "  '@deepseek-ai/dsh-client-ui-primitives',"
+          if (!source.includes(expected)) {
+            console.error(`Missing shared platform module: ${expected.trim()}`)
+            process.exit(1)
+          }
+          NODE

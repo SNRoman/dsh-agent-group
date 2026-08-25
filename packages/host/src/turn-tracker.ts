@@ -9,6 +9,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock, MessageId, UserMessage } from '@deepseek-ai/dsh-llm'
+import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import type { AgentId, RoomId } from './ids.ts'
+import type { WorkspaceTurnIdentity, WorkspaceTurnStream } from './turn-stream.ts'
 
 /** The terminal reply captured for one delivery. */
 export interface DeliveryOutcome {
@@ -16,15 +19,25 @@ export interface DeliveryOutcome {
   readonly output: ContentBlock[]
   /** Why the owning turn closed, from its merge-extensible `TurnEndReason.kind`. */
   readonly stopReason: string
+  /** Exact transient Workspace turn, present only for room-backed deliveries. */
+  readonly workspaceTurn?: WorkspaceTurnIdentity
 }
 
 interface PendingDelivery {
   readonly messageId: MessageId
   readonly recall: UserMessage | undefined
+  readonly roomId: RoomId | undefined
   turn: number | undefined
   output: ContentBlock[]
   resolve: (outcome: DeliveryOutcome) => void
   reject: (reason: unknown) => void
+}
+
+/** Optional Workspace stream identity for one per-agent tracker. */
+export interface WorkspaceTurnTrackerOptions {
+  readonly agentId: AgentId
+  readonly sessionId: SessionId
+  readonly stream: WorkspaceTurnStream
 }
 
 /** A permissive event-source view used only to register scoped listeners. */
@@ -46,6 +59,8 @@ export class WorkspaceTurnTracker {
   private readonly byMessage = new Map<MessageId, PendingDelivery>()
   private readonly byTurn = new Map<number, PendingDelivery>()
 
+  constructor(private readonly options?: WorkspaceTurnTrackerOptions) {}
+
   /** Register this tracker's listeners on one agent's scoped context. */
   install(agentCtx: Context): void {
     const events = agentCtx as unknown as ScopedEvents
@@ -55,6 +70,14 @@ export class WorkspaceTurnTracker {
       if (pending === undefined) return
       pending.turn = payload.turn
       this.byTurn.set(payload.turn, pending)
+      if (pending.roomId !== undefined && this.options !== undefined) {
+        this.options.stream.begin({
+          roomId: pending.roomId,
+          agentId: this.options.agentId,
+          sessionId: this.options.sessionId,
+          turn: payload.turn,
+        })
+      }
     }) as never)
 
     events.on('agent/inbox/discarded', ((payload: { message: UserMessage }) => {
@@ -86,20 +109,42 @@ export class WorkspaceTurnTracker {
       }
     }) as never)
 
-    events.on('session/event', ((_session: unknown, event: { type: string; data: unknown }) => {
+    events.on('session/event', ((_session: unknown, event: SessionEvent) => {
+      const data = event.data as { turn?: number; message?: { content?: ContentBlock[] }; reason?: { kind?: string } }
+      if (typeof data.turn !== 'number') return
+      const pending = this.byTurn.get(data.turn)
+      if (pending === undefined) return
+
       if (event.type === 'assistant/message') {
-        const data = event.data as { turn: number; message: { content: ContentBlock[] } }
-        const pending = this.byTurn.get(data.turn)
-        if (pending !== undefined && data.message.content.length > 0) {
-          pending.output = data.message.content
-        }
-      } else if (event.type === 'turn/end') {
-        const data = event.data as { turn: number; reason: { kind?: string } }
-        const pending = this.byTurn.get(data.turn)
-        if (pending === undefined) return
+        const content = data.message?.content
+        if (content !== undefined && content.length > 0) pending.output = content
+      }
+
+      if (pending.roomId !== undefined && this.options !== undefined) {
+        this.options.stream.acceptSessionEvent({
+          roomId: pending.roomId,
+          agentId: this.options.agentId,
+          sessionId: this.options.sessionId,
+          event,
+        })
+      }
+
+      if (event.type === 'turn/end') {
         this.byTurn.delete(data.turn)
         this.byMessage.delete(pending.messageId)
-        pending.resolve({ output: pending.output, stopReason: data.reason.kind ?? 'completed' })
+        const workspaceTurn = pending.roomId !== undefined && this.options !== undefined
+          ? {
+              roomId: pending.roomId,
+              agentId: this.options.agentId,
+              sessionId: this.options.sessionId,
+              turn: data.turn,
+            }
+          : undefined
+        pending.resolve({
+          output: pending.output,
+          stopReason: data.reason?.kind ?? 'completed',
+          ...(workspaceTurn === undefined ? {} : { workspaceTurn }),
+        })
       }
     }) as never)
   }
@@ -112,11 +157,20 @@ export class WorkspaceTurnTracker {
    * @param agent - the live agent receiving the delivery.
    * @param delivery - the waking user message.
    * @param recall - optional model-visible context injected after the delivery.
+   * @param roomId - owning Workspace room; absent for non-room tasks/children.
    * @returns the terminal reply outcome.
    */
-  deliver(agent: Agent, delivery: UserMessage, recall?: UserMessage): Promise<DeliveryOutcome> {
+  deliver(agent: Agent, delivery: UserMessage, recall?: UserMessage, roomId?: RoomId): Promise<DeliveryOutcome> {
     return new Promise<DeliveryOutcome>((resolve, reject) => {
-      const pending: PendingDelivery = { messageId: delivery.id, recall, turn: undefined, output: [], resolve, reject }
+      const pending: PendingDelivery = {
+        messageId: delivery.id,
+        recall,
+        roomId,
+        turn: undefined,
+        output: [],
+        resolve,
+        reject,
+      }
       this.byMessage.set(delivery.id, pending)
       try {
         agent.followup(delivery)
