@@ -78,6 +78,74 @@ describe('EmployeeAgentPool', () => {
     expect(create).not.toHaveBeenCalled()
   })
 
+  test('an explicitly incompatible bound session is hidden and replaced instead of resumed', async () => {
+    const create = vi.fn(async () => handle())
+    const resume = vi.fn(async () => handle())
+    const recordSessionId = vi.fn(async () => {})
+    const classifySession = vi.fn(async () => 'replace' as const)
+    const hideSession = vi.fn(async () => {})
+    const source: EmployeeSessionSource = {
+      sessionIdFor: () => SessionId('legacy'),
+      recordSessionId,
+      classifySession,
+      hideSession,
+    }
+    const pool = new EmployeeAgentPool({ create, resume }, source)
+
+    await pool.ensure(AgentId('alice'))
+
+    expect(classifySession).toHaveBeenCalledWith(AgentId('alice'), SessionId('legacy'))
+    expect(hideSession).toHaveBeenCalledWith(SessionId('legacy'))
+    expect(resume).not.toHaveBeenCalled()
+    expect(create).toHaveBeenCalledTimes(1)
+    const createdId = create.mock.calls[0]?.[0].sessionId
+    expect(createdId).toBeDefined()
+    expect(createdId).not.toBe(SessionId('legacy'))
+    expect(hideSession).toHaveBeenCalledWith(createdId)
+    expect(recordSessionId).toHaveBeenCalledWith(AgentId('alice'), createdId)
+  })
+
+  test('a compatible bound session is hidden and resumed without rebinding', async () => {
+    const create = vi.fn(async () => handle())
+    const resume = vi.fn(async () => handle())
+    const recordSessionId = vi.fn(async () => {})
+    const classifySession = vi.fn(async () => 'resume' as const)
+    const hideSession = vi.fn(async () => {})
+    const source: EmployeeSessionSource = {
+      sessionIdFor: () => SessionId('bound'),
+      recordSessionId,
+      classifySession,
+      hideSession,
+    }
+    const pool = new EmployeeAgentPool({ create, resume }, source)
+
+    await pool.ensure(AgentId('alice'))
+
+    expect(hideSession).toHaveBeenCalledWith(SessionId('bound'))
+    expect(resume).toHaveBeenCalledWith(expect.objectContaining({ resumeSessionId: SessionId('bound') }))
+    expect(create).not.toHaveBeenCalled()
+    expect(recordSessionId).not.toHaveBeenCalled()
+  })
+
+  test('a fresh internal session is hidden before its durable binding is recorded', async () => {
+    const create = vi.fn(async () => handle())
+    const hideSession = vi.fn(async () => {})
+    const recordSessionId = vi.fn(async () => {})
+    const source: EmployeeSessionSource = {
+      sessionIdFor: () => undefined,
+      recordSessionId,
+      hideSession,
+    }
+    const pool = new EmployeeAgentPool({ create, resume: vi.fn() }, source)
+
+    await pool.ensure(AgentId('alice'))
+
+    const createdId = create.mock.calls[0]?.[0].sessionId
+    expect(hideSession).toHaveBeenCalledWith(createdId)
+    expect(recordSessionId).toHaveBeenCalledWith(AgentId('alice'), createdId)
+    expect(hideSession.mock.invocationCallOrder[0]).toBeLessThan(recordSessionId.mock.invocationCallOrder[0]!)
+  })
+
   test('a fresh agent creates, records its binding, and rolls back on record failure', async () => {
     const dispose = vi.fn(async () => {})
     const create = vi.fn(async () => handle(dispose))
@@ -86,6 +154,43 @@ describe('EmployeeAgentPool', () => {
     await expect(pool.ensure(AgentId('alice'))).rejects.toThrow(/record failed/)
     expect(dispose).toHaveBeenCalledTimes(1)
     expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
+  })
+
+  test('materialization options are applied to fresh and resumed employee agents', async () => {
+    const create = vi.fn(async () => handle())
+    const resume = vi.fn(async () => handle())
+    const setup = vi.fn()
+    const configure = vi.fn(async (_agentId: ReturnType<typeof AgentId>, mode: 'create' | 'resume') => ({
+      agentOptions: { provider: 'test-provider', model: 'test-model' },
+      ...(mode === 'create' ? { meta: { cwd: 'E:/workspace', agentPreset: 'standard' } } : {}),
+      setup,
+    }))
+
+    const freshSource: EmployeeSessionSource = {
+      sessionIdFor: () => undefined,
+      recordSessionId: vi.fn(async () => {}),
+    }
+    const fresh = new EmployeeAgentPool({ create, resume }, freshSource, configure)
+    await fresh.ensure(AgentId('alice'))
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      agentOptions: { provider: 'test-provider', model: 'test-model' },
+      meta: { cwd: 'E:/workspace', agentPreset: 'standard' },
+      setup,
+    }))
+
+    const resumedSource: EmployeeSessionSource = {
+      sessionIdFor: () => SessionId('bound'),
+      recordSessionId: vi.fn(async () => {}),
+    }
+    const resumed = new EmployeeAgentPool({ create, resume }, resumedSource, configure)
+    await resumed.ensure(AgentId('bob'))
+    expect(resume).toHaveBeenCalledWith(expect.objectContaining({
+      resumeSessionId: SessionId('bound'),
+      agentOptions: { provider: 'test-provider', model: 'test-model' },
+      setup,
+    }))
+    expect(configure).toHaveBeenCalledWith(AgentId('alice'), 'create')
+    expect(configure).toHaveBeenCalledWith(AgentId('bob'), 'resume')
   })
 })
 

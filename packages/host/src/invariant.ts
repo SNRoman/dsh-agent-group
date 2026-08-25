@@ -10,6 +10,7 @@ import type { WorkspaceState } from './types.ts'
 
 /**
  * Assert every owned relationship the aggregate promises:
+ * - direct rooms have at most one active agent membership;
  * - memory entries reference an existing event and agent;
  * - active delegation grants reference an open root task;
  * - session bindings reference an existing agent;
@@ -19,6 +20,14 @@ import type { WorkspaceState } from './types.ts'
  * @returns nothing; throws on the first violation.
  */
 export function assertWorkspaceInvariants(state: WorkspaceState): void {
+  for (const room of Object.values(state.rooms)) {
+    if (room.kind !== 'direct') continue
+    const active = Object.values(state.memberships)
+      .filter(membership => membership.roomId === room.id && membership.leftEventId === undefined)
+    if (active.length > 1) {
+      throw new Error(`direct room '${room.id}' cannot have more than one active member`)
+    }
+  }
   for (const entry of state.memoryEntries) {
     if (state.events.every(event => event.id !== entry.eventId)) {
       throw new Error(`memory entry '${entry.id}' references missing event '${entry.eventId}'`)

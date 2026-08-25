@@ -7,6 +7,9 @@ on:
       - 'fix/**'
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -45,9 +48,9 @@ jobs:
         working-directory: deepseek-harness
         run: pnpm install --frozen-lockfile
 
-      - name: Build Harness host libraries
+      - name: Build Harness libraries
         working-directory: deepseek-harness
-        run: pnpm build:lib:host
+        run: pnpm build:lib
 
       - name: Install plugin dependencies
         working-directory: plugin/dsh-agent-group

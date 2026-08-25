@@ -6,30 +6,54 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { AgentHandle, AgentSetup, CreateAgentOptions, ResumeAgentOptions } from '@deepseek-ai/dsh-agent'
+import type { AgentHandle, AgentOptions, AgentSetup, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { AgentId } from './ids.ts'
 
 /** The agent lifecycle surface the pool drives (typically `ctx.agents`). */
 export interface AgentLifecycle {
   create(options: CreateAgentOptions): Promise<AgentHandle>
-  resume(options: ResumeAgentOptions): Promise<AgentHandle>
+  resume(options: { readonly resumeSessionId: SessionId; readonly agentOptions?: AgentOptions; readonly setup?: AgentSetup }): Promise<AgentHandle>
 }
+
+/** Explicit handling decision for an already-bound employee session. */
+export type EmployeeBoundSessionDisposition = 'resume' | 'replace'
 
 /** Durable source of an agent's materialized DSH session identity. */
 export interface EmployeeSessionSource {
   /** The session id bound to this agent, or `undefined` when never materialized. */
   sessionIdFor(agentId: AgentId): SessionId | undefined
-  /** Durably record a freshly created session id for this agent. */
+  /** Durably record a freshly created or migrated session id for this agent. */
   recordSessionId(agentId: AgentId, sessionId: SessionId): Promise<void>
+  /**
+   * Classify a known binding before admission. `replace` is an explicit
+   * compatibility migration, never a fallback from a failed resume.
+   */
+  classifySession?(agentId: AgentId, sessionId: SessionId): Promise<EmployeeBoundSessionDisposition>
+  /** Hide one internal employee session from ordinary DSH grouping surfaces. */
+  hideSession?(sessionId: SessionId): Promise<void>
 }
+
+/** Runtime configuration prepared immediately before one create/resume. */
+export interface EmployeeMaterializationOptions {
+  readonly agentOptions?: AgentOptions
+  readonly meta?: CreateAgentOptions['meta']
+  readonly setup?: AgentSetup
+}
+
+/** Prepare model, preset and scoped setup for one employee admission. */
+export type EmployeeMaterializationOptionsFactory = (
+  agentId: AgentId,
+  mode: 'create' | 'resume',
+) => EmployeeMaterializationOptions | Promise<EmployeeMaterializationOptions>
 
 /**
  * Owns the live DSH handles for employed workspace agents. `ensure()` admits
  * one handle per agent (single-flight across concurrent calls), resuming a
- * materialized session or creating a fresh one. Departure invalidates any
- * in-flight admission before disposing the resident handle, so an async create
- * cannot publish a stale handle after the employee has been removed.
+ * compatible materialized session or explicitly rotating a binding classified
+ * as incompatible. An ordinary resume failure never creates a replacement.
+ * Departure invalidates any in-flight admission before disposing the resident
+ * handle, so an async create cannot publish a stale handle after removal.
  */
 export class EmployeeAgentPool {
   private readonly handles = new Map<AgentId, AgentHandle>()
@@ -39,7 +63,7 @@ export class EmployeeAgentPool {
   constructor(
     private readonly agents: AgentLifecycle,
     private readonly source: EmployeeSessionSource,
-    private readonly setupFactory?: (agentId: AgentId) => AgentSetup,
+    private readonly optionsFactory?: EmployeeMaterializationOptionsFactory,
   ) {}
 
   /** The live handle for an agent, or `undefined` when not materialized. */
@@ -119,22 +143,41 @@ export class EmployeeAgentPool {
 
   private async materialize(agentId: AgentId): Promise<AgentHandle> {
     const bound = this.source.sessionIdFor(agentId)
-    const setup = this.setupFactory?.(agentId)
     if (bound !== undefined) {
-      // A materialized session never falls back to create: a resume failure is
-      // a real fault (missing/corrupt persistence), not an invitation to orphan
-      // the durable history under a new session id.
-      return await this.agents.resume({
-        resumeSessionId: bound,
-        ...(setup === undefined ? {} : { setup }),
-      })
+      const disposition = await this.source.classifySession?.(agentId, bound) ?? 'resume'
+      if (disposition === 'resume') {
+        await this.source.hideSession?.(bound)
+        const options = await this.optionsFactory?.(agentId, 'resume')
+        // A compatible materialized session never falls back to create: a
+        // resume failure remains a real persistence/runtime fault.
+        return await this.agents.resume({
+          resumeSessionId: bound,
+          ...(options?.agentOptions === undefined ? {} : { agentOptions: options.agentOptions }),
+          ...(options?.setup === undefined ? {} : { setup: options.setup }),
+        })
+      }
+      // Replacement is intentional only after the source positively identifies
+      // a known compatibility gap. Retire the visible legacy row before minting
+      // the new internal identity.
+      await this.source.hideSession?.(bound)
     }
+    return await this.createFresh(agentId)
+  }
+
+  private async createFresh(agentId: AgentId): Promise<AgentHandle> {
     const sessionId = SessionId(randomUUID())
+    const options = await this.optionsFactory?.(agentId, 'create')
     const handle = await this.agents.create({
       sessionId,
-      ...(setup === undefined ? {} : { setup }),
+      ...(options?.agentOptions === undefined ? {} : { agentOptions: options.agentOptions }),
+      ...(options?.meta === undefined ? {} : { meta: options.meta }),
+      ...(options?.setup === undefined ? {} : { setup: options.setup }),
     })
     try {
+      // The created Session is already live when create() resolves, so the DSH
+      // workspace registry can archive it before any Agent Workspace delivery
+      // makes it a visible ordinary conversation.
+      await this.source.hideSession?.(sessionId)
       await this.source.recordSessionId(agentId, sessionId)
     } catch (error) {
       await handle.dispose()

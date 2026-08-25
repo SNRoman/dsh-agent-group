@@ -7,6 +7,12 @@ overrides:
   '@deepseek-ai/dsh-agent': link:../../deepseek-harness/packages/core/agent
   '@deepseek-ai/dsh-attachment': link:../../deepseek-harness/packages/attachment/attachment
   '@deepseek-ai/dsh-brand': link:../../deepseek-harness/packages/util/brand
+  '@deepseek-ai/dsh-client-connection': link:../../deepseek-harness/packages/client/connection
+  '@deepseek-ai/dsh-client-runtime': link:../../deepseek-harness/packages/client/runtime
+  '@deepseek-ai/dsh-client-ui-layout': link:../../deepseek-harness/packages/client/ui-layout
+  '@deepseek-ai/dsh-client-ui-primitives': link:../../deepseek-harness/packages/client/ui-primitives
+  '@deepseek-ai/dsh-client-ui-sidebar': link:../../deepseek-harness/packages/client/ui-sidebar
+  '@deepseek-ai/dsh-client-ui-slots': link:../../deepseek-harness/packages/client/ui-slots
   '@deepseek-ai/dsh-invariants': link:../../deepseek-harness/packages/runtime-diagnostics/invariants
   '@deepseek-ai/dsh-llm': link:../../deepseek-harness/packages/llm/llm
   '@deepseek-ai/dsh-scope': link:../../deepseek-harness/packages/core/scope
