@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+        with:
+          path: plugin/dsh-agent-group
+
+      - name: Checkout DeepSeek Harness
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          path: deepseek-harness
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: |
+            deepseek-harness/pnpm-lock.yaml
+            plugin/dsh-agent-group/pnpm-lock.yaml
+
+      - name: Install Harness dependencies
+        working-directory: deepseek-harness
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Harness host libraries
+        working-directory: deepseek-harness
+        run: pnpm build:lib:host
+
+      - name: Install plugin dependencies
+        working-directory: plugin/dsh-agent-group
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: plugin/dsh-agent-group
+        shell: bash
+        run: set -o pipefail; pnpm build 2>&1 | tee build.log
+
+      - name: Typecheck
+        working-directory: plugin/dsh-agent-group
+        shell: bash
+        run: set -o pipefail; pnpm typecheck 2>&1 | tee typecheck.log
+
+      - name: Test
+        working-directory: plugin/dsh-agent-group
+        shell: bash
+        run: set -o pipefail; pnpm test 2>&1 | tee test.log
+
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-logs
+          path: |
+            plugin/dsh-agent-group/build.log
+            plugin/dsh-agent-group/typecheck.log
+            plugin/dsh-agent-group/test.log
+          if-no-files-found: ignore

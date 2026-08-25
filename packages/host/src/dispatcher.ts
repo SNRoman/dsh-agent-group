@@ -9,8 +9,12 @@ import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import { AgentId, HumanId, RoomId, TaskId } from './ids.ts'
+import type { ChildRunId as ChildId } from './ids.ts'
+import { finishChildRun } from './child-runs.ts'
 import { recallAgentEvents } from './memory.ts'
-import { completeTask, recordChildRunFinished, recordChildRunStarted } from './tasks.ts'
+import { assertRoomMessageAuthorized } from './room-policy.ts'
+import { completeTask, recordChildRunStarted } from './tasks.ts'
+import { assertAssignedTaskRunnable } from './task-policy.ts'
 import type { DeliveryOutcome } from './turn-tracker.ts'
 import type { WorkspaceActor, WorkspaceCommand, WorkspaceState } from './types.ts'
 
@@ -58,9 +62,11 @@ interface PendingWake {
 const MENTION_RE = /<@([^>\s]+)>/g
 
 /**
- * Serializes room-message dispatch: one delivery at a time, each agent reply
- * recorded before its mentions schedule the next hop, and the shared hop and
- * reply budgets stop runaway agent-to-agent conversation.
+ * Serializes each root room-message dispatch internally: one delivery at a
+ * time, each agent reply recorded before its mentions schedule the next hop,
+ * and the shared hop and reply budgets stop runaway agent-to-agent
+ * conversation. Separate root dispatches may overlap; durable mutations are
+ * serialized by the workspace domain boundary.
  */
 export class WorkspaceDispatcher {
   constructor(
@@ -83,8 +89,7 @@ export class WorkspaceDispatcher {
   /** Deliver one formal task to its assigned agent and complete it. */
   async runAssignedTask(agentId: AgentId, taskId: TaskId): Promise<string> {
     const state = this.host.snapshot()
-    const task = state.tasks[taskId]
-    if (task === undefined) throw new Error(`task '${taskId}' does not exist`)
+    const task = assertAssignedTaskRunnable(state, agentId, taskId)
     const reply = await this.wake(agentId, undefined, task.title)
     await this.host.apply(current => completeTask(current, { actorAgentId: agentId, taskId }).state)
     return reply
@@ -92,37 +97,68 @@ export class WorkspaceDispatcher {
 
   /**
    * Run one one-shot child for a parent agent and record its terminal result
-   * into the parent's memory. The run is always disposed.
+   * into the parent's memory. The run is always disposed. The committed child
+   * id is captured inside the serialized mutation so concurrent starts cannot
+   * reuse a stale snapshot id.
    */
-  async runChild(parentAgentId: AgentId, taskId: TaskId, prompt: string): Promise<string> {
+  async runChild(parentAgentId: AgentId, taskId: TaskId, prompt: string, signal: AbortSignal = new AbortController().signal): Promise<string> {
     const handle = await this.host.ensureEmployee(parentAgentId)
-    // The dispatcher serializes its own operations, so the snapshot here and
-    // the apply below observe the same aggregate revision; the child-run id is
-    // deterministic given that state.
-    const prepared = recordChildRunStarted(this.host.snapshot(), { parentAgentId, taskId })
-    await this.host.apply(current => recordChildRunStarted(current, { parentAgentId, taskId }).state)
-    const run = await this.subagents.start(this.provider, {
-      parent: handle.agent,
-      prompt: [{ type: 'text', text: prompt }],
-      signal: new AbortController().signal,
-      label: `workspace-child:${taskId}`,
+    let publishedChildRunId: ChildId | undefined
+    await this.host.apply(current => {
+      const started = recordChildRunStarted(current, { parentAgentId, taskId })
+      publishedChildRunId = started.childRunId
+      return started.state
     })
-    let result: { readonly output: ContentBlock[]; readonly stopReason: string }
+    if (publishedChildRunId === undefined) throw new Error('child run start did not publish an id')
+    const childRunId: ChildId = publishedChildRunId
+
+    let run: OneShotSubagentRun | undefined
+    let result: { readonly output: ContentBlock[]; readonly stopReason: string } | undefined
+    let failure: unknown
     try {
+      run = await this.subagents.start(this.provider, {
+        parent: handle.agent,
+        prompt: [{ type: 'text', text: prompt }],
+        signal,
+        label: `workspace-child:${taskId}`,
+      })
       result = await run.result
+    } catch (error) {
+      failure = error
     } finally {
-      await run.dispose()
+      if (run !== undefined) {
+        try {
+          await run.dispose()
+        } catch (error) {
+          if (failure === undefined) failure = error
+        }
+      }
     }
+
+    if (failure !== undefined) {
+      const status = signal.aborted ? 'cancelled' : 'failed'
+      await this.host.apply(current => finishChildRun(current, {
+        childRunId,
+        status,
+        result: status === 'cancelled' ? 'Child run cancelled.' : 'Child run failed.',
+      }).state)
+      throw failure
+    }
+    if (result === undefined) throw new Error('child run settled without a result')
+
     const output = textOf(result.output)
-    await this.host.apply(current => recordChildRunFinished(current, {
-      childRunId: prepared.childRunId,
-      status: result.stopReason === 'completed' ? 'completed' : 'failed',
-      result: output,
+    const status = childStatus(result.stopReason)
+    const terminalText = output.trim() === '' ? fallbackChildResult(status) : output
+    await this.host.apply(current => finishChildRun(current, {
+      childRunId,
+      status,
+      result: terminalText,
     }).state)
     return output
   }
 
   private async dispatch(roomId: RoomId, actor: WorkspaceActor, text: string, mentions: readonly AgentId[]): Promise<void> {
+    assertRoomMessageAuthorized(this.host.snapshot(), roomId, actor, mentions)
     await this.host.execute({ type: 'room/message', roomId, actor, text, mentions })
     const queue: PendingWake[] = mentions.map(agentId => ({ agentId, triggeredBy: text, depth: 1 }))
     let replies = 0
@@ -140,7 +176,9 @@ export class WorkspaceDispatcher {
       replies++
       const next = parseMentions(reply)
       if (reply.trim() !== '') {
-        await this.host.execute({ type: 'room/message', roomId, actor: { type: 'agent', id: item.agentId }, text: reply, mentions: next })
+        const actor: WorkspaceActor = { type: 'agent', id: item.agentId }
+        assertRoomMessageAuthorized(this.host.snapshot(), roomId, actor, next)
+        await this.host.execute({ type: 'room/message', roomId, actor, text: reply, mentions: next })
       }
       for (const nextAgentId of next) {
         queue.push({ agentId: nextAgentId, triggeredBy: reply, depth: item.depth + 1 })
@@ -188,4 +226,16 @@ function parseMentions(text: string): AgentId[] {
     if (id !== undefined) ids.add(AgentId(id))
   }
   return [...ids]
+}
+
+function childStatus(stopReason: string): 'completed' | 'failed' | 'cancelled' {
+  if (stopReason === 'completed') return 'completed'
+  if (stopReason === 'aborted') return 'cancelled'
+  return 'failed'
+}
+
+function fallbackChildResult(status: 'completed' | 'failed' | 'cancelled'): string {
+  if (status === 'completed') return 'Child run completed without textual output.'
+  if (status === 'cancelled') return 'Child run cancelled without textual output.'
+  return 'Child run failed without textual output.'
 }
