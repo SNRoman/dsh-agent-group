@@ -1,6 +1,23 @@
 {
   "name": "@dsh-agent-group/web",
   "version": "0.1.0",
+  "description": "Additive Agent Workspace browser UI for DeepSeek Harness.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SNRoman/dsh-agent-group.git",
+    "directory": "packages/web"
+  },
+  "homepage": "https://github.com/SNRoman/dsh-agent-group#readme",
+  "bugs": {
+    "url": "https://github.com/SNRoman/dsh-agent-group/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/types/index.d.ts",
@@ -16,6 +33,14 @@
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.js",
+    "lib/types/**/*.d.ts",
+    "src/**/*.ts",
+    "src/**/*.tsx"
+  ],
   "dsh": {
     "client": {
       "inject": [
@@ -31,21 +56,22 @@
     "build": "tsc -b tsconfig.client.json && tsdown"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": ">=0.1.0-rc.7 <0.2.0",
-    "@deepseek-ai/dsh-client-connection": ">=0.1.0-rc.7 <0.2.0",
-    "@deepseek-ai/dsh-client-runtime": ">=0.1.0-rc.7 <0.2.0",
-    "@deepseek-ai/dsh-client-ui-layout": ">=0.1.0-rc.7 <0.2.0",
-    "@deepseek-ai/dsh-client-ui-sidebar": ">=0.1.0-rc.7 <0.2.0",
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-connection": ">=0.1.1-rc.2 <0.1.2-0",
+    "@deepseek-ai/dsh-client-runtime": ">=0.1.1-rc.2 <0.1.2-0",
+    "@deepseek-ai/dsh-client-ui-layout": ">=0.1.1-rc.2 <0.1.2-0",
+    "@deepseek-ai/dsh-client-ui-primitives": ">=0.1.1-rc.2 <0.1.2-0",
+    "@deepseek-ai/dsh-client-ui-sidebar": ">=0.1.1-rc.2 <0.1.2-0",
     "react": "^18.2.0"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": ">=0.1.0-rc.7 <0.2.0",
-    "@deepseek-ai/dsh-client-connection": ">=0.1.0-rc.7 <0.2.0",
-    "@deepseek-ai/dsh-client-runtime": ">=0.1.0-rc.7 <0.2.0",
-    "@deepseek-ai/dsh-client-ui-layout": ">=0.1.0-rc.7 <0.2.0",
-    "@deepseek-ai/dsh-client-ui-primitives": ">=0.1.0-rc.7 <0.2.0",
-    "@deepseek-ai/dsh-client-ui-sidebar": ">=0.1.0-rc.7 <0.2.0",
-    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.7 <0.2.0",
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-connection": ">=0.1.1-rc.2 <0.1.2-0",
+    "@deepseek-ai/dsh-client-runtime": ">=0.1.1-rc.2 <0.1.2-0",
+    "@deepseek-ai/dsh-client-ui-layout": ">=0.1.1-rc.2 <0.1.2-0",
+    "@deepseek-ai/dsh-client-ui-primitives": ">=0.1.1-rc.2 <0.1.2-0",
+    "@deepseek-ai/dsh-client-ui-sidebar": ">=0.1.1-rc.2 <0.1.2-0",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.1-rc.2 <0.1.2-0",
     "@types/react": "~18.3.1",
     "react": "^18.2.0"
   }

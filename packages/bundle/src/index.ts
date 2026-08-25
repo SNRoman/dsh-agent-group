@@ -1,5 +1,5 @@
 /**
- * Bundle entry reserved for mounting the Host and Browser packages.
- * @returns Nothing while the scaffold has no bundle registrations.
+ * Profile-bundle Node entry. Runtime services are mounted declaratively by
+ * `cordis.patch.yml`, so the bundle entry itself intentionally has no work.
  */
 export function apply(): void {}
