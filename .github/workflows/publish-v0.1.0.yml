@@ -24,6 +24,7 @@ jobs:
       - name: Checkout plugin
         uses: actions/checkout@v4
         with:
+          ref: a659ee3827a4cd77188e24ad3a7d1ed20145813b
           path: plugin/dsh-agent-group
 
       - name: Verify release source
@@ -31,8 +32,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git diff --exit-code HEAD^ HEAD -- . ':(exclude).github/workflows/publish-v0.1.0.yml'
-          test "$(git rev-parse HEAD^)" = "a659ee3827a4cd77188e24ad3a7d1ed20145813b"
+          test "$(git rev-parse HEAD)" = "a659ee3827a4cd77188e24ad3a7d1ed20145813b"
+          test -z "$(git status --short)"
 
       - name: Checkout verified DeepSeek Harness
         uses: actions/checkout@v4
