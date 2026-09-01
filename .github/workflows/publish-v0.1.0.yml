@@ -105,19 +105,34 @@ jobs:
           publish_if_missing '@dsh-agent-group/web' './release/dsh-agent-group-web-0.1.0.tgz'
           publish_if_missing 'dsh-agent-group' './release/dsh-agent-group-0.1.0.tgz'
 
-      - name: Verify registry versions
+      - name: Ensure scoped packages are public
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          for package_name in '@dsh-agent-group/host' '@dsh-agent-group/web'; do
+            npm access set status=public "$package_name"
+            status="$(npm access get status "$package_name" --json)"
+            grep -q '"public"' <<<"$status"
+            echo "Public access confirmed for $package_name"
+          done
+
+      - name: Verify anonymous registry access
         shell: bash
         run: |
           set -euo pipefail
+          unset NODE_AUTH_TOKEN
+          export NPM_CONFIG_USERCONFIG=/dev/null
           for package_name in '@dsh-agent-group/host' '@dsh-agent-group/web' 'dsh-agent-group'; do
             found=''
-            for attempt in {1..12}; do
-              found="$(npm view "$package_name@0.1.0" version --json 2>/dev/null || true)"
+            for attempt in {1..24}; do
+              found="$(npm view "$package_name@0.1.0" version --json --registry=https://registry.npmjs.org/ 2>/dev/null || true)"
               if grep -q '0.1.0' <<<"$found"; then
                 break
               fi
               sleep 5
             done
             grep -q '0.1.0' <<<"$found"
-            echo "Verified $package_name@0.1.0"
+            echo "Anonymous access verified for $package_name@0.1.0"
           done
