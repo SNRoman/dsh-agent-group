@@ -13,7 +13,10 @@
     "build:bundle": "pnpm --filter dsh-agent-group run build",
     "build": "pnpm build:host && pnpm build:web && pnpm build:bundle",
     "test": "vitest run",
-    "typecheck": "tsc -b tsconfig.host.json && tsc -b packages/web/tsconfig.client.json"
+    "typecheck": "tsc -b tsconfig.host.json && tsc -b packages/web/tsconfig.client.json",
+    "release:check": "pnpm build && pnpm typecheck && pnpm test",
+    "release:pack": "pnpm release:check && node scripts/release.mjs pack",
+    "release:publish": "pnpm release:check && node scripts/release.mjs publish"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "link:../../deepseek-harness/vendor/cordis",
