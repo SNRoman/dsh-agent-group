@@ -1,0 +1,122 @@
+name: Publish v0.1.0
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/publish-v0.1.0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-v0.1.0
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+        with:
+          path: plugin/dsh-agent-group
+
+      - name: Verify release source
+        working-directory: plugin/dsh-agent-group
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code HEAD^ HEAD -- . ':(exclude).github/workflows/publish-v0.1.0.yml'
+          test "$(git rev-parse HEAD^)" = "a659ee3827a4cd77188e24ad3a7d1ed20145813b"
+
+      - name: Checkout verified DeepSeek Harness
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: b150a551b8d465e31e418e1b2eaf5e79bbb7d28e # 0.1.1-rc.2
+          path: deepseek-harness
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
+          cache-dependency-path: |
+            deepseek-harness/pnpm-lock.yaml
+            plugin/dsh-agent-group/pnpm-lock.yaml
+
+      - name: Install and build Harness libraries
+        working-directory: deepseek-harness
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build:lib
+
+      - name: Build, test, and pack plugin
+        working-directory: plugin/dsh-agent-group
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm release:pack
+
+      - name: Inspect packed manifests
+        working-directory: plugin/dsh-agent-group
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tgz in release/*.tgz; do
+            manifest="$(tar -xOf "$tgz" package/package.json)"
+            if grep -Eq 'workspace:|link:' <<<"$manifest"; then
+              echo "Packed manifest leaked a development dependency: $tgz" >&2
+              exit 1
+            fi
+          done
+
+      - name: Publish packages in dependency order
+        working-directory: plugin/dsh-agent-group
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          publish_if_missing() {
+            local package_name="$1"
+            local tarball="$2"
+            if npm view "$package_name@0.1.0" version --json >/dev/null 2>&1; then
+              echo "$package_name@0.1.0 already exists; skipping"
+            else
+              npm publish "$tarball" --access public --provenance
+            fi
+          }
+
+          publish_if_missing '@dsh-agent-group/host' './release/dsh-agent-group-host-0.1.0.tgz'
+          publish_if_missing '@dsh-agent-group/web' './release/dsh-agent-group-web-0.1.0.tgz'
+          publish_if_missing 'dsh-agent-group' './release/dsh-agent-group-0.1.0.tgz'
+
+      - name: Verify registry versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          for package_name in '@dsh-agent-group/host' '@dsh-agent-group/web' 'dsh-agent-group'; do
+            found=''
+            for attempt in {1..12}; do
+              found="$(npm view "$package_name@0.1.0" version --json 2>/dev/null || true)"
+              if grep -q '0.1.0' <<<"$found"; then
+                break
+              fi
+              sleep 5
+            done
+            grep -q '0.1.0' <<<"$found"
+            echo "Verified $package_name@0.1.0"
+          done
