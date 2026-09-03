@@ -11,7 +11,7 @@ import {
   WorkspaceId,
 } from '../packages/host/src/ids.ts'
 import { assertWorkspaceInvariants } from '../packages/host/src/invariant.ts'
-import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
+import { appendWorkspaceEvent, createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import {
   assignDelegatedTask,
   assignHumanTask,
@@ -56,6 +56,22 @@ function buildState(): WorkspaceState {
 }
 
 type Corruption = readonly [string, (state: WorkspaceState) => WorkspaceState, RegExp]
+
+function buildEmploymentHistory(departureCount: number): WorkspaceState {
+  let state = createInitialState(WorkspaceId('local'))
+  const definition = mutateWorkspace(state, { type: 'definition/create', name: 'Worker', description: 'd', instructions: 'i' })
+  const agent = mutateWorkspace(definition.state, {
+    type: 'agent/create', definitionId: definition.definitionId, name: 'Alice',
+  })
+  state = agent.state
+  for (let index = 0; index < departureCount; index++) {
+    state = mutateWorkspace(state, { type: 'agent/depart', agentId: agent.agentId }).state
+    if (index + 1 < departureCount) {
+      state = mutateWorkspace(state, { type: 'agent/employ', agentId: agent.agentId }).state
+    }
+  }
+  return state
+}
 
 const relationshipCorruptions: readonly Corruption[] = [
   ['definition map key', state => {
@@ -136,7 +152,7 @@ const relationshipCorruptions: readonly Corruption[] = [
     return { ...state, memberships: { ...state.memberships, [membership.id]: { ...membership, joinedEventId: WorkspaceEventId('missing') } } }
   }, /membership.*join event/],
   ['event id uniqueness', state => ({ ...state, events: [...state.events, state.events[0]!] }), /duplicate event id/],
-  ['event sequence uniqueness', state => ({ ...state, events: state.events.map((event, index) => index === 0 ? { ...event, sequence: 2 } : event) }), /event sequence/],
+  ['event sequence uniqueness', state => ({ ...state, events: state.events.map((event, index) => index === 0 ? { ...event, sequence: 2 } : event) }), /event id|event sequence/],
   ['memory id uniqueness', state => ({ ...state, memoryEntries: [...state.memoryEntries, state.memoryEntries[0]!] }), /duplicate memory entry id/],
   ['memory association uniqueness', state => {
     const entry = state.memoryEntries[0]!
@@ -182,6 +198,129 @@ describe('assertWorkspaceInvariants', () => {
 
   test.each(relationshipCorruptions)('rejects broken %s ownership', (_name, corrupt, expected) => {
     expect(() => assertWorkspaceInvariants(corrupt(buildState()), WorkspaceId('local'))).toThrow(expected)
+  })
+
+  test('accepts strictly ordered consecutive employment periods', () => {
+    expect(() => assertWorkspaceInvariants(buildEmploymentHistory(3), WorkspaceId('local'))).not.toThrow()
+  })
+
+  test('rejects employment periods that reuse one departure event', () => {
+    const state = buildEmploymentHistory(3)
+    const agent = Object.values(state.agents)[0]!
+    const [first, second, third] = agent.employmentPeriods
+    const corrupt: WorkspaceState = {
+      ...state,
+      agents: {
+        ...state.agents,
+        [agent.id]: {
+          ...agent,
+          employmentPeriods: [
+            { ...first!, endedEventId: second!.endedEventId },
+            second!,
+            third!,
+          ],
+        },
+      },
+    }
+    expect(() => assertWorkspaceInvariants(corrupt, WorkspaceId('local'))).toThrow(/departure event.*more than one employment period/)
+  })
+
+  test('rejects employment periods stored out of chronological order', () => {
+    const state = buildEmploymentHistory(3)
+    const agent = Object.values(state.agents)[0]!
+    const [first, second, third] = agent.employmentPeriods
+    const corrupt: WorkspaceState = {
+      ...state,
+      agents: {
+        ...state.agents,
+        [agent.id]: { ...agent, employmentPeriods: [first!, third!, second!] },
+      },
+    }
+    expect(() => assertWorkspaceInvariants(corrupt, WorkspaceId('local'))).toThrow(/employment periods.*chronological order/)
+  })
+
+  test('rejects employment periods that overlap', () => {
+    const state = buildEmploymentHistory(2)
+    const agent = Object.values(state.agents)[0]!
+    const [withExtraDeparture, extraDeparture] = appendWorkspaceEvent(state, 'agent/departed', agent.id)
+    const [first, second] = agent.employmentPeriods
+    const corrupt: WorkspaceState = {
+      ...withExtraDeparture,
+      agents: {
+        ...withExtraDeparture.agents,
+        [agent.id]: {
+          ...agent,
+          employmentPeriods: [{ ...first!, endedEventId: extraDeparture.id }, second!],
+        },
+      },
+    }
+    expect(() => assertWorkspaceInvariants(corrupt, WorkspaceId('local'))).toThrow(/employment periods.*overlap/)
+  })
+
+  test('rejects a departure event from another agent as a membership leave event', () => {
+    let state = createInitialState(WorkspaceId('local'))
+    const definition = mutateWorkspace(state, { type: 'definition/create', name: 'Worker', description: 'd', instructions: 'i' })
+    const alice = mutateWorkspace(definition.state, { type: 'agent/create', definitionId: definition.definitionId, name: 'Alice' })
+    const bob = mutateWorkspace(alice.state, { type: 'agent/create', definitionId: definition.definitionId, name: 'Bob' })
+    const room = mutateWorkspace(bob.state, { type: 'room/create', kind: 'group', name: 'room' })
+    const joinedAlice = mutateWorkspace(room.state, {
+      type: 'room/join', roomId: room.roomId, agentId: alice.agentId, memoryStart: { type: 'new-events' },
+    })
+    const joinedBob = mutateWorkspace(joinedAlice.state, {
+      type: 'room/join', roomId: room.roomId, agentId: bob.agentId, memoryStart: { type: 'new-events' },
+    })
+    const departedAlice = mutateWorkspace(joinedBob.state, { type: 'agent/depart', agentId: alice.agentId })
+    const departedBob = mutateWorkspace(departedAlice.state, { type: 'agent/depart', agentId: bob.agentId })
+    const aliceMembership = Object.values(departedBob.state.memberships)
+      .find(membership => membership.agentId === alice.agentId)!
+    const bobMembership = Object.values(departedBob.state.memberships)
+      .find(membership => membership.agentId === bob.agentId)!
+    const corrupt: WorkspaceState = {
+      ...departedBob.state,
+      memberships: {
+        ...departedBob.state.memberships,
+        [aliceMembership.id]: { ...aliceMembership, leftEventId: bobMembership.leftEventId },
+      },
+    }
+    expect(() => assertWorkspaceInvariants(corrupt, WorkspaceId('local'))).toThrow(/departure event.*another agent/)
+  })
+
+  test('rejects an event id whose suffix does not equal its sequence', () => {
+    const state = buildState()
+    const event = state.events[0]!
+    const corrupt: WorkspaceState = {
+      ...state,
+      events: [{ ...event, id: WorkspaceEventId('event-999') }, ...state.events.slice(1)],
+    }
+    expect(() => assertWorkspaceInvariants(corrupt, WorkspaceId('local'))).toThrow(/event id.*sequence/)
+  })
+
+  test('rejects a delegated-task event whose actor does not own its grant', () => {
+    const state = buildState()
+    const definition = Object.values(state.definitions)[0]!
+    const bob = mutateWorkspace(state, { type: 'agent/create', definitionId: definition.id, name: 'Bob' })
+    const index = bob.state.events.findIndex(event => event.type === 'task/delegated')
+    const event = bob.state.events[index]!
+    const corrupt: WorkspaceState = {
+      ...bob.state,
+      events: bob.state.events.with(index, { ...event, actor: { type: 'agent', id: bob.agentId } }),
+    }
+    expect(() => assertWorkspaceInvariants(corrupt, WorkspaceId('local'))).toThrow(/delegated task.*grant grantee/)
+  })
+
+  test('rejects a child finish event ordered before its start event', () => {
+    const state = buildState()
+    const startIndex = state.events.findIndex(event => event.type === 'child/run-started')
+    const finishIndex = state.events.findIndex(event => event.type === 'child/run-finished')
+    const start = state.events[startIndex]!
+    const finish = state.events[finishIndex]!
+    const corrupt: WorkspaceState = {
+      ...state,
+      events: state.events
+        .with(startIndex, { ...finish, id: start.id, sequence: start.sequence })
+        .with(finishIndex, { ...start, id: finish.id, sequence: finish.sequence }),
+    }
+    expect(() => assertWorkspaceInvariants(corrupt, WorkspaceId('local'))).toThrow(/finish event.*after.*start event/)
   })
 
   test('rejects more than one active membership in a direct room', () => {

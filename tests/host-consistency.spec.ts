@@ -205,6 +205,28 @@ async function boot(): Promise<Booted> {
 }
 
 describe('durable service boundary', () => {
+  test('departing an agent closes its active membership with the departure event', async () => {
+    const booted = await boot()
+    await booted.service.execute({ type: 'definition/create', name: 'Worker', description: 'd', instructions: 'i' })
+    let snapshot = booted.service.snapshot()
+    const definition = Object.values(snapshot.definitions)[0]!
+    await booted.service.execute({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+    await booted.service.execute({ type: 'room/create', kind: 'group', name: 'room' })
+    snapshot = booted.service.snapshot()
+    const alice = Object.values(snapshot.agents)[0]!
+    const room = Object.values(snapshot.rooms)[0]!
+    await booted.service.execute({
+      type: 'room/join', roomId: room.id, agentId: alice.id, memoryStart: { type: 'new-events' },
+    })
+
+    const departed = await booted.service.execute({ type: 'agent/depart', agentId: alice.id })
+
+    const membership = Object.values(departed.memberships)[0]!
+    const departure = departed.events.find(event => event.id === membership.leftEventId)
+    expect(departure).toMatchObject({ type: 'agent/departed', subjectId: alice.id })
+    await booted.dispose()
+  })
+
   test('public room join synchronizes the requested historical room range', async () => {
     const booted = await boot()
     await booted.service.execute({ type: 'definition/create', name: 'Worker', description: 'd', instructions: 'i' })

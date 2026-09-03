@@ -60,6 +60,8 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
   }
 
   const employmentPeriodIds = new Set<string>()
+  const employmentStartEventIds = new Set<string>()
+  const employmentEndEventIds = new Set<string>()
   for (const agent of Object.values(state.agents)) {
     const definition = state.definitions[agent.definitionId]
     if (definition === undefined) throw new Error(`agent '${agent.id}' references missing definition '${agent.definitionId}'`)
@@ -69,6 +71,8 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
       throw new Error(`agent '${agent.id}' definition revision '${revision.id}' belongs to another definition`)
     }
     if (agent.employmentPeriods.length === 0) throw new Error(`agent '${agent.id}' has no employment periods`)
+    let previousStartSequence = 0
+    let previousEndSequence: number | undefined
     for (const [index, period] of agent.employmentPeriods.entries()) {
       if (employmentPeriodIds.has(period.id)) throw new Error(`duplicate employment period id '${period.id}'`)
       employmentPeriodIds.add(period.id)
@@ -77,16 +81,34 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
       if (started?.type !== expectedStartType || started.subjectId !== agent.id) {
         throw new Error(`agent '${agent.id}' employment period '${period.id}' has invalid start event '${period.startedEventId}'`)
       }
+      if (employmentStartEventIds.has(started.id)) {
+        throw new Error(`employment start event '${started.id}' belongs to more than one employment period`)
+      }
+      employmentStartEventIds.add(started.id)
+      if (started.sequence <= previousStartSequence) {
+        throw new Error(`agent '${agent.id}' employment periods are not in chronological order`)
+      }
+      let endedSequence: number | undefined
       if (period.endedEventId !== undefined) {
         const ended = events.get(period.endedEventId)
         if (ended?.type !== 'agent/departed' || ended.subjectId !== agent.id || ended.sequence <= started.sequence) {
           throw new Error(`agent '${agent.id}' employment period '${period.id}' has invalid end event '${period.endedEventId}'`)
         }
+        if (employmentEndEventIds.has(ended.id)) {
+          throw new Error(`departure event '${ended.id}' belongs to more than one employment period`)
+        }
+        employmentEndEventIds.add(ended.id)
+        endedSequence = ended.sequence
+      }
+      if (previousEndSequence !== undefined && previousEndSequence >= started.sequence) {
+        throw new Error(`agent '${agent.id}' employment periods overlap`)
       }
       const isLast = index === agent.employmentPeriods.length - 1
       if (!isLast && period.endedEventId === undefined) {
         throw new Error(`agent '${agent.id}' has an open employment period before its latest period`)
       }
+      previousStartSequence = started.sequence
+      previousEndSequence = endedSequence
     }
     const latest = agent.employmentPeriods.at(-1)!
     const expectedStatus = latest.endedEventId === undefined ? 'employed' : 'departed'
@@ -107,7 +129,18 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
     }
     if (membership.leftEventId !== undefined) {
       const left = events.get(membership.leftEventId)
-      if (left?.type !== 'room/member-left' || left.subjectId !== membership.id || left.sequence <= joined.sequence) {
+      if (left === undefined || left.sequence <= joined.sequence) {
+        throw new Error(`membership '${membership.id}' has invalid leave event '${membership.leftEventId}'`)
+      }
+      if (left.type === 'room/member-left') {
+        if (left.subjectId !== membership.id) {
+          throw new Error(`membership '${membership.id}' has invalid leave event '${membership.leftEventId}'`)
+        }
+      } else if (left.type === 'agent/departed') {
+        if (left.subjectId !== membership.agentId) {
+          throw new Error(`membership '${membership.id}' departure event '${left.id}' belongs to another agent`)
+        }
+      } else {
         throw new Error(`membership '${membership.id}' has invalid leave event '${membership.leftEventId}'`)
       }
     } else {
@@ -192,6 +225,9 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
       if (finishes[0]!.childRunStatus !== childRun.status) {
         throw new Error(`child run '${childRun.id}' terminal status disagrees with its finish event`)
       }
+      if (finishes[0]!.sequence <= starts[0]!.sequence) {
+        throw new Error(`child run '${childRun.id}' finish event must occur after its start event`)
+      }
     }
   }
 
@@ -220,15 +256,23 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
 
   for (const event of state.events) assertEventRelationships(state, event)
   let lastSequence = 0
+  let greatestEventId = 0
   const sequences = new Set<number>()
   for (const event of state.events) {
+    const eventIdMatch = /^event-(\d+)$/.exec(event.id)
+    const eventNumber = eventIdMatch === null ? Number.NaN : Number(eventIdMatch[1])
+    if (!Number.isSafeInteger(eventNumber) || eventNumber !== event.sequence || event.id !== `event-${event.sequence}`) {
+      throw new Error(`event id '${event.id}' does not match sequence '${event.sequence}'`)
+    }
     if (sequences.has(event.sequence)) throw new Error(`duplicate event sequence '${event.sequence}'`)
     if (event.sequence <= lastSequence) throw new Error(`event sequence '${event.sequence}' is not ordered after '${lastSequence}'`)
     sequences.add(event.sequence)
     lastSequence = event.sequence
+    greatestEventId = Math.max(greatestEventId, eventNumber)
   }
-  if (state.nextSequence <= lastSequence) {
-    throw new Error(`nextSequence ${state.nextSequence} is not above the last event sequence ${lastSequence}`)
+  const greatestEventNumber = Math.max(lastSequence, greatestEventId)
+  if (state.nextSequence <= greatestEventNumber) {
+    throw new Error(`nextSequence ${state.nextSequence} is not above the last event sequence or event id ${greatestEventNumber}`)
   }
   const greatestId = greatestDurableId(state)
   if (state.nextId <= greatestId) throw new Error(`nextId ${state.nextId} is not above the greatest durable id ${greatestId}`)
@@ -276,9 +320,16 @@ function assertEventRelationships(state: WorkspaceState, event: WorkspaceEvent):
       requireEventSubject(event, state.memberships, 'membership')
       return
     case 'task/assigned':
-    case 'task/delegated':
       requireEventSubject(event, state.taskAssignments, 'task assignment')
       return
+    case 'task/delegated': {
+      const assignment = requireEventSubject(event, state.taskAssignments, 'task assignment')
+      const grant = assignment.grantId === undefined ? undefined : state.delegationGrants[assignment.grantId]
+      if (grant === undefined || event.actor?.type !== 'agent' || event.actor.id !== grant.granteeAgentId) {
+        throw new Error(`delegated task event '${event.id}' actor is not its grant grantee`)
+      }
+      return
+    }
     case 'task/delegation-granted':
       requireEventSubject(event, state.delegationGrants, 'delegation grant')
       return
