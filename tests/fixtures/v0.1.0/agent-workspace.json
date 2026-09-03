@@ -1,0 +1,122 @@
+{
+  "unit": {
+    "name": "agent_workspace",
+    "version": 0
+  },
+  "global": null,
+  "tables": {
+    "workspaces": {
+      "local": {
+        "workspaceId": "local",
+        "revision": 5,
+        "nextId": 8,
+        "nextSequence": 6,
+        "definitions": {
+          "definition-1": {
+            "id": "definition-1",
+            "name": "Java engineer",
+            "revisionIds": [
+              "definition-revision-2"
+            ],
+            "currentRevisionId": "definition-revision-2"
+          }
+        },
+        "definitionRevisions": {
+          "definition-revision-2": {
+            "id": "definition-revision-2",
+            "definitionId": "definition-1",
+            "number": 1,
+            "description": "Build Java services",
+            "instructions": "Act as a Java engineer."
+          }
+        },
+        "agents": {
+          "agent-3": {
+            "id": "agent-3",
+            "name": "Alice",
+            "definitionId": "definition-1",
+            "definitionRevisionId": "definition-revision-2",
+            "employmentStatus": "employed",
+            "employmentPeriods": [
+              {
+                "id": "employment-4",
+                "startedEventId": "event-2"
+              }
+            ]
+          }
+        },
+        "rooms": {
+          "room-5": {
+            "id": "room-5",
+            "kind": "group",
+            "name": "engineering"
+          }
+        },
+        "memberships": {
+          "membership-6": {
+            "id": "membership-6",
+            "roomId": "room-5",
+            "agentId": "agent-3",
+            "memoryStart": {
+              "type": "new-events"
+            },
+            "joinedEventId": "event-4"
+          }
+        },
+        "events": [
+          {
+            "id": "event-1",
+            "sequence": 1,
+            "subjectId": "definition-1",
+            "type": "definition/created"
+          },
+          {
+            "id": "event-2",
+            "sequence": 2,
+            "subjectId": "agent-3",
+            "type": "agent/created"
+          },
+          {
+            "id": "event-3",
+            "sequence": 3,
+            "subjectId": "room-5",
+            "type": "room/created"
+          },
+          {
+            "id": "event-4",
+            "sequence": 4,
+            "subjectId": "membership-6",
+            "type": "room/member-joined"
+          },
+          {
+            "id": "event-5",
+            "sequence": 5,
+            "subjectId": "room-5",
+            "type": "room/message",
+            "actor": {
+              "type": "human",
+              "id": "owner"
+            },
+            "text": "Release on Friday",
+            "mentions": [
+              "agent-3"
+            ]
+          }
+        ],
+        "memoryEntries": [
+          {
+            "id": "memory-7",
+            "agentId": "agent-3",
+            "eventId": "event-5",
+            "acquiredBy": "room-membership"
+          }
+        ],
+        "tasks": {},
+        "taskAssignments": {},
+        "delegationGrants": {},
+        "childRuns": {},
+        "sessionBindings": {}
+      }
+    }
+  }
+}

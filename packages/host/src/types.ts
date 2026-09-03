@@ -99,11 +99,35 @@ export type WorkspaceSubjectId =
   | DelegationGrantId
   | ChildRunId
 
+/** Every immutable fact discriminator currently appended by Host code. */
+export const WORKSPACE_EVENT_TYPES = [
+  'definition/created',
+  'definition/revised',
+  'agent/definition-revision-assigned',
+  'agent/created',
+  'agent/departed',
+  'agent/employed',
+  'room/created',
+  'room/member-joined',
+  'room/member-left',
+  'room/message',
+  'runtime/session-bound',
+  'conversation/stopped',
+  'task/assigned',
+  'task/delegation-granted',
+  'task/delegated',
+  'task/completed',
+  'child/run-started',
+  'child/run-finished',
+] as const
+
+/** Closed literal union of every durable workspace event discriminator. */
+export type WorkspaceEventType = typeof WORKSPACE_EVENT_TYPES[number]
+
 /** Fields shared by all immutable, sequence-ordered workspace facts. */
 export interface WorkspaceEventBase {
   readonly id: WorkspaceEventId
   readonly sequence: number
-  readonly type: string
   readonly subjectId?: WorkspaceSubjectId | undefined
   readonly definitionRevisionId?: DefinitionRevisionId | undefined
   readonly actor?: WorkspaceActor | undefined
@@ -119,6 +143,7 @@ export interface ChildRunFinishedEvent extends WorkspaceEventBase {
 
 /** A workspace fact that is not a terminal child result. */
 export interface OtherWorkspaceEvent extends WorkspaceEventBase {
+  readonly type: Exclude<WorkspaceEventType, 'child/run-finished'>
   readonly childRunStatus?: never | undefined
 }
 

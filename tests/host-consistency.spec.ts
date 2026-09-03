@@ -174,6 +174,7 @@ describe('employee pool lifecycle', () => {
 })
 
 interface Booted {
+  ctx: Context
   service: AgentWorkspaceDomainService
   dispose: () => Promise<void>
 }
@@ -195,6 +196,7 @@ async function boot(): Promise<Booted> {
     await ctx.plugin(AgentWorkspaceDomainService),
   ]
   return {
+    ctx,
     service: ctx.agentWorkspace,
     dispose: async () => {
       for (const fiber of [...fibers].reverse()) await fiber.dispose()
@@ -250,6 +252,45 @@ describe('durable service boundary', () => {
     }))).rejects.toThrow(/references missing/)
 
     expect(booted.service.snapshot()).toEqual(before)
+    await booted.dispose()
+  })
+
+  test('unknown durable fields are rejected before commit and change notification', async () => {
+    const booted = await boot()
+    const changed = vi.fn()
+    booted.ctx.on('domain/changed', changed)
+    const before = booted.service.snapshot()
+
+    await expect(booted.service.apply(state => ({ ...state, unknown: true }) as WorkspaceState)).rejects.toThrow()
+
+    expect(booted.service.snapshot()).toEqual(before)
+    expect(changed).not.toHaveBeenCalled()
+    await booted.dispose()
+  })
+
+  test('validates the candidate produced at its serialized update slot', async () => {
+    const booted = await boot()
+    const changed = vi.fn()
+    booted.ctx.on('domain/changed', changed)
+
+    const accepted = booted.service.execute({
+      type: 'definition/create', name: 'Worker', description: 'd', instructions: 'i',
+    })
+    const rejected = booted.service.apply(state => {
+      const definition = Object.values(state.definitions)[0]!
+      return {
+        ...state,
+        definitions: {
+          ...state.definitions,
+          [definition.id]: { ...definition, unknown: true },
+        },
+      } as WorkspaceState
+    })
+
+    const acceptedState = await accepted
+    await expect(rejected).rejects.toThrow()
+    expect(booted.service.snapshot()).toEqual(acceptedState)
+    expect(changed).toHaveBeenCalledTimes(1)
     await booted.dispose()
   })
 })

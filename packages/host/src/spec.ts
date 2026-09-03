@@ -18,6 +18,7 @@ import {
   WorkspaceEventId,
   WorkspaceId,
 } from './ids.ts'
+import { WORKSPACE_EVENT_TYPES } from './types.ts'
 import type { WorkspaceState } from './types.ts'
 import { SessionId } from '@deepseek-ai/dsh-session'
 
@@ -37,15 +38,16 @@ const delegationGrantId = z.string().min(1).transform(DelegationGrantId)
 const childRunId = z.string().min(1).transform(ChildRunId)
 const humanId = z.string().min(1).transform(HumanId)
 const childRunTerminalStatus = z.enum(['completed', 'failed', 'cancelled'])
+const workspaceEventType = z.enum(WORKSPACE_EVENT_TYPES)
 
 const membershipMemoryStart = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('new-events') }),
-  z.object({ type: z.literal('event-range'), startSequence: z.number().int().positive(), endSequence: z.number().int().positive() }),
+  z.object({ type: z.literal('new-events') }).strict(),
+  z.object({ type: z.literal('event-range'), startSequence: z.number().int().positive(), endSequence: z.number().int().positive() }).strict(),
 ])
 
 const workspaceActor = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('human'), id: humanId }),
-  z.object({ type: z.literal('agent'), id: agentId }),
+  z.object({ type: z.literal('human'), id: humanId }).strict(),
+  z.object({ type: z.literal('agent'), id: agentId }).strict(),
 ])
 
 const workspaceSubjectId = z.union([
@@ -62,29 +64,83 @@ const workspaceSubjectId = z.union([
   childRunId,
 ])
 
-const workspaceEvent = z.union([
+const workspaceEventBase = {
+  id: eventId,
+  sequence: z.number().int().positive(),
+  subjectId: workspaceSubjectId.optional(),
+  definitionRevisionId: definitionRevisionId.optional(),
+  actor: workspaceActor.optional(),
+  text: z.string().min(1).optional(),
+  mentions: z.array(agentId).optional(),
+}
+
+const workspaceEvent = z.discriminatedUnion('type', [
   z.object({
-    id: eventId,
-    sequence: z.number().int().positive(),
+    ...workspaceEventBase,
     type: z.literal('child/run-finished'),
-    subjectId: workspaceSubjectId.optional(),
-    definitionRevisionId: definitionRevisionId.optional(),
     childRunStatus: childRunTerminalStatus,
-    actor: workspaceActor.optional(),
-    text: z.string().min(1).optional(),
-    mentions: z.array(agentId).optional(),
-  }),
+  }).strict(),
   z.object({
-    id: eventId,
-    sequence: z.number().int().positive(),
-    type: z.string().min(1).refine(value => value !== 'child/run-finished', 'child/run-finished event requires a terminal status'),
-    subjectId: workspaceSubjectId.optional(),
-    definitionRevisionId: definitionRevisionId.optional(),
+    ...workspaceEventBase,
+    type: workspaceEventType.exclude(['child/run-finished']),
     childRunStatus: z.never().optional(),
-    actor: workspaceActor.optional(),
-    text: z.string().min(1).optional(),
-    mentions: z.array(agentId).optional(),
-  }),
+  }).strict(),
+])
+
+const agentDefinition = z.object({
+  id: definitionId,
+  name: z.string().min(1),
+  revisionIds: z.array(definitionRevisionId),
+  currentRevisionId: definitionRevisionId,
+}).strict()
+
+const definitionRevision = z.object({
+  id: definitionRevisionId,
+  definitionId,
+  number: z.number().int().positive(),
+  description: z.string(),
+  instructions: z.string(),
+}).strict()
+
+const employmentPeriod = z.object({
+  id: employmentPeriodId,
+  startedEventId: eventId,
+  endedEventId: eventId.optional(),
+}).strict()
+
+const agentInstance = z.object({
+  id: agentId,
+  name: z.string().min(1),
+  definitionId,
+  definitionRevisionId,
+  employmentStatus: z.enum(['employed', 'departed']),
+  employmentPeriods: z.array(employmentPeriod),
+}).strict()
+
+const room = z.object({ id: roomId, kind: z.enum(['group', 'direct']), name: z.string().min(1).optional() }).strict()
+
+const roomMembership = z.object({
+  id: membershipId,
+  roomId,
+  agentId,
+  memoryStart: membershipMemoryStart,
+  joinedEventId: eventId,
+  leftEventId: eventId.optional(),
+}).strict()
+
+const memoryEntry = z.object({
+  id: memoryEntryId,
+  agentId,
+  eventId,
+  acquiredBy: z.enum(['room-membership', 'history-sync', 'task', 'child-result']),
+}).strict()
+
+const workspaceTask = z.object({ id: taskId, rootTaskId: taskId, title: z.string(), status: z.enum(['open', 'completed', 'cancelled']) }).strict()
+const taskAssignment = z.object({ id: taskAssignmentId, taskId, rootTaskId: taskId, assigneeAgentId: agentId, grantId: delegationGrantId.optional() }).strict()
+const delegationGrant = z.object({ id: delegationGrantId, rootTaskId: taskId, granteeAgentId: agentId, grantedByHumanId: humanId, status: z.enum(['active', 'expired']) }).strict()
+const childRun = z.discriminatedUnion('status', [
+  z.object({ id: childRunId, parentAgentId: agentId, taskId, status: z.literal('running') }).strict(),
+  z.object({ id: childRunId, parentAgentId: agentId, taskId, status: childRunTerminalStatus, result: z.string().refine(value => value.trim() !== '', 'child run result must not be blank') }).strict(),
 ])
 
 /** Validates the complete one-record durable workspace aggregate. */
@@ -93,47 +149,19 @@ export const workspaceStateSchema = z.object({
   revision: z.number().int().nonnegative(),
   nextId: z.number().int().positive(),
   nextSequence: z.number().int().positive(),
-  definitions: z.record(z.string(), z.object({
-    id: definitionId,
-    name: z.string().min(1),
-    revisionIds: z.array(definitionRevisionId),
-    currentRevisionId: definitionRevisionId,
-  })),
-  definitionRevisions: z.record(z.string(), z.object({
-    id: definitionRevisionId,
-    definitionId,
-    number: z.number().int().positive(),
-    description: z.string(),
-    instructions: z.string(),
-  })),
-  agents: z.record(z.string(), z.object({
-    id: agentId,
-    name: z.string().min(1),
-    definitionId,
-    definitionRevisionId,
-    employmentStatus: z.enum(['employed', 'departed']),
-    employmentPeriods: z.array(z.object({ id: employmentPeriodId, startedEventId: eventId, endedEventId: eventId.optional() })),
-  })),
-  rooms: z.record(z.string(), z.object({ id: roomId, kind: z.enum(['group', 'direct']), name: z.string().min(1).optional() })),
-  memberships: z.record(z.string(), z.object({
-    id: membershipId,
-    roomId,
-    agentId,
-    memoryStart: membershipMemoryStart,
-    joinedEventId: eventId,
-    leftEventId: eventId.optional(),
-  })),
+  definitions: z.record(z.string(), agentDefinition),
+  definitionRevisions: z.record(z.string(), definitionRevision),
+  agents: z.record(z.string(), agentInstance),
+  rooms: z.record(z.string(), room),
+  memberships: z.record(z.string(), roomMembership),
   events: z.array(workspaceEvent),
-  memoryEntries: z.array(z.object({ id: memoryEntryId, agentId, eventId, acquiredBy: z.enum(['room-membership', 'history-sync', 'task', 'child-result']) })),
-  tasks: z.record(z.string(), z.object({ id: taskId, rootTaskId: taskId, title: z.string(), status: z.enum(['open', 'completed', 'cancelled']) })),
-  taskAssignments: z.record(z.string(), z.object({ id: taskAssignmentId, taskId, rootTaskId: taskId, assigneeAgentId: agentId, grantId: delegationGrantId.optional() })),
-  delegationGrants: z.record(z.string(), z.object({ id: delegationGrantId, rootTaskId: taskId, granteeAgentId: agentId, grantedByHumanId: humanId, status: z.enum(['active', 'expired']) })),
-  childRuns: z.record(z.string(), z.union([
-    z.object({ id: childRunId, parentAgentId: agentId, taskId, status: z.literal('running') }).strict(),
-    z.object({ id: childRunId, parentAgentId: agentId, taskId, status: childRunTerminalStatus, result: z.string().refine(value => value.trim() !== '', 'child run result must not be blank') }).strict(),
-  ])),
+  memoryEntries: z.array(memoryEntry),
+  tasks: z.record(z.string(), workspaceTask),
+  taskAssignments: z.record(z.string(), taskAssignment),
+  delegationGrants: z.record(z.string(), delegationGrant),
+  childRuns: z.record(z.string(), childRun),
   sessionBindings: z.record(z.string(), sessionId),
-}) satisfies z.ZodType<WorkspaceState>
+}).strict() satisfies z.ZodType<WorkspaceState>
 
 /** One-table storage declaration: every workspace mutation replaces its aggregate atomically. */
 export const agentWorkspaceSpec = defineDomain({

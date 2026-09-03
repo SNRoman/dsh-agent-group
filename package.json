@@ -14,7 +14,7 @@
     "build": "pnpm build:host && pnpm build:web && pnpm build:bundle",
     "test": "vitest run",
     "test:dsh-source": "node scripts/test-dsh-source.mjs",
-    "typecheck": "tsc -b tsconfig.host.json && tsc -b packages/web/tsconfig.client.json",
+    "typecheck": "tsc -b tsconfig.host.json && tsc -b packages/web/tsconfig.client.json && tsc -p tests/types/tsconfig.json --noEmit",
     "verify:compatibility": "node scripts/verify-compatibility.mjs",
     "release:check": "pnpm build && pnpm typecheck && pnpm test",
     "release:pack": "pnpm release:check && node scripts/release.mjs pack",

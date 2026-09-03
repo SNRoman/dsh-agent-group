@@ -23,7 +23,7 @@ import { AGENT_WORKSPACE_RPC_CHANNEL, createWorkspaceRpcHandler } from './rpc.ts
 import type { WorkspaceDirectRoomResult, WorkspaceRoomRuntimeStatus, WorkspaceRuntimeStatus } from './rpc.ts'
 import { EmployeeAgentPool } from './runtime.ts'
 import type { AgentLifecycle, EmployeeBoundSessionDisposition, EmployeeMaterializationOptions } from './runtime.ts'
-import { agentWorkspaceSpec } from './spec.ts'
+import { agentWorkspaceSpec, workspaceStateSchema } from './spec.ts'
 import { createInitialState, mutateWorkspace } from './state.ts'
 import { WorkspaceTurnStream } from './turn-stream.ts'
 import type { WorkspaceTurnIdentity, WorkspaceTurnStreamSnapshot } from './turn-stream.ts'
@@ -114,13 +114,12 @@ export class AgentWorkspaceDomainService extends Service {
     this.table = domain.table('workspaces')
     const stored = this.table.get(LOCAL_WORKSPACE_ID)
     if (stored === undefined) {
-      const initial = createInitialState(LOCAL_WORKSPACE_ID)
-      assertWorkspaceInvariants(initial)
+      const initial = validateWorkspaceState(createInitialState(LOCAL_WORKSPACE_ID), LOCAL_WORKSPACE_ID)
       await this.table.put(LOCAL_WORKSPACE_ID, initial)
       this.turnStream.setWorkspaceRevision(initial.revision)
     } else {
-      assertWorkspaceInvariants(stored)
-      this.turnStream.setWorkspaceRevision(stored.revision)
+      const validated = validateWorkspaceState(stored, LOCAL_WORKSPACE_ID)
+      this.turnStream.setWorkspaceRevision(validated.revision)
     }
 
     // Browser transport is an optional child capability. Headless deployments
@@ -230,9 +229,8 @@ export class AgentWorkspaceDomainService extends Service {
         agentId,
         memoryStart: { type: 'new-events' },
       }).state
-      assertWorkspaceInvariants(joined)
       resolvedRoomId = created.roomId
-      return joined
+      return validateWorkspaceState(joined, LOCAL_WORKSPACE_ID)
     })
     if (resolvedRoomId === undefined) throw new Error(`failed to resolve direct room for agent '${agentId}'`)
     this.turnStream.setWorkspaceRevision(next.revision)
@@ -248,8 +246,7 @@ export class AgentWorkspaceDomainService extends Service {
       const changed = command.type === 'room/join'
         ? joinRoomWithMemory(current, command).state
         : mutateWorkspace(current, command).state
-      assertWorkspaceInvariants(changed)
-      return changed
+      return validateWorkspaceState(changed, LOCAL_WORKSPACE_ID)
     })
 
     if (settledTurn === undefined) this.turnStream.setWorkspaceRevision(next.revision)
@@ -264,8 +261,7 @@ export class AgentWorkspaceDomainService extends Service {
   async apply(mutation: (state: WorkspaceState) => WorkspaceState): Promise<WorkspaceState> {
     const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => {
       const changed = mutation(current)
-      assertWorkspaceInvariants(changed)
-      return changed
+      return validateWorkspaceState(changed, LOCAL_WORKSPACE_ID)
     })
     this.turnStream.setWorkspaceRevision(next.revision)
     return structuredClone(next)
@@ -474,6 +470,12 @@ export class AgentWorkspaceDomainService extends Service {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function validateWorkspaceState(candidate: WorkspaceState, expectedWorkspaceId: WorkspaceId): WorkspaceState {
+  const parsed = workspaceStateSchema.parse(candidate)
+  assertWorkspaceInvariants(parsed, expectedWorkspaceId)
+  return parsed
 }
 
 export default AgentWorkspaceDomainService

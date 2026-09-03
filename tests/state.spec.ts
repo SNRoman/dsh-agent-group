@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'vitest'
 import { DefinitionRevisionId, HumanId, WorkspaceId } from '../packages/host/src/ids.ts'
+import { workspaceStateSchema } from '../packages/host/src/spec.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
+import { assignHumanTask, grantTaskDelegation, recordChildRunStarted } from '../packages/host/src/tasks.ts'
+import type { WorkspaceState } from '../packages/host/src/types.ts'
 
 const javaEngineer = {
   name: 'Java engineer',
@@ -18,7 +21,105 @@ function createDefinitionAndAgent(name = 'Alice') {
   })
 }
 
+function durableStateWithEveryRecord(): WorkspaceState {
+  const alice = createDefinitionAndAgent()
+  const room = mutateWorkspace(alice.state, { type: 'room/create', kind: 'group', name: 'Engineering' })
+  const joined = mutateWorkspace(room.state, {
+    type: 'room/join',
+    roomId: room.roomId,
+    agentId: alice.agentId,
+    memoryStart: { type: 'new-events' },
+  })
+  const messaged = mutateWorkspace(joined.state, {
+    type: 'room/message',
+    roomId: room.roomId,
+    actor: { type: 'human', id: HumanId('owner') },
+    text: 'hello',
+    mentions: [alice.agentId],
+  })
+  const assigned = assignHumanTask(messaged.state, {
+    humanId: HumanId('owner'),
+    assigneeAgentId: alice.agentId,
+    title: 'task',
+  })
+  const granted = grantTaskDelegation(assigned.state, {
+    humanId: HumanId('owner'),
+    granteeAgentId: alice.agentId,
+    rootTaskId: assigned.taskId,
+  })
+  return recordChildRunStarted(granted.state, {
+    parentAgentId: alice.agentId,
+    taskId: assigned.taskId,
+  }).state
+}
+
 describe('WorkspaceState mutations', () => {
+  test.each([
+    ['workspace', (state: WorkspaceState) => ({ ...state, unknown: true })],
+    ['definition', (state: WorkspaceState) => {
+      const value = Object.values(state.definitions)[0]!
+      return { ...state, definitions: { ...state.definitions, [value.id]: { ...value, unknown: true } } }
+    }],
+    ['definition revision', (state: WorkspaceState) => {
+      const value = Object.values(state.definitionRevisions)[0]!
+      return { ...state, definitionRevisions: { ...state.definitionRevisions, [value.id]: { ...value, unknown: true } } }
+    }],
+    ['agent', (state: WorkspaceState) => {
+      const value = Object.values(state.agents)[0]!
+      return { ...state, agents: { ...state.agents, [value.id]: { ...value, unknown: true } } }
+    }],
+    ['employment period', (state: WorkspaceState) => {
+      const agent = Object.values(state.agents)[0]!
+      const period = agent.employmentPeriods[0]!
+      return { ...state, agents: { ...state.agents, [agent.id]: { ...agent, employmentPeriods: [{ ...period, unknown: true }] } } }
+    }],
+    ['room', (state: WorkspaceState) => {
+      const value = Object.values(state.rooms)[0]!
+      return { ...state, rooms: { ...state.rooms, [value.id]: { ...value, unknown: true } } }
+    }],
+    ['membership', (state: WorkspaceState) => {
+      const value = Object.values(state.memberships)[0]!
+      return { ...state, memberships: { ...state.memberships, [value.id]: { ...value, unknown: true } } }
+    }],
+    ['membership memory start', (state: WorkspaceState) => {
+      const value = Object.values(state.memberships)[0]!
+      return { ...state, memberships: { ...state.memberships, [value.id]: { ...value, memoryStart: { ...value.memoryStart, unknown: true } } } }
+    }],
+    ['event', (state: WorkspaceState) => ({ ...state, events: [{ ...state.events[0]!, unknown: true }, ...state.events.slice(1)] })],
+    ['event actor', (state: WorkspaceState) => {
+      const index = state.events.findIndex(event => event.actor !== undefined)
+      const event = state.events[index]!
+      return { ...state, events: state.events.with(index, { ...event, actor: { ...event.actor!, unknown: true } }) }
+    }],
+    ['memory entry', (state: WorkspaceState) => ({ ...state, memoryEntries: [{ ...state.memoryEntries[0]!, unknown: true }, ...state.memoryEntries.slice(1)] })],
+    ['task', (state: WorkspaceState) => {
+      const value = Object.values(state.tasks)[0]!
+      return { ...state, tasks: { ...state.tasks, [value.id]: { ...value, unknown: true } } }
+    }],
+    ['task assignment', (state: WorkspaceState) => {
+      const value = Object.values(state.taskAssignments)[0]!
+      return { ...state, taskAssignments: { ...state.taskAssignments, [value.id]: { ...value, unknown: true } } }
+    }],
+    ['delegation grant', (state: WorkspaceState) => {
+      const value = Object.values(state.delegationGrants)[0]!
+      return { ...state, delegationGrants: { ...state.delegationGrants, [value.id]: { ...value, unknown: true } } }
+    }],
+    ['child run', (state: WorkspaceState) => {
+      const value = Object.values(state.childRuns)[0]!
+      return { ...state, childRuns: { ...state.childRuns, [value.id]: { ...value, unknown: true } } }
+    }],
+  ])('rejects an unknown field on the durable %s object', (_name, corrupt) => {
+    expect(workspaceStateSchema.safeParse(corrupt(durableStateWithEveryRecord())).success).toBe(false)
+  })
+
+  test('rejects an event type the Host never appends', () => {
+    const state = durableStateWithEveryRecord()
+    expect(workspaceStateSchema.safeParse({
+      ...state,
+      events: [{ ...state.events[0], type: 'workspace/unknown' }, ...state.events.slice(1)],
+    }).success).toBe(false)
+  })
+
   test('re-employs the same departed agent without replacing its earlier events', () => {
     const alice = createDefinitionAndAgent()
     const priorEventIds = alice.state.events.map(event => event.id)

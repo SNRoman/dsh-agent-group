@@ -33,6 +33,7 @@ import type {
   SynchronizeDefinitionCommand,
   WorkspaceCommand,
   WorkspaceEvent,
+  WorkspaceEventType,
   WorkspaceState,
   WorkspaceActor,
   WorkspaceSubjectId,
@@ -134,7 +135,7 @@ export function mintWorkspaceId<T extends string>(state: WorkspaceState, prefix:
  */
 export function appendWorkspaceEvent(
   state: WorkspaceState,
-  type: string,
+  type: WorkspaceEventType,
   subjectId?: WorkspaceSubjectId,
   details?: Pick<WorkspaceEvent, 'actor' | 'childRunStatus' | 'definitionRevisionId' | 'text' | 'mentions'>,
 ): readonly [WorkspaceState, WorkspaceEvent] {

@@ -26,7 +26,7 @@ describe('direct workspace rooms', () => {
     const invalid = mutateWorkspace(joined.state, {
       type: 'room/join', roomId: direct.roomId, agentId: fixture.bobId, memoryStart: { type: 'new-events' },
     }).state
-    expect(() => assertWorkspaceInvariants(invalid)).toThrow(/direct room.*active member/i)
+    expect(() => assertWorkspaceInvariants(invalid, WorkspaceId('direct-test'))).toThrow(/direct room.*active member/i)
   })
 
   it('auto-targets the sole active employed member for a direct human post', () => {
