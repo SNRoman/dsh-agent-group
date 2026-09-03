@@ -2,7 +2,7 @@
 
 import { z } from 'zod'
 import { WorkspaceBusinessError } from './errors.ts'
-import type { WorkspaceBusinessErrorCode, WorkspaceErrorJson } from './errors.ts'
+import type { WorkspaceBusinessErrorCode, WorkspaceBusinessErrorDetailsMap } from './errors.ts'
 import {
   AgentDefinitionId,
   AgentId,
@@ -49,18 +49,28 @@ export interface WorkspaceRpcService {
 
 export type WorkspaceRpcValue = WorkspaceState | WorkspaceRuntimeStatus | WorkspaceDirectRoomResult | WorkspaceTurnStreamSnapshot
 
+type WorkspaceRpcBusinessErrorFor<Code extends WorkspaceBusinessErrorCode> = {
+  readonly kind: 'business'
+  readonly code: Code
+  readonly message: string
+  readonly details: WorkspaceBusinessErrorDetailsMap[Code]
+}
+
+type WorkspaceRpcBusinessError = {
+  readonly [Code in WorkspaceBusinessErrorCode]: WorkspaceRpcBusinessErrorFor<Code>
+}[WorkspaceBusinessErrorCode]
+
+type AnyWorkspaceBusinessError = {
+  readonly [Code in WorkspaceBusinessErrorCode]: WorkspaceBusinessError<Code>
+}[WorkspaceBusinessErrorCode]
+
 /** Connection-compatible result subset used by this plugin. */
 export type WorkspaceRpcResult =
   | { readonly ok: true; readonly value: WorkspaceRpcValue }
   | {
     readonly ok: false
     readonly error:
-      | {
-        readonly kind: 'business'
-        readonly code: WorkspaceBusinessErrorCode
-        readonly message: string
-        readonly details: WorkspaceErrorJson
-      }
+      | WorkspaceRpcBusinessError
       | {
         readonly kind: 'bad-request'
         readonly code: 'bad-request'
@@ -247,7 +257,7 @@ export function createWorkspaceRpcHandler(service: WorkspaceRpcService): Workspa
       }
     } catch (error) {
       if (signal.aborted || isAbortError(error)) return cancelled()
-      if (error instanceof WorkspaceBusinessError) return business(error)
+      if (isWorkspaceBusinessError(error)) return business(error)
       return internal()
     }
   }
@@ -265,7 +275,28 @@ function cancelled(): WorkspaceRpcResult {
   return { ok: false, error: { kind: 'cancelled', code: 'cancelled', message: 'agent workspace request cancelled', details: {} } }
 }
 
-function business(error: WorkspaceBusinessError): WorkspaceRpcResult {
+function business(error: AnyWorkspaceBusinessError): WorkspaceRpcResult {
+  switch (error.code) {
+    case 'reserved-direct-routing':
+      return businessFor(error)
+    case 'agent-missing':
+      return businessFor(error)
+    case 'agent-departed':
+      return businessFor(error)
+    case 'duplicate-membership':
+      return businessFor(error)
+    case 'stale-revision':
+      return businessFor(error)
+    case 'invalid-task-authority':
+      return businessFor(error)
+    default:
+      return assertNever(error)
+  }
+}
+
+function businessFor<Code extends WorkspaceBusinessErrorCode>(
+  error: WorkspaceBusinessError<Code>,
+): { readonly ok: false; readonly error: WorkspaceRpcBusinessErrorFor<Code> } {
   return {
     ok: false,
     error: {
@@ -277,6 +308,10 @@ function business(error: WorkspaceBusinessError): WorkspaceRpcResult {
   }
 }
 
+function isWorkspaceBusinessError(error: unknown): error is AnyWorkspaceBusinessError {
+  return error instanceof WorkspaceBusinessError
+}
+
 function internal(): WorkspaceRpcResult {
   return {
     ok: false,
@@ -286,4 +321,8 @@ function internal(): WorkspaceRpcResult {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError'
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unexpected agent workspace business error: ${String(value)}`)
 }

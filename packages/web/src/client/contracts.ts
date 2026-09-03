@@ -11,23 +11,31 @@ export type WorkspaceErrorJson = null | boolean | number | string | readonly Wor
   readonly [key: string]: WorkspaceErrorJson
 }
 
+/** Closed Browser map from stable Host policy codes to locale-formatting details. */
+export type WorkspaceBusinessErrorDetailsMap = {
+  readonly 'reserved-direct-routing': { readonly roomId: string; readonly token: '@all' }
+  readonly 'agent-missing': { readonly agentId: string }
+  readonly 'agent-departed': { readonly agentId: string }
+  readonly 'duplicate-membership': { readonly roomId: string; readonly agentId: string }
+  readonly 'stale-revision': { readonly definitionId: string; readonly revisionId: string }
+  readonly 'invalid-task-authority': { readonly taskId: string; readonly agentId: string }
+}
+
 /** Stable Host policy codes available for locale mapping. */
-export type WorkspaceBusinessErrorCode =
-  | 'reserved-direct-routing'
-  | 'agent-missing'
-  | 'agent-departed'
-  | 'duplicate-membership'
-  | 'stale-revision'
-  | 'invalid-task-authority'
+export type WorkspaceBusinessErrorCode = keyof WorkspaceBusinessErrorDetailsMap
+
+type WorkspaceRpcBusinessError = {
+  readonly [Code in WorkspaceBusinessErrorCode]: {
+    readonly kind: 'business'
+    readonly code: Code
+    readonly message: string
+    readonly details: WorkspaceBusinessErrorDetailsMap[Code]
+  }
+}[WorkspaceBusinessErrorCode]
 
 /** Browser-visible failure returned by the Agent Workspace RPC channel. */
 export type WorkspaceRpcError =
-  | {
-    readonly kind: 'business'
-    readonly code: WorkspaceBusinessErrorCode
-    readonly message: string
-    readonly details: WorkspaceErrorJson
-  }
+  | WorkspaceRpcBusinessError
   | {
     readonly kind: 'bad-request'
     readonly code: 'bad-request'

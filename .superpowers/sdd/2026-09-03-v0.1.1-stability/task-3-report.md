@@ -112,3 +112,50 @@ No implementation concern remains. The compile fixture intentionally avoids a pe
 ### Commit
 
 `fix: close workspace error types`
+
+## Final review repair round 2
+
+### Status
+
+COMPLETE. Business RPC failures now preserve the relationship between each stable code and its exact structured details in both Host and Browser public types.
+
+### Files
+
+- `packages/host/src/errors.ts` accepts code/details through a mapped tuple union, preserving their relationship at construction.
+- `packages/host/src/rpc.ts` defines the business result as a mapped discriminated union and converts typed business errors through an exhaustive code switch and generic helper.
+- `packages/web/src/client/contracts.ts` exports a closed Browser details-map type and derives its business code and RPC error union from that map.
+- `tests/types/workspace-errors.ts` covers Host, Browser RPC, and `WorkspaceApiError.error` detail narrowing plus rejected Host and Browser code/details pairings.
+
+### RED
+
+`pnpm typecheck` exited `1` before the production edits. Host, Browser RPC, and `WorkspaceApiError.error` each produced `TS18047` and `TS2339` when code attempted to read `details.roomId` and `details.token` after narrowing to `kind === 'business'` and `code === 'reserved-direct-routing'`. The Host and Browser mismatched-pair expectations also produced `TS2578` because the widened result types accepted `agent-missing` with reserved-routing details. A focused constructor RED produced another `TS2578`: independently widened code and details unions were accepted even though they did not prove a matching pair.
+
+### GREEN
+
+```text
+pnpm typecheck
+```
+
+Exit `0`: Host, Web client, and compile-time fixture projects passed.
+
+```text
+pnpm vitest run tests/workspace-direct-room.spec.ts tests/workspace-rpc.spec.ts tests/workspace-view.spec.ts
+```
+
+Exit `0`: 3 files passed, 34/34 tests passed.
+
+### Self-review
+
+- Both RPC business variants are mapped discriminated unions rather than independent code and details unions. Narrowing the code selects its declared details fields.
+- The Host constructor's mapped tuple union rejects mismatched arguments even when its generic code parameter is a union. The RPC type guard therefore represents every class instance as the union of valid code-specialized instances.
+- The exhaustive switch narrows each instance before the generic converter clones its details. The converter receives `code` and `details` from the same `WorkspaceBusinessError<Code>` and uses no type assertion.
+- The Browser details map is a non-mergeable type alias. `WorkspaceApiError.error` retains the exact RPC union, while its existing top-level convenience fields remain unchanged.
+- Runtime messages, persistence, domain versions, localization, and non-business RPC variants are unchanged.
+
+### Concerns
+
+No implementation concern remains.
+
+### Commit
+
+`fix: correlate workspace business error details`

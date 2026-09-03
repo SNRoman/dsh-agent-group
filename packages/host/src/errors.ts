@@ -18,9 +18,21 @@ export type WorkspaceBusinessErrorDetailsMap = {
 /** Stable code accepted by {@link WorkspaceBusinessError}. */
 export type WorkspaceBusinessErrorCode = keyof WorkspaceBusinessErrorDetailsMap
 
+type WorkspaceBusinessErrorArguments<Code extends WorkspaceBusinessErrorCode> = {
+  readonly [CurrentCode in Code]: readonly [
+    code: CurrentCode,
+    details: WorkspaceBusinessErrorDetailsMap[CurrentCode] & WorkspaceErrorJson,
+    message?: string,
+  ]
+}[Code]
+
 /** Policy failure whose code and details are safe to expose over RPC. */
 export class WorkspaceBusinessError<Code extends WorkspaceBusinessErrorCode = WorkspaceBusinessErrorCode> extends Error {
   override readonly name = 'WorkspaceBusinessError'
+  /** Stable failure code. */
+  readonly code: Code
+  /** JSON-safe identifiers and values used to present the failure. */
+  readonly details: WorkspaceBusinessErrorDetailsMap[Code] & WorkspaceErrorJson
 
   /**
    * Create one machine-readable policy failure.
@@ -28,11 +40,9 @@ export class WorkspaceBusinessError<Code extends WorkspaceBusinessErrorCode = Wo
    * @param details JSON-safe identifiers and values used to present the failure.
    * @param message Optional diagnostic for logs and non-localized callers.
    */
-  constructor(
-    readonly code: Code,
-    readonly details: WorkspaceBusinessErrorDetailsMap[Code] & WorkspaceErrorJson,
-    message: string = code,
-  ) {
+  constructor(...[code, details, message = code]: WorkspaceBusinessErrorArguments<Code>) {
     super(message)
+    this.code = code
+    this.details = details
   }
 }
