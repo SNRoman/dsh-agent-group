@@ -19,6 +19,8 @@ A persistent multi-agent workspace for [DeepSeek Harness](https://github.com/dee
 - Node.js `^22.19.0` or `>=24.0.0`.
 - `pnpm` available on `PATH`. The official `dsh plugin` command delegates profile package management to pnpm.
 
+DeepSeek Harness compatibility: >=0.1.1-rc.2 <0.1.2-0; registry development: 0.1.1-rc.2; verified source: 0.1.1-rc.2 (b150a551b8d465e31e418e1b2eaf5e79bbb7d28e).
+
 The current package manifests intentionally stop before the `0.1.2` prerelease line. Upgrade the plugin only after that Harness line has been verified.
 
 ## Install
@@ -69,7 +71,7 @@ The Browser transport uses the existing Harness Connection RPC service on the pl
 
 ## Development
 
-This repository is a pnpm workspace. For source development it links DeepSeek Harness packages from a sibling checkout at `../../deepseek-harness` so CI and local development can exercise the current Harness source tree.
+This repository is a pnpm workspace. Default development installs the verified DeepSeek Harness packages from the public registry.
 
 ```sh
 pnpm install
@@ -78,7 +80,13 @@ pnpm typecheck
 pnpm test
 ```
 
-The strict CI checks out and builds DeepSeek Harness before building the plugin.
+Maintainers can check the declared Harness source point without changing either checkout:
+
+```sh
+pnpm test:dsh-source -- --dsh <absolute-path-to-deepseek-harness>
+```
+
+The command copies this plugin to an operating-system temporary directory, generates source overrides only in that copy, and removes it after the check. CI runs the default registry verification and this explicit source check separately.
 
 ## Release
 

@@ -20,10 +20,58 @@ jobs:
     steps:
       - name: Checkout plugin
         uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install plugin dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify compatibility declaration
+        run: pnpm verify:compatibility
+
+      - name: Build
+        shell: bash
+        run: set -o pipefail; pnpm build 2>&1 | tee build.log
+
+      - name: Typecheck
+        shell: bash
+        run: set -o pipefail; pnpm typecheck 2>&1 | tee typecheck.log
+
+      - name: Test
+        shell: bash
+        run: set -o pipefail; pnpm test 2>&1 | tee test.log
+
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-logs
+          path: |
+            build.log
+            typecheck.log
+            test.log
+          if-no-files-found: ignore
+
+  source-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@v4
         with:
           path: plugin/dsh-agent-group
 
-      - name: Checkout DeepSeek Harness
+      - name: Checkout verified DeepSeek Harness source
         uses: actions/checkout@v4
         with:
           repository: deepseek-ai/deepseek-harness
@@ -53,32 +101,10 @@ jobs:
         working-directory: deepseek-harness
         run: pnpm build:lib
 
-      - name: Install plugin dependencies
+      - name: Verify compatibility declaration
         working-directory: plugin/dsh-agent-group
-        run: pnpm install --frozen-lockfile
+        run: pnpm verify:compatibility
 
-      - name: Build
+      - name: Test verified Harness source compatibility
         working-directory: plugin/dsh-agent-group
-        shell: bash
-        run: set -o pipefail; pnpm build 2>&1 | tee build.log
-
-      - name: Typecheck
-        working-directory: plugin/dsh-agent-group
-        shell: bash
-        run: set -o pipefail; pnpm typecheck 2>&1 | tee typecheck.log
-
-      - name: Test
-        working-directory: plugin/dsh-agent-group
-        shell: bash
-        run: set -o pipefail; pnpm test 2>&1 | tee test.log
-
-      - name: Upload verification logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: verification-logs
-          path: |
-            plugin/dsh-agent-group/build.log
-            plugin/dsh-agent-group/typecheck.log
-            plugin/dsh-agent-group/test.log
-          if-no-files-found: ignore
+        run: pnpm test:dsh-source -- --dsh "$GITHUB_WORKSPACE/deepseek-harness"
