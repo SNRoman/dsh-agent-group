@@ -11,6 +11,17 @@ const publishableManifests = [
   'packages/bundle/package.json',
 ]
 const excludedCopyDirectories = new Set(['.git', 'node_modules', 'release', '.superpowers'])
+const sensitiveEnvironmentName = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH/i
+
+/**
+ * Returns a child environment without credential-bearing ambient variables.
+ *
+ * @param environment - ambient variables to scrub before launching a child process.
+ * @returns a fresh environment safe for source-check subprocesses.
+ */
+export function sanitizeChildEnvironment(environment = process.env) {
+  return Object.fromEntries(Object.entries(environment).filter(([name, value]) => value !== undefined && !sensitiveEnvironmentName.test(name)))
+}
 
 /** Reads and validates the repository compatibility declaration. */
 export async function readCompatibility(pluginDirectory) {
@@ -120,9 +131,22 @@ export async function prepareSourceCompatibility({ pluginDirectory, dshDirectory
 async function validateDshSource(pluginDirectory, dshDirectory, declaration) {
   const dshManifest = await readJson(join(dshDirectory, 'package.json'))
   assertEqual('package.json', 'deepseek-harness', declaration.verifiedSource.version, dshManifest.version)
-  const { stdout } = await execFile('git', ['-C', dshDirectory, 'rev-parse', 'HEAD'])
+  const { stdout } = await execFile(
+    'git',
+    ['-C', dshDirectory, 'rev-parse', 'HEAD'],
+    { env: sanitizeChildEnvironment() },
+  )
   const sourceCommit = stdout.trim()
   assertEqual('git rev-parse HEAD', 'DeepSeek Harness', declaration.verifiedSource.commit, sourceCommit)
+  const { stdout: sourceStatus } = await execFile(
+    'git',
+    ['-C', dshDirectory, 'status', '--porcelain', '--untracked-files=no'],
+    { env: sanitizeChildEnvironment() },
+  )
+  const trackedChanges = sourceStatus.trim()
+  if (trackedChanges !== '') {
+    throw new Error(`git status --porcelain: DeepSeek Harness expected clean tracked worktree and index, actual ${trackedChanges}`)
+  }
 
   const rootManifest = await readJson(join(pluginDirectory, 'package.json'))
   const requiredNames = Object.keys(rootManifest.devDependencies ?? {}).filter(name => name.startsWith('@deepseek-ai/'))

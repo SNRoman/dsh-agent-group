@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
-import { prepareSourceCompatibility } from '../scripts/source-compatibility.mjs'
+import { prepareSourceCompatibility, sanitizeChildEnvironment } from '../scripts/source-compatibility.mjs'
 
 const execFile = promisify(execFileCallback)
 const peerRange = '>=0.1.1-rc.2 <0.1.2-0'
@@ -59,14 +59,19 @@ async function createPluginFixture(compatibility: Compatibility): Promise<string
   return root
 }
 
-async function createDshFixture(version = developmentVersion): Promise<{ root: string, commit: string }> {
+async function createDshFixture(
+  version = developmentVersion,
+  includeAgentManifest = true,
+): Promise<{ root: string, commit: string }> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-source-compatibility-'))
   temporaryDirectories.push(root)
   await writeJson(join(root, 'package.json'), { name: 'deepseek-harness', version })
-  await writeJson(join(root, 'packages', 'core', 'agent', 'package.json'), {
-    name: '@deepseek-ai/dsh-agent',
-    version,
-  })
+  if (includeAgentManifest) {
+    await writeJson(join(root, 'packages', 'core', 'agent', 'package.json'), {
+      name: '@deepseek-ai/dsh-agent',
+      version,
+    })
+  }
   await execFile('git', ['init', '--initial-branch=main'], { cwd: root })
   await execFile('git', ['config', 'user.email', 'fixture@example.test'], { cwd: root })
   await execFile('git', ['config', 'user.name', 'Fixture'], { cwd: root })
@@ -119,8 +124,7 @@ describe('compatibility declaration', () => {
   })
 
   it('rejects a source checkout missing a required DSH package manifest', async () => {
-    const dsh = await createDshFixture()
-    await rm(join(dsh.root, 'packages', 'core', 'agent', 'package.json'))
+    const dsh = await createDshFixture(developmentVersion, false)
     const compatibility = declaration(dsh.commit)
     const plugin = await createPluginFixture(compatibility)
 
@@ -139,6 +143,61 @@ describe('compatibility declaration', () => {
     await writeJson(join(dsh.root, 'package.json'), { name: 'deepseek-harness', version: developmentVersion })
     await expect(prepareSourceCompatibility({ pluginDirectory: plugin, dshDirectory: dsh.root }))
       .rejects.toThrow('git rev-parse HEAD: DeepSeek Harness expected 0000000000000000000000000000000000000000')
+  })
+
+  it('rejects a declared source point with tracked changes', async () => {
+    const dsh = await createDshFixture()
+    const compatibility = declaration(dsh.commit)
+    const plugin = await createPluginFixture(compatibility)
+    await writeFile(join(dsh.root, 'packages', 'core', 'agent', 'package.json'), `${JSON.stringify({
+      name: '@deepseek-ai/dsh-agent',
+      version: developmentVersion,
+      private: true,
+    }, null, 2)}\n`)
+
+    await expect(prepareSourceCompatibility({ pluginDirectory: plugin, dshDirectory: dsh.root }))
+      .rejects.toThrow('git status --porcelain: DeepSeek Harness expected clean tracked worktree and index, actual M packages/core/agent/package.json')
+  })
+
+  it('scrubs credential-shaped child variables while retaining pnpm runtime variables', () => {
+    const environment = {
+      API_KEY: 'key',
+      ACCESS_TOKEN: 'token',
+      DB_SECRET: 'secret',
+      SERVICE_PASSWORD: 'password',
+      DEPLOY_CREDENTIAL: 'credential',
+      AUTHORIZATION: 'authorization',
+      OAuth_Client: 'oauth',
+      PATH: '/bin:/usr/bin',
+      HOME: '/home/fixture',
+      TMPDIR: '/tmp/fixture',
+      SystemRoot: 'C:\\Windows',
+      ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+      PATHEXT: '.COM;.EXE;.BAT;.CMD',
+      TEMP: 'C:\\Temp',
+      TMP: 'C:\\Temp',
+      USERPROFILE: 'C:\\Users\\fixture',
+      APPDATA: 'C:\\Users\\fixture\\AppData\\Roaming',
+      LOCALAPPDATA: 'C:\\Users\\fixture\\AppData\\Local',
+      PNPM_HOME: 'C:\\pnpm',
+      PUBLIC_VALUE: 'retained',
+    }
+
+    expect(sanitizeChildEnvironment(environment)).toEqual({
+      PATH: '/bin:/usr/bin',
+      HOME: '/home/fixture',
+      TMPDIR: '/tmp/fixture',
+      SystemRoot: 'C:\\Windows',
+      ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+      PATHEXT: '.COM;.EXE;.BAT;.CMD',
+      TEMP: 'C:\\Temp',
+      TMP: 'C:\\Temp',
+      USERPROFILE: 'C:\\Users\\fixture',
+      APPDATA: 'C:\\Users\\fixture\\AppData\\Roaming',
+      LOCALAPPDATA: 'C:\\Users\\fixture\\AppData\\Local',
+      PNPM_HOME: 'C:\\pnpm',
+      PUBLIC_VALUE: 'retained',
+    })
   })
 
   it('writes generated source overrides only inside the temporary plugin copy', async () => {
