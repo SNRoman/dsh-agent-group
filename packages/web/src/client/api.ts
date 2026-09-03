@@ -22,6 +22,8 @@ const CHANNEL = '/agent-workspace'
 /** Typed RPC failure retained for Browser presentation and locale mapping. */
 export class WorkspaceApiError extends Error {
   override readonly name = 'WorkspaceApiError'
+  /** Correlated RPC payload for exhaustive kind/code/details narrowing. */
+  readonly error: WorkspaceRpcError
   readonly kind: WorkspaceRpcError['kind']
   readonly code: WorkspaceRpcError['code']
   readonly details: WorkspaceRpcError['details']
@@ -32,9 +34,10 @@ export class WorkspaceApiError extends Error {
    */
   constructor(error: WorkspaceRpcError) {
     super(error.message)
-    this.kind = error.kind
-    this.code = error.code
-    this.details = structuredClone(error.details)
+    this.error = structuredClone(error)
+    this.kind = this.error.kind
+    this.code = this.error.code
+    this.details = this.error.details
   }
 }
 

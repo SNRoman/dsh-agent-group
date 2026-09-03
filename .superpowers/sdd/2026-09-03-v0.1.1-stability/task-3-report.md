@@ -63,3 +63,52 @@ The component test uses React 18's internal dispatcher because adding a renderer
 ## Commit
 
 `fix: make workspace policy errors stable`
+
+## Independent review repair round 1
+
+### Status
+
+COMPLETE. The two confirmed type-safety findings are fixed without changing runtime policy, persistence, localization, or wire semantics.
+
+### Files
+
+- `packages/host/src/errors.ts` uses a non-mergeable object type for the closed business-code-to-details map.
+- `packages/web/src/client/contracts.ts` declares separate `cancelled` and `internal` variants.
+- `packages/web/src/client/api.ts` exposes the correlated RPC error payload as `WorkspaceApiError.error` while retaining the existing convenience fields.
+- `tests/types/workspace-errors.ts` fixes the rejected unknown business code/details, mismatched stable details, crossed RPC kind/code, crossed API constructor input, and successful discriminant narrowing as compile-time expectations.
+- `tests/types/tsconfig.json` includes the new focused type fixture.
+
+### RED
+
+`pnpm typecheck` exited `1` before the production edits. TypeScript reported four unused `@ts-expect-error` directives because an external declaration merge, an extended business code, a crossed RPC pair, and a crossed API constructor input were all accepted. It also reported two `TS2339` errors because `WorkspaceApiError` had no correlated payload that callers could narrow.
+
+The declaration-merge probe was used only for RED evidence. Keeping an intentionally illegal augmentation after converting the interface to a type alias would make the fixture itself uncompilable, so the final fixture instead pins the public closed union through rejected unknown-code and mismatched-details constructions. A transient duplicate-identifier result after removing the probe came from the ignored incremental file `tests/types/tsconfig.tsbuildinfo`; removing that generated cache restored a clean typecheck.
+
+### GREEN
+
+```text
+pnpm typecheck
+```
+
+Exit `0`: Host, Web client, and compile-time fixture projects passed.
+
+```text
+pnpm vitest run tests/workspace-direct-room.spec.ts tests/workspace-rpc.spec.ts tests/workspace-view.spec.ts
+```
+
+Exit `0`: 3 files passed, 34/34 tests passed.
+
+### Self-review
+
+- The details map is now a type alias, so module augmentation cannot extend its keys through interface declaration merging; its generic constructor still preserves the exact details type for each code.
+- `cancelled` and `internal` are exact union members, preventing crossed discriminants in both the public RPC type and `WorkspaceApiError` construction.
+- `WorkspaceApiError.error` preserves the relationship among `kind`, `code`, and `details` for caller narrowing. The existing top-level fields remain available to current consumers.
+- The repair adds no runtime branch, storage field, domain-version change, locale mapping, dependency, or unrelated test surface.
+
+### Concerns
+
+No implementation concern remains. The compile fixture intentionally avoids a permanent illegal module augmentation and instead combines the non-mergeable source declaration with public-construction negative cases.
+
+### Commit
+
+`fix: close workspace error types`

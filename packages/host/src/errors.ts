@@ -6,7 +6,7 @@ export type WorkspaceErrorJson = null | boolean | number | string | readonly Wor
 }
 
 /** Closed business-error codes shared with transport consumers. */
-export interface WorkspaceBusinessErrorDetailsMap {
+export type WorkspaceBusinessErrorDetailsMap = {
   readonly 'reserved-direct-routing': { readonly roomId: string; readonly token: '@all' }
   readonly 'agent-missing': { readonly agentId: string }
   readonly 'agent-departed': { readonly agentId: string }

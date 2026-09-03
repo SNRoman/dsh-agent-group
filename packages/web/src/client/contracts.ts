@@ -35,8 +35,14 @@ export type WorkspaceRpcError =
     readonly details: { readonly issues: readonly unknown[] }
   }
   | {
-    readonly kind: 'cancelled' | 'internal'
-    readonly code: 'cancelled' | 'internal'
+    readonly kind: 'cancelled'
+    readonly code: 'cancelled'
+    readonly message: string
+    readonly details: Record<string, never>
+  }
+  | {
+    readonly kind: 'internal'
+    readonly code: 'internal'
     readonly message: string
     readonly details: Record<string, never>
   }
