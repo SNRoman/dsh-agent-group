@@ -4,10 +4,11 @@ import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
-import { AgentId } from '../packages/host/src/ids.ts'
+import { AgentId, RoomId } from '../packages/host/src/ids.ts'
 import { EmployeeAgentPool } from '../packages/host/src/runtime.ts'
 import type { EmployeeSessionSource } from '../packages/host/src/runtime.ts'
 import { WorkspaceTurnTracker } from '../packages/host/src/turn-tracker.ts'
+import { WorkspaceTurnStream } from '../packages/host/src/turn-stream.ts'
 
 function handle(dispose = vi.fn(async () => {})): AgentHandle {
   return { agent: { id: SessionId('agent') } as Agent, dispose }
@@ -208,7 +209,11 @@ describe('WorkspaceTurnTracker', () => {
     events.emit('agent/inbox/claimed', { message: delivery, turn: 3 })
     events.emit('session/event', {}, { type: 'assistant/message', data: { turn: 3, message: { content: [{ type: 'text', text: '8 months' }] } } })
     events.emit('session/event', {}, { type: 'turn/end', data: { turn: 3, reason: { kind: 'completed' } } })
-    await expect(outcome).resolves.toEqual({ output: [{ type: 'text', text: '8 months' }], stopReason: 'completed' })
+    await expect(outcome).resolves.toEqual({
+      output: [{ type: 'text', text: '8 months' }],
+      stopReason: { kind: 'completed' },
+      interrupted: false,
+    })
   })
 
   test('ignores assistant output from other turns', async () => {
@@ -222,7 +227,109 @@ describe('WorkspaceTurnTracker', () => {
     events.emit('session/event', {}, { type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: 'unrelated' }] } } })
     events.emit('session/event', {}, { type: 'assistant/message', data: { turn: 2, message: { content: [{ type: 'text', text: 'mine' }] } } })
     events.emit('session/event', {}, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
-    await expect(outcome).resolves.toEqual({ output: [{ type: 'text', text: 'mine' }], stopReason: 'completed' })
+    await expect(outcome).resolves.toEqual({
+      output: [{ type: 'text', text: 'mine' }],
+      stopReason: { kind: 'completed' },
+      interrupted: false,
+    })
+  })
+
+  test('reports the authoritative aborted reason and interrupted assistant output', async () => {
+    const events = fakeEvents()
+    const tracker = new WorkspaceTurnTracker()
+    tracker.install(events as unknown as Context)
+    const agent = { followup: vi.fn() } as unknown as Agent
+    const delivery = text('deliver')
+    const outcome = tracker.deliver(agent, delivery)
+
+    events.emit('agent/inbox/claimed', { message: delivery, turn: 4 })
+    events.emit('session/event', {}, {
+      type: 'assistant/message',
+      data: {
+        turn: 4,
+        step: 1,
+        message: { content: [{ type: 'text', text: 'partial reply' }] },
+        interrupted: true,
+      },
+    })
+    events.emit('session/event', {}, {
+      type: 'turn/end',
+      data: { turn: 4, reason: { kind: 'aborted', reason: { kind: 'user' } } },
+    })
+
+    await expect(outcome).resolves.toEqual({
+      output: [{ type: 'text', text: 'partial reply' }],
+      stopReason: { kind: 'aborted', reason: { kind: 'user' } },
+      interrupted: true,
+    })
+  })
+
+  test('settles one claimed delivery only once when its terminal event is repeated', async () => {
+    const events = fakeEvents()
+    const stream = new WorkspaceTurnStream()
+    const tracker = new WorkspaceTurnTracker({
+      agentId: AgentId('alice'),
+      sessionId: SessionId('alice-session'),
+      stream,
+    })
+    tracker.install(events as unknown as Context)
+    const agent = { followup: vi.fn() } as unknown as Agent
+    const delivery = text('deliver')
+    const outcome = tracker.deliver(agent, delivery, undefined, RoomId('room-1'))
+
+    events.emit('agent/inbox/claimed', { message: delivery, turn: 5 })
+    events.emit('session/event', {}, {
+      type: 'assistant/message',
+      data: { turn: 5, step: 1, message: { content: [{ type: 'text', text: 'done' }] } },
+    })
+    events.emit('session/event', {}, {
+      type: 'turn/end',
+      data: { turn: 5, reason: { kind: 'completed' } },
+    })
+    const terminalVersion = stream.snapshot().version
+    events.emit('session/event', {}, {
+      type: 'turn/end',
+      data: { turn: 5, reason: { kind: 'error', error: { code: 'LATE', message: 'duplicate' } } },
+    })
+
+    await expect(outcome).resolves.toMatchObject({
+      stopReason: { kind: 'completed' },
+      interrupted: false,
+    })
+    expect(stream.snapshot().version).toBe(terminalVersion)
+    expect(stream.snapshot().turns).toHaveLength(1)
+  })
+
+  test('long-poll cancellation leaves the tracked agent outcome untouched', async () => {
+    const events = fakeEvents()
+    const stream = new WorkspaceTurnStream()
+    const tracker = new WorkspaceTurnTracker({
+      agentId: AgentId('alice'),
+      sessionId: SessionId('alice-session'),
+      stream,
+    })
+    tracker.install(events as unknown as Context)
+    const agent = { followup: vi.fn() } as unknown as Agent
+    const delivery = text('deliver')
+    const outcome = tracker.deliver(agent, delivery, undefined, RoomId('room-1'))
+    events.emit('agent/inbox/claimed', { message: delivery, turn: 6 })
+
+    let outcomeSettled = false
+    void outcome.then(() => { outcomeSettled = true })
+    const beforeWait = stream.snapshot()
+    const controller = new AbortController()
+    const wait = stream.wait(beforeWait.version, controller.signal)
+    controller.abort()
+
+    await expect(wait).rejects.toMatchObject({ name: 'AbortError' })
+    expect(outcomeSettled).toBe(false)
+    expect(stream.snapshot()).toEqual(beforeWait)
+
+    events.emit('session/event', {}, {
+      type: 'turn/end',
+      data: { turn: 6, reason: { kind: 'completed' } },
+    })
+    await expect(outcome).resolves.toMatchObject({ stopReason: { kind: 'completed' } })
   })
 
   test('rejects a delivery that is discarded before its turn is claimed', async () => {

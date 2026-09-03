@@ -15,7 +15,7 @@ import { recallAgentEvents } from './memory.ts'
 import { assertRoomMessageAuthorized } from './room-policy.ts'
 import { completeTask, recordChildRunStarted } from './tasks.ts'
 import { assertAssignedTaskRunnable } from './task-policy.ts'
-import type { DeliveryOutcome } from './turn-tracker.ts'
+import type { WorkspaceTurnOutcome } from './turn-tracker.ts'
 import type { WorkspaceTurnIdentity } from './turn-stream.ts'
 import type { WorkspaceActor, WorkspaceCommand, WorkspaceState } from './types.ts'
 
@@ -24,7 +24,7 @@ export interface WorkspaceDispatcherHost {
   snapshot(): WorkspaceState
   execute(command: WorkspaceCommand, settledTurn?: WorkspaceTurnIdentity): Promise<WorkspaceState>
   apply(mutation: (state: WorkspaceState) => WorkspaceState): Promise<WorkspaceState>
-  deliver(agentId: AgentId, delivery: UserMessage, recall?: UserMessage, roomId?: RoomId): Promise<DeliveryOutcome>
+  deliver(agentId: AgentId, delivery: UserMessage, recall?: UserMessage, roomId?: RoomId): Promise<WorkspaceTurnOutcome>
   ensureEmployee(agentId: AgentId): Promise<AgentHandle>
   retireWorkspaceTurn?(turn: WorkspaceTurnIdentity, workspaceRevision: number): void
 }
@@ -211,22 +211,24 @@ export class WorkspaceDispatcher {
       if (!this.isEmployed(this.host.snapshot(), item.agentId)) continue
       const outcome = await this.wakeOutcome(item.agentId, roomId, item.triggeredBy)
       const reply = textOf(outcome.output)
-      replies++
-      const next = parseRoomMentions(this.host.snapshot(), roomId, reply)
-      if (reply.trim() !== '') {
+      const successful = outcome.stopReason.kind === 'completed' || outcome.stopReason.kind === 'max-tokens'
+      if (successful && reply.trim() !== '') {
+        replies++
+        const next = parseRoomMentions(this.host.snapshot(), roomId, reply)
         const actor: WorkspaceActor = { type: 'agent', id: item.agentId }
         assertRoomMessageAuthorized(this.host.snapshot(), roomId, actor, next)
         await this.host.execute(
           { type: 'room/message', roomId, actor, text: reply, mentions: next },
           outcome.workspaceTurn,
         )
+        for (const nextAgentId of next) {
+          queue.push({ agentId: nextAgentId, triggeredBy: reply, depth: item.depth + 1 })
+        }
       } else if (outcome.workspaceTurn !== undefined) {
         // A tool-only/empty-text reply has no Workspace room message to commit,
-        // so retire its transient projection against the current durable revision.
+        // and only DSH's completed/max-tokens reasons prove a successful step.
+        // Retire every uncommitted transient against the current durable revision.
         this.host.retireWorkspaceTurn?.(outcome.workspaceTurn, this.host.snapshot().revision)
-      }
-      for (const nextAgentId of next) {
-        queue.push({ agentId: nextAgentId, triggeredBy: reply, depth: item.depth + 1 })
       }
     }
   }
@@ -236,7 +238,7 @@ export class WorkspaceDispatcher {
     return textOf(outcome.output)
   }
 
-  private async wakeOutcome(agentId: AgentId, roomId: RoomId | undefined, query: string): Promise<DeliveryOutcome> {
+  private async wakeOutcome(agentId: AgentId, roomId: RoomId | undefined, query: string): Promise<WorkspaceTurnOutcome> {
     const state = this.host.snapshot()
     const recall = roomId === undefined
       ? { rendered: '' }

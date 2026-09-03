@@ -82,11 +82,15 @@ export function WorkspaceOverlay({ useStore, actions, api }: WorkspaceOverlayPro
       actions.setBusy(true)
       actions.setError(undefined)
       try {
-        const [initialSnapshot, initialStream] = await Promise.all([
+        let [initialSnapshot, initialStream] = await Promise.all([
           api.snapshot(controller.signal),
           api.streamSnapshot(controller.signal),
         ])
         if (controller.signal.aborted) return
+        if (initialStream.workspaceRevision > initialSnapshot.revision) {
+          initialSnapshot = await api.snapshot(controller.signal)
+          if (controller.signal.aborted) return
+        }
         actions.setSnapshot(initialSnapshot)
         setTurnStream(initialStream)
         setStreamError(undefined)
@@ -215,7 +219,7 @@ export function WorkspaceOverlay({ useStore, actions, api }: WorkspaceOverlayPro
           : ui.mode === 'chat'
             ? <ChatWorkspace
                 snapshot={snapshot}
-                liveTurns={turnStream.turns}
+                liveTurns={visibleWorkspaceTurns(snapshot.revision, turnStream)}
                 selectedRoomId={ui.selectedRoomId}
                 busy={ui.busy}
                 draft={draft}
@@ -582,6 +586,14 @@ function AgentWorkspace(props: AgentWorkspaceProps) {
 
 function Field({ label, children }: { readonly label: string; readonly children: React.ReactNode }) {
   return <div className="dsh-agent-group-field"><label>{label}</label>{children}</div>
+}
+
+function visibleWorkspaceTurns(
+  durableRevision: number,
+  stream: WorkspaceTurnStreamSnapshot,
+): readonly WorkspaceTurnProjection[] {
+  if (durableRevision <= stream.workspaceRevision) return stream.turns
+  return stream.turns.filter(turn => turn.status === 'running')
 }
 
 async function refresh(

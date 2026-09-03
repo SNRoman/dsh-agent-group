@@ -4,6 +4,7 @@ import { HumanId, WorkspaceId } from '../packages/host/src/ids.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import { WorkspaceApiClient, WorkspaceApiError } from '../packages/web/src/client/api.ts'
 import { WorkspaceOverlay } from '../packages/web/src/client/WorkspaceUi.tsx'
+import type { WorkspaceTurnStreamSnapshot } from '../packages/web/src/client/contracts.ts'
 import {
   activeRoomMembers,
   appendDisplayMention,
@@ -15,8 +16,14 @@ import {
 // The composer remains real; only the unused message renderer is replaced
 // because its published CSS modules cannot load in the Node test environment.
 vi.mock('../packages/web/src/client/WorkspaceTurn.tsx', () => ({
-  WorkspaceLiveTurn: () => null,
-  WorkspaceMarkdownMessage: () => null,
+  WorkspaceLiveTurn: ({ turn }: { readonly turn: { readonly sessionId: string; readonly turn: number } }) => ({
+    type: 'article',
+    props: {
+      className: 'dsh-agent-group-message dsh-agent-group-live-turn',
+      'data-turn': `${turn.sessionId}:${turn.turn}`,
+    },
+  }),
+  WorkspaceMarkdownMessage: ({ text }: { readonly text: string }) => text,
 }))
 
 function workspaceFixture() {
@@ -84,7 +91,7 @@ afterEach(() => {
   for (const restore of componentHarnessRestorers.splice(0).reverse()) restore()
 })
 
-function componentHarness() {
+function componentHarness(initialTurnStream?: WorkspaceTurnStreamSnapshot) {
   const webRequire = createRequire(new URL('../packages/web/package.json', import.meta.url))
   const react = webRequire('react') as {
     __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: {
@@ -92,7 +99,9 @@ function componentHarness() {
     }
   }
   const states = new Map<TestComponent, unknown[]>()
+  const effects = new Map<TestComponent, Array<() => void | (() => void)>>()
   let currentState: unknown[] = []
+  let currentEffects: Array<() => void | (() => void)> = []
   let hookIndex = 0
   const dispatcher = react.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED.ReactCurrentDispatcher
   const previousDispatcher = dispatcher.current
@@ -100,21 +109,29 @@ function componentHarness() {
   dispatcher.current = {
     useState(initial: unknown) {
       const index = hookIndex++
-      if (!(index in currentState)) currentState[index] = typeof initial === 'function' ? (initial as () => unknown)() : initial
+      if (!(index in currentState)) {
+        const value = typeof initial === 'function' ? (initial as () => unknown)() : initial
+        currentState[index] = initialTurnStream !== undefined && isTurnStreamSnapshot(value)
+          ? initialTurnStream
+          : value
+      }
       const owner = currentState
       return [owner[index], (next: unknown) => {
         owner[index] = typeof next === 'function' ? (next as (previous: unknown) => unknown)(owner[index]) : next
       }]
     },
-    useEffect() { hookIndex += 1 },
+    useEffect(effect: () => void | (() => void)) { hookIndex += 1; currentEffects.push(effect) },
     useMemo(factory: () => unknown) { hookIndex += 1; return factory() },
   }
 
   const render = (component: TestComponent, props: Readonly<Record<string, unknown>>): unknown => {
     currentState = states.get(component) ?? []
     states.set(component, currentState)
+    currentEffects = []
     hookIndex = 0
-    return component(props)
+    const rendered = component(props)
+    effects.set(component, currentEffects)
+    return rendered
   }
 
   const find = (root: unknown, predicate: (element: TestElement) => boolean): TestElement | undefined => {
@@ -131,14 +148,155 @@ function componentHarness() {
     return find(root.props['children'], predicate)
   }
 
-  return { find, render }
+  const findAll = (root: unknown, predicate: (element: TestElement) => boolean): TestElement[] => {
+    if (Array.isArray(root)) return root.flatMap(child => findAll(child, predicate))
+    if (!isTestElement(root)) return []
+    if (typeof root.type === 'function') return findAll(render(root.type as TestComponent, root.props), predicate)
+    return [
+      ...(predicate(root) ? [root] : []),
+      ...findAll(root.props['children'], predicate),
+    ]
+  }
+
+  return { effectsFor: (component: TestComponent) => effects.get(component) ?? [], find, findAll, render }
 }
 
 function isTestElement(value: unknown): value is TestElement {
   return typeof value === 'object' && value !== null && 'type' in value && 'props' in value
 }
 
+function isTurnStreamSnapshot(value: unknown): value is WorkspaceTurnStreamSnapshot {
+  return typeof value === 'object'
+    && value !== null
+    && 'version' in value
+    && 'workspaceRevision' in value
+    && 'turns' in value
+}
+
+function pendingPromise<T>(): { readonly promise: Promise<T>; readonly reject: (reason: unknown) => void } {
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((_resolve, rejectPromise) => { reject = rejectPromise })
+  return { promise, reject }
+}
+
+function settlementFixture() {
+  const fixture = workspaceFixture()
+  const beforeSettlement = fixture.state
+  const afterSettlement = mutateWorkspace(beforeSettlement, {
+    type: 'room/message',
+    roomId: fixture.roomId,
+    actor: { type: 'agent', id: fixture.aliceId },
+    text: 'done',
+    mentions: [],
+  }).state
+  const laggingStream: WorkspaceTurnStreamSnapshot = {
+    version: 4,
+    workspaceRevision: beforeSettlement.revision,
+    turns: [{
+      roomId: fixture.roomId,
+      agentId: fixture.aliceId,
+      sessionId: 'alice-session',
+      turn: 3,
+      status: 'settled',
+      blocks: [{ kind: 'text', index: 0, text: 'done' }],
+      stopReason: 'completed',
+    }],
+  }
+  const retiredStream: WorkspaceTurnStreamSnapshot = {
+    version: 5,
+    workspaceRevision: afterSettlement.revision,
+    turns: [],
+  }
+  return { fixture, beforeSettlement, afterSettlement, laggingStream, retiredStream }
+}
+
 describe('workspace UI view model', () => {
+  it('renders one agent row across pre-commit, racing, and retired settlement snapshots', () => {
+    const { fixture, beforeSettlement, afterSettlement, laggingStream, retiredStream } = settlementFixture()
+    const ui = {
+      open: true,
+      mode: 'chat' as const,
+      selectedRoomId: fixture.roomId,
+      snapshot: afterSettlement,
+      busy: false,
+    }
+    const actions = {
+      close: vi.fn(),
+      setMode: vi.fn(),
+      selectRoom: vi.fn(),
+      selectDefinition: vi.fn(),
+      setSnapshot: vi.fn(),
+      setBusy: vi.fn(),
+      setError: vi.fn(),
+    }
+    const props = { useStore: (selector: (state: unknown) => unknown) => selector(ui), actions, api: {} }
+    const isMessageRow = (element: TestElement): boolean => element.props['className'] === 'dsh-agent-group-message'
+      || element.props['className'] === 'dsh-agent-group-message dsh-agent-group-live-turn'
+
+    const beforeHarness = componentHarness(laggingStream)
+    const beforeTree = beforeHarness.render(WorkspaceOverlay as unknown as TestComponent, {
+      ...props,
+      useStore: (selector: (state: unknown) => unknown) => selector({ ...ui, snapshot: beforeSettlement }),
+    })
+    expect(beforeHarness.findAll(beforeTree, isMessageRow)).toHaveLength(2)
+
+    const racingHarness = componentHarness(laggingStream)
+    const racingTree = racingHarness.render(WorkspaceOverlay as unknown as TestComponent, props)
+    expect(racingHarness.findAll(racingTree, isMessageRow)).toHaveLength(2)
+
+    const retiredHarness = componentHarness(retiredStream)
+    const retiredTree = retiredHarness.render(WorkspaceOverlay as unknown as TestComponent, props)
+    expect(retiredHarness.findAll(retiredTree, isMessageRow)).toHaveLength(2)
+  })
+
+  it('refetches durable state when a reconnect observes stream retirement first', async () => {
+    const { fixture, beforeSettlement, afterSettlement, retiredStream } = settlementFixture()
+    const ui = {
+      open: true,
+      mode: 'chat' as const,
+      selectedRoomId: fixture.roomId,
+      snapshot: beforeSettlement,
+      busy: false,
+    }
+    const actions = {
+      close: vi.fn(),
+      setMode: vi.fn(),
+      selectRoom: vi.fn(),
+      selectDefinition: vi.fn(),
+      setSnapshot: vi.fn(),
+      setBusy: vi.fn(),
+      setError: vi.fn(),
+    }
+    const waitStarted = Promise.withResolvers<void>()
+    const pendingWait = pendingPromise<WorkspaceTurnStreamSnapshot>()
+    const controllerRejected = new Error('observer cancelled')
+    const reconnectApi = {
+      snapshot: vi.fn()
+        .mockResolvedValueOnce(beforeSettlement)
+        .mockResolvedValueOnce(afterSettlement),
+      streamSnapshot: vi.fn(async () => retiredStream),
+      waitForStream: vi.fn((_version: number, signal: AbortSignal) => {
+        signal.addEventListener('abort', () => pendingWait.reject(controllerRejected), { once: true })
+        waitStarted.resolve()
+        return pendingWait.promise
+      }),
+    }
+    const reconnectHarness = componentHarness()
+    reconnectHarness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector(ui),
+      actions,
+      api: reconnectApi,
+    })
+    const subscription = reconnectHarness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[0]
+    if (subscription === undefined) throw new Error('expected stream subscription effect')
+    const cleanup = subscription()
+    await waitStarted.promise
+    expect(reconnectApi.snapshot).toHaveBeenCalledTimes(2)
+    expect(actions.setSnapshot).toHaveBeenLastCalledWith(afterSettlement)
+    if (typeof cleanup === 'function') cleanup()
+    await Promise.resolve()
+  })
+
   it('preserves stable business error code and details from the Host', async () => {
     const client = new WorkspaceApiClient({
       rpc: {

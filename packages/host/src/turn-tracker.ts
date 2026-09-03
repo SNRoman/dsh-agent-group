@@ -9,16 +9,18 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock, MessageId, UserMessage } from '@deepseek-ai/dsh-llm'
-import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionId, TurnEndReason } from '@deepseek-ai/dsh-session'
 import type { AgentId, RoomId } from './ids.ts'
 import type { WorkspaceTurnIdentity, WorkspaceTurnStream } from './turn-stream.ts'
 
-/** The terminal reply captured for one delivery. */
-export interface DeliveryOutcome {
+/** The terminal Workspace reply captured for one delivery. */
+export interface WorkspaceTurnOutcome {
   /** Last non-empty assistant content the delivery's turn produced. */
   readonly output: ContentBlock[]
-  /** Why the owning turn closed, from its merge-extensible `TurnEndReason.kind`. */
-  readonly stopReason: string
+  /** Authoritative merge-extensible DSH reason that closed the owning turn. */
+  readonly stopReason: TurnEndReason
+  /** Whether the captured output is the prefix of an interrupted assistant message. */
+  readonly interrupted: boolean
   /** Exact transient Workspace turn, present only for room-backed deliveries. */
   readonly workspaceTurn?: WorkspaceTurnIdentity
 }
@@ -29,7 +31,9 @@ interface PendingDelivery {
   readonly roomId: RoomId | undefined
   turn: number | undefined
   output: ContentBlock[]
-  resolve: (outcome: DeliveryOutcome) => void
+  interrupted: boolean
+  settled: boolean
+  resolve: (outcome: WorkspaceTurnOutcome) => void
   reject: (reason: unknown) => void
 }
 
@@ -110,14 +114,19 @@ export class WorkspaceTurnTracker {
     }) as never)
 
     events.on('session/event', ((_session: unknown, event: SessionEvent) => {
-      const data = event.data as { turn?: number; message?: { content?: ContentBlock[] }; reason?: { kind?: string } }
-      if (typeof data.turn !== 'number') return
-      const pending = this.byTurn.get(data.turn)
+      const turn = 'turn' in event.data && typeof event.data.turn === 'number'
+        ? event.data.turn
+        : undefined
+      if (turn === undefined) return
+      const pending = this.byTurn.get(turn)
       if (pending === undefined) return
 
       if (event.type === 'assistant/message') {
-        const content = data.message?.content
-        if (content !== undefined && content.length > 0) pending.output = content
+        const content = event.data.message.content
+        if (content.length > 0) {
+          pending.output = content
+          pending.interrupted = event.data.interrupted === true
+        }
       }
 
       if (pending.roomId !== undefined && this.options !== undefined) {
@@ -130,19 +139,18 @@ export class WorkspaceTurnTracker {
       }
 
       if (event.type === 'turn/end') {
-        this.byTurn.delete(data.turn)
-        this.byMessage.delete(pending.messageId)
         const workspaceTurn = pending.roomId !== undefined && this.options !== undefined
           ? {
               roomId: pending.roomId,
               agentId: this.options.agentId,
               sessionId: this.options.sessionId,
-              turn: data.turn,
+              turn,
             }
           : undefined
-        pending.resolve({
+        this.settleResolved(pending, {
           output: pending.output,
-          stopReason: data.reason?.kind ?? 'completed',
+          stopReason: event.data.reason,
+          interrupted: pending.interrupted,
           ...(workspaceTurn === undefined ? {} : { workspaceTurn }),
         })
       }
@@ -160,14 +168,16 @@ export class WorkspaceTurnTracker {
    * @param roomId - owning Workspace room; absent for non-room tasks/children.
    * @returns the terminal reply outcome.
    */
-  deliver(agent: Agent, delivery: UserMessage, recall?: UserMessage, roomId?: RoomId): Promise<DeliveryOutcome> {
-    return new Promise<DeliveryOutcome>((resolve, reject) => {
+  deliver(agent: Agent, delivery: UserMessage, recall?: UserMessage, roomId?: RoomId): Promise<WorkspaceTurnOutcome> {
+    return new Promise<WorkspaceTurnOutcome>((resolve, reject) => {
       const pending: PendingDelivery = {
         messageId: delivery.id,
         recall,
         roomId,
         turn: undefined,
         output: [],
+        interrupted: false,
+        settled: false,
         resolve,
         reject,
       }
@@ -180,9 +190,22 @@ export class WorkspaceTurnTracker {
     })
   }
 
+  private settleResolved(pending: PendingDelivery, outcome: WorkspaceTurnOutcome): void {
+    if (pending.settled) return
+    pending.settled = true
+    this.removePending(pending)
+    pending.resolve(outcome)
+  }
+
   private settleRejected(pending: PendingDelivery, reason: unknown): void {
+    if (pending.settled) return
+    pending.settled = true
+    this.removePending(pending)
+    pending.reject(reason)
+  }
+
+  private removePending(pending: PendingDelivery): void {
     this.byMessage.delete(pending.messageId)
     if (pending.turn !== undefined) this.byTurn.delete(pending.turn)
-    pending.reject(reason)
   }
 }

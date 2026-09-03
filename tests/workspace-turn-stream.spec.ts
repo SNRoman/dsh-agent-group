@@ -87,13 +87,21 @@ describe('WorkspaceTurnStream', () => {
     const retired = stream.snapshot()
     expect(retired.workspaceRevision).toBe(12)
     expect(retired.turns).toEqual([])
+
+    const retiredVersion = retired.version
+    stream.retire({ roomId, agentId, sessionId, turn: 4 }, 12)
+    expect(stream.snapshot().version).toBe(retiredVersion)
   })
 
-  it('cancels a pending wait through AbortSignal', async () => {
+  it('cancels only the pending observer through AbortSignal', async () => {
     const stream = new WorkspaceTurnStream()
+    stream.begin({ roomId, agentId, sessionId, turn: 5 })
+    const beforeWait = stream.snapshot()
     const controller = new AbortController()
-    const pending = stream.wait(stream.snapshot().version, controller.signal)
+    const pending = stream.wait(beforeWait.version, controller.signal)
+    controller.abort()
     controller.abort()
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(stream.snapshot()).toEqual(beforeWait)
   })
 })

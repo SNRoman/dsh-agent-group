@@ -63,7 +63,11 @@ describe('non-blocking browser workspace dispatch', () => {
       },
       async deliver(_agentId: AgentId, _delivery: UserMessage, _recall?: UserMessage) {
         await gate.promise
-        return { output: [{ type: 'text' as const, text: 'done' }], stopReason: 'completed' }
+        return {
+          output: [{ type: 'text' as const, text: 'done' }],
+          stopReason: { kind: 'completed' as const },
+          interrupted: false,
+        }
       },
       async ensureEmployee() {
         return { agent: { id: 'session' } as never, dispose: async () => {} } as AgentHandle

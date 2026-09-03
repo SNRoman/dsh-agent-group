@@ -29,7 +29,7 @@ import { createInitialState, mutateWorkspace } from './state.ts'
 import { WorkspaceTurnStream } from './turn-stream.ts'
 import type { WorkspaceTurnIdentity, WorkspaceTurnStreamSnapshot } from './turn-stream.ts'
 import { WorkspaceTurnTracker } from './turn-tracker.ts'
-import type { DeliveryOutcome } from './turn-tracker.ts'
+import type { WorkspaceTurnOutcome } from './turn-tracker.ts'
 import type { WorkspaceCommand, WorkspaceState } from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -325,7 +325,7 @@ export class AgentWorkspaceDomainService extends Service {
    * optional recall is injected into the same durable turn, immediately after
    * the delivery.
    */
-  async deliver(agentId: AgentId, delivery: UserMessage, recall?: UserMessage, roomId?: RoomId): Promise<DeliveryOutcome> {
+  async deliver(agentId: AgentId, delivery: UserMessage, recall?: UserMessage, roomId?: RoomId): Promise<WorkspaceTurnOutcome> {
     const handle = await this.ensureEmployee(agentId)
     const tracker = this.trackers.get(agentId)
     if (tracker === undefined) throw new Error(`agent '${agentId}' has no turn tracker`)
