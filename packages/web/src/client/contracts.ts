@@ -6,6 +6,41 @@ export type AgentId = string
 export type RoomId = string
 export type MembershipId = string
 
+/** JSON values accepted in browser-visible business-error details. */
+export type WorkspaceErrorJson = null | boolean | number | string | readonly WorkspaceErrorJson[] | {
+  readonly [key: string]: WorkspaceErrorJson
+}
+
+/** Stable Host policy codes available for locale mapping. */
+export type WorkspaceBusinessErrorCode =
+  | 'reserved-direct-routing'
+  | 'agent-missing'
+  | 'agent-departed'
+  | 'duplicate-membership'
+  | 'stale-revision'
+  | 'invalid-task-authority'
+
+/** Browser-visible failure returned by the Agent Workspace RPC channel. */
+export type WorkspaceRpcError =
+  | {
+    readonly kind: 'business'
+    readonly code: WorkspaceBusinessErrorCode
+    readonly message: string
+    readonly details: WorkspaceErrorJson
+  }
+  | {
+    readonly kind: 'bad-request'
+    readonly code: 'bad-request'
+    readonly message: string
+    readonly details: { readonly issues: readonly unknown[] }
+  }
+  | {
+    readonly kind: 'cancelled' | 'internal'
+    readonly code: 'cancelled' | 'internal'
+    readonly message: string
+    readonly details: Record<string, never>
+  }
+
 export interface AgentDefinitionView {
   readonly id: AgentDefinitionId
   readonly name: string

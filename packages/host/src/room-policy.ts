@@ -1,7 +1,17 @@
 /** Pure room access checks shared by the durable service and dispatcher. */
 
+import { WorkspaceBusinessError } from './errors.ts'
 import type { AgentId, RoomId } from './ids.ts'
 import type { WorkspaceActor, WorkspaceState } from './types.ts'
+
+const RESERVED_DIRECT_ROUTING_TOKEN = /(?<![\p{L}\p{M}\p{N}\p{Pc}])@all(?![\p{L}\p{M}\p{N}\p{Pc}])/u
+
+/** Reject the group-only lowercase routing token in direct-room text. */
+export function assertDirectRoomTextAllowed(roomId: RoomId, text: string): void {
+  if (RESERVED_DIRECT_ROUTING_TOKEN.test(text)) {
+    throw new WorkspaceBusinessError('reserved-direct-routing', { roomId, token: '@all' })
+  }
+}
 
 /** Assert that an agent is an active member of one room. */
 export function assertActiveRoomMember(state: WorkspaceState, roomId: RoomId, agentId: AgentId): void {
@@ -31,11 +41,22 @@ export function resolveHumanWakeTargets(
   if (room === undefined) throw new Error(`room '${roomId}' does not exist`)
 
   if (room.kind === 'direct') {
-    const active = Object.values(state.memberships)
-      .filter(membership => membership.roomId === roomId && membership.leftEventId === undefined)
+    const memberships = Object.values(state.memberships).filter(membership => membership.roomId === roomId)
+    const active = memberships
+      .filter(membership => membership.leftEventId === undefined)
       .map(membership => state.agents[membership.agentId])
       .filter(agent => agent !== undefined && agent.employmentStatus === 'employed')
     if (active.length !== 1) {
+      const departed = memberships
+        .map(membership => state.agents[membership.agentId])
+        .find(agent => agent?.employmentStatus === 'departed')
+      if (departed !== undefined) {
+        throw new WorkspaceBusinessError(
+          'agent-departed',
+          { agentId: departed.id },
+          `direct room '${roomId}' must have exactly one active employed member`,
+        )
+      }
       throw new Error(`direct room '${roomId}' must have exactly one active employed member`)
     }
     const target = active[0]!
@@ -51,8 +72,12 @@ export function resolveHumanWakeTargets(
   const seen = new Set<AgentId>()
   for (const agentId of mentions) {
     const agent = state.agents[agentId]
-    if (agent === undefined) throw new Error(`mentioned agent '${agentId}' does not exist`)
-    if (agent.employmentStatus !== 'employed') throw new Error(`mentioned agent '${agentId}' is departed`)
+    if (agent === undefined) {
+      throw new WorkspaceBusinessError('agent-missing', { agentId }, `mentioned agent '${agentId}' does not exist`)
+    }
+    if (agent.employmentStatus !== 'employed') {
+      throw new WorkspaceBusinessError('agent-departed', { agentId }, `mentioned agent '${agentId}' is departed`)
+    }
     assertActiveRoomMember(state, roomId, agentId)
     if (!seen.has(agentId)) {
       seen.add(agentId)
@@ -77,15 +102,23 @@ export function assertRoomMessageAuthorized(
 
   if (actor.type === 'agent') {
     const agent = state.agents[actor.id]
-    if (agent === undefined) throw new Error(`agent '${actor.id}' does not exist`)
-    if (agent.employmentStatus !== 'employed') throw new Error(`agent '${actor.id}' is departed and cannot create room events`)
+    if (agent === undefined) {
+      throw new WorkspaceBusinessError('agent-missing', { agentId: actor.id }, `agent '${actor.id}' does not exist`)
+    }
+    if (agent.employmentStatus !== 'employed') {
+      throw new WorkspaceBusinessError('agent-departed', { agentId: actor.id }, `agent '${actor.id}' is departed and cannot create room events`)
+    }
     assertActiveRoomMember(state, roomId, actor.id)
   }
 
   for (const agentId of mentions) {
     const agent = state.agents[agentId]
-    if (agent === undefined) throw new Error(`agent '${agentId}' does not exist`)
-    if (agent.employmentStatus !== 'employed') throw new Error(`mentioned agent '${agentId}' is departed`)
+    if (agent === undefined) {
+      throw new WorkspaceBusinessError('agent-missing', { agentId }, `agent '${agentId}' does not exist`)
+    }
+    if (agent.employmentStatus !== 'employed') {
+      throw new WorkspaceBusinessError('agent-departed', { agentId }, `mentioned agent '${agentId}' is departed`)
+    }
     assertActiveRoomMember(state, roomId, agentId)
   }
 }

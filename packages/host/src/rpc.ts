@@ -1,6 +1,8 @@
 /** Plugin-owned RPC contract for the browser workspace UI. */
 
 import { z } from 'zod'
+import { WorkspaceBusinessError } from './errors.ts'
+import type { WorkspaceBusinessErrorCode, WorkspaceErrorJson } from './errors.ts'
 import {
   AgentDefinitionId,
   AgentId,
@@ -53,9 +55,30 @@ export type WorkspaceRpcResult =
   | {
     readonly ok: false
     readonly error:
-      | { readonly code: 'bad-request'; readonly message: string; readonly details: { readonly issues: readonly unknown[] } }
-      | { readonly code: 'cancelled'; readonly message: string; readonly details: Record<string, never> }
-      | { readonly code: 'internal'; readonly message: string; readonly details: Record<string, never> }
+      | {
+        readonly kind: 'business'
+        readonly code: WorkspaceBusinessErrorCode
+        readonly message: string
+        readonly details: WorkspaceErrorJson
+      }
+      | {
+        readonly kind: 'bad-request'
+        readonly code: 'bad-request'
+        readonly message: string
+        readonly details: { readonly issues: readonly unknown[] }
+      }
+      | {
+        readonly kind: 'cancelled'
+        readonly code: 'cancelled'
+        readonly message: string
+        readonly details: Record<string, never>
+      }
+      | {
+        readonly kind: 'internal'
+        readonly code: 'internal'
+        readonly message: string
+        readonly details: Record<string, never>
+      }
   }
 
 /** Structural Connection handler shape so the Host remains usable without the web stack. */
@@ -224,14 +247,8 @@ export function createWorkspaceRpcHandler(service: WorkspaceRpcService): Workspa
       }
     } catch (error) {
       if (signal.aborted || isAbortError(error)) return cancelled()
-      return {
-        ok: false,
-        error: {
-          code: 'bad-request',
-          message: error instanceof Error ? error.message : String(error),
-          details: { issues: [] },
-        },
-      }
+      if (error instanceof WorkspaceBusinessError) return business(error)
+      return internal()
     }
   }
 }
@@ -241,11 +258,30 @@ function success(value: WorkspaceRpcValue): WorkspaceRpcResult {
 }
 
 function invalid(issues: readonly unknown[], message = 'invalid agent workspace request'): WorkspaceRpcResult {
-  return { ok: false, error: { code: 'bad-request', message, details: { issues } } }
+  return { ok: false, error: { kind: 'bad-request', code: 'bad-request', message, details: { issues } } }
 }
 
 function cancelled(): WorkspaceRpcResult {
-  return { ok: false, error: { code: 'cancelled', message: 'agent workspace request cancelled', details: {} } }
+  return { ok: false, error: { kind: 'cancelled', code: 'cancelled', message: 'agent workspace request cancelled', details: {} } }
+}
+
+function business(error: WorkspaceBusinessError): WorkspaceRpcResult {
+  return {
+    ok: false,
+    error: {
+      kind: 'business',
+      code: error.code,
+      message: error.message,
+      details: structuredClone(error.details),
+    },
+  }
+}
+
+function internal(): WorkspaceRpcResult {
+  return {
+    ok: false,
+    error: { kind: 'internal', code: 'internal', message: 'agent workspace request failed', details: {} },
+  }
 }
 
 function isAbortError(error: unknown): boolean {

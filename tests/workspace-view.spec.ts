@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { createRequire } from 'node:module'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HumanId, WorkspaceId } from '../packages/host/src/ids.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
+import { WorkspaceApiClient, WorkspaceApiError } from '../packages/web/src/client/api.ts'
+import { WorkspaceOverlay } from '../packages/web/src/client/WorkspaceUi.tsx'
 import {
   activeRoomMembers,
   appendDisplayMention,
@@ -8,6 +11,13 @@ import {
   parseRoomMentionIds,
   roomMessageEvents,
 } from '../packages/web/src/client/view-model.ts'
+
+// The composer remains real; only the unused message renderer is replaced
+// because its published CSS modules cannot load in the Node test environment.
+vi.mock('../packages/web/src/client/WorkspaceTurn.tsx', () => ({
+  WorkspaceLiveTurn: () => null,
+  WorkspaceMarkdownMessage: () => null,
+}))
 
 function workspaceFixture() {
   let state = createInitialState(WorkspaceId('local'))
@@ -61,7 +71,163 @@ function roleAliasFixture() {
   return { state, roomId: room.roomId, productId: product.agentId, architectId: architect.agentId }
 }
 
+interface TestElement {
+  readonly type: unknown
+  readonly props: Readonly<Record<string, unknown>>
+}
+
+type TestComponent = (props: Readonly<Record<string, unknown>>) => unknown
+
+const componentHarnessRestorers: Array<() => void> = []
+
+afterEach(() => {
+  for (const restore of componentHarnessRestorers.splice(0).reverse()) restore()
+})
+
+function componentHarness() {
+  const webRequire = createRequire(new URL('../packages/web/package.json', import.meta.url))
+  const react = webRequire('react') as {
+    __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: {
+      ReactCurrentDispatcher: { current: unknown }
+    }
+  }
+  const states = new Map<TestComponent, unknown[]>()
+  let currentState: unknown[] = []
+  let hookIndex = 0
+  const dispatcher = react.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED.ReactCurrentDispatcher
+  const previousDispatcher = dispatcher.current
+  componentHarnessRestorers.push(() => { dispatcher.current = previousDispatcher })
+  dispatcher.current = {
+    useState(initial: unknown) {
+      const index = hookIndex++
+      if (!(index in currentState)) currentState[index] = typeof initial === 'function' ? (initial as () => unknown)() : initial
+      const owner = currentState
+      return [owner[index], (next: unknown) => {
+        owner[index] = typeof next === 'function' ? (next as (previous: unknown) => unknown)(owner[index]) : next
+      }]
+    },
+    useEffect() { hookIndex += 1 },
+    useMemo(factory: () => unknown) { hookIndex += 1; return factory() },
+  }
+
+  const render = (component: TestComponent, props: Readonly<Record<string, unknown>>): unknown => {
+    currentState = states.get(component) ?? []
+    states.set(component, currentState)
+    hookIndex = 0
+    return component(props)
+  }
+
+  const find = (root: unknown, predicate: (element: TestElement) => boolean): TestElement | undefined => {
+    if (Array.isArray(root)) {
+      for (const child of root) {
+        const match = find(child, predicate)
+        if (match !== undefined) return match
+      }
+      return undefined
+    }
+    if (!isTestElement(root)) return undefined
+    if (typeof root.type === 'function') return find(render(root.type as TestComponent, root.props), predicate)
+    if (predicate(root)) return root
+    return find(root.props['children'], predicate)
+  }
+
+  return { find, render }
+}
+
+function isTestElement(value: unknown): value is TestElement {
+  return typeof value === 'object' && value !== null && 'type' in value && 'props' in value
+}
+
 describe('workspace UI view model', () => {
+  it('preserves stable business error code and details from the Host', async () => {
+    const client = new WorkspaceApiClient({
+      rpc: {
+        call: async () => ({
+          ok: false,
+          error: {
+            kind: 'business',
+            code: 'reserved-direct-routing',
+            message: 'reserved-direct-routing',
+            details: { roomId: 'room-direct', token: '@all' },
+          },
+        }),
+      },
+    } as never)
+
+    let caught: unknown
+    try {
+      await client.postMessage('room-direct', '@all hello', [])
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(WorkspaceApiError)
+    expect(caught).toMatchObject({
+      kind: 'business',
+      code: 'reserved-direct-routing',
+      details: { roomId: 'room-direct', token: '@all' },
+    })
+  })
+
+  it('keeps the direct-room draft when the real composer receives a business failure', async () => {
+    const fixture = workspaceFixture()
+    const direct = mutateWorkspace(fixture.state, { type: 'room/create', kind: 'direct' })
+    const joined = mutateWorkspace(direct.state, {
+      type: 'room/join', roomId: direct.roomId, agentId: fixture.aliceId, memoryStart: { type: 'new-events' },
+    }).state
+    const ui: Record<string, unknown> = {
+      open: true,
+      mode: 'chat',
+      selectedRoomId: direct.roomId,
+      snapshot: joined,
+      busy: false,
+    }
+    const actions = {
+      close: vi.fn(),
+      setMode: vi.fn(),
+      selectRoom: vi.fn(),
+      selectDefinition: vi.fn(),
+      setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
+      setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
+      setError: vi.fn((error: string | undefined) => { ui['error'] = error }),
+    }
+    const api = {
+      postMessage: vi.fn(async () => {
+        throw new WorkspaceApiError({
+          kind: 'business',
+          code: 'reserved-direct-routing',
+          message: 'reserved-direct-routing',
+          details: { roomId: direct.roomId, token: '@all' },
+        })
+      }),
+    }
+    const props = {
+      useStore: (selector: (state: unknown) => unknown) => selector(ui),
+      actions,
+      api,
+    }
+    const harness = componentHarness()
+    const renderOverlay = (): unknown => harness.render(WorkspaceOverlay as unknown as TestComponent, props)
+
+    let tree = renderOverlay()
+    const textarea = harness.find(tree, element => element.type === 'textarea')
+    expect(textarea).toBeDefined()
+    ;(textarea!.props['onChange'] as (event: unknown) => void)({ target: { value: '@all hello' } })
+
+    tree = renderOverlay()
+    const composer = harness.find(tree, element => element.props['className'] === 'dsh-agent-group-compose-row')
+    expect(composer).toBeDefined()
+    const send = harness.find(composer, element => element.type === 'button')
+    expect(send).toBeDefined()
+    ;(send!.props['onClick'] as () => void)()
+    await vi.waitFor(() => expect(ui['error']).toBe('reserved-direct-routing'))
+    expect(api.postMessage).toHaveBeenCalledWith(direct.roomId, '@all hello', [])
+    expect(actions.setSnapshot).not.toHaveBeenCalled()
+
+    tree = renderOverlay()
+    const retained = harness.find(tree, element => element.type === 'textarea')
+    expect(retained?.props['value']).toBe('@all hello')
+  })
+
   it('projects only active memberships for the selected room', () => {
     const fixture = workspaceFixture()
     expect(activeRoomMembers(fixture.state, fixture.roomId).map(agent => agent.name)).toEqual(['Alice', 'Bob'])

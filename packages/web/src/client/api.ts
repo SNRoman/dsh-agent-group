@@ -10,6 +10,7 @@ import type {
   RoomId,
   WorkspaceDirectRoomResult,
   WorkspaceRuntimeStatus,
+  WorkspaceRpcError,
   WorkspaceSnapshot,
   WorkspaceTurnBlock,
   WorkspaceTurnProjection,
@@ -17,6 +18,25 @@ import type {
 } from './contracts.ts'
 
 const CHANNEL = '/agent-workspace'
+
+/** Typed RPC failure retained for Browser presentation and locale mapping. */
+export class WorkspaceApiError extends Error {
+  override readonly name = 'WorkspaceApiError'
+  readonly kind: WorkspaceRpcError['kind']
+  readonly code: WorkspaceRpcError['code']
+  readonly details: WorkspaceRpcError['details']
+
+  /**
+   * Preserve the machine-readable Host failure.
+   * @param error RPC failure returned by the Agent Workspace Host.
+   */
+  constructor(error: WorkspaceRpcError) {
+    super(error.message)
+    this.kind = error.kind
+    this.code = error.code
+    this.details = structuredClone(error.details)
+  }
+}
 
 /** Narrow client used only by the Agent Workspace overlay. */
 export class WorkspaceApiClient {
@@ -87,7 +107,7 @@ export class WorkspaceApiClient {
 
   private async invoke(endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown> {
     const result = await this.connection.rpc.call(CHANNEL, endpoint, payload, signal)
-    if (!result.ok) throw new Error(result.error.message)
+    if (!result.ok) throw new WorkspaceApiError(result.error as WorkspaceRpcError)
     return result.value
   }
 }

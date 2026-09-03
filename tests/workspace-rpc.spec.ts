@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import { WorkspaceBusinessError } from '../packages/host/src/errors.ts'
 import { AgentId, HumanId, RoomId, WorkspaceId } from '../packages/host/src/ids.ts'
 import { createInitialState } from '../packages/host/src/state.ts'
 import { createWorkspaceRpcHandler } from '../packages/host/src/rpc.ts'
@@ -105,6 +106,7 @@ describe('workspace rpc handler', () => {
     const result = await waiting
     expect(result.ok).toBe(false)
     if (result.ok) return
+    expect(result.error.kind).toBe('cancelled')
     expect(result.error.code).toBe('cancelled')
   })
 
@@ -154,15 +156,59 @@ describe('workspace rpc handler', () => {
     }])
   })
 
+  it('maps only typed policy failures to stable business errors', async () => {
+    const { service } = serviceFixture()
+    service.postHumanMessage = async () => {
+      throw new WorkspaceBusinessError('reserved-direct-routing', { roomId: 'room-direct', token: '@all' })
+    }
+    const result = await createWorkspaceRpcHandler(service)('room/post', {
+      roomId: 'room-direct',
+      text: '@all hello',
+      mentions: [],
+    }, new AbortController().signal)
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: 'business',
+        code: 'reserved-direct-routing',
+        message: 'reserved-direct-routing',
+        details: { roomId: 'room-direct', token: '@all' },
+      },
+    })
+  })
+
   it('rejects malformed input before reaching the workspace service', async () => {
     const { service, commands, posts } = serviceFixture()
     const handler = createWorkspaceRpcHandler(service)
     const result = await handler('room/join', { roomId: '', agentId: 'agent-1' }, new AbortController().signal)
     expect(result.ok).toBe(false)
     if (result.ok) return
+    expect(result.error.kind).toBe('bad-request')
     expect(result.error.code).toBe('bad-request')
     expect(commands).toEqual([])
     expect(posts).toEqual([])
+  })
+
+  it('maps unexpected exceptions to a display-safe internal error', async () => {
+    const { service } = serviceFixture()
+    service.execute = async () => {
+      throw new Error('sensitive backend failure')
+    }
+    const result = await createWorkspaceRpcHandler(service)('agent/create', {
+      definitionId: 'definition-1',
+      name: 'Alice',
+    }, new AbortController().signal)
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: 'internal',
+        code: 'internal',
+        message: 'agent workspace request failed',
+        details: {},
+      },
+    })
   })
 
   it('does not expose an arbitrary mutation endpoint', async () => {

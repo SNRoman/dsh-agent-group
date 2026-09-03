@@ -1,5 +1,6 @@
 /** Pure formal-task, delegation, and one-shot child-run mutations. */
 
+import { WorkspaceBusinessError } from './errors.ts'
 import {
   ChildRunId,
   DelegationGrantId,
@@ -158,7 +159,11 @@ export function assignDelegatedTask(state: WorkspaceState, request: AssignDelega
   const rootTask = requireRootTask(state, request.rootTaskId)
   const grant = activeGrantFor(state, rootTask.id, request.actorAgentId)
   if (grant === undefined) {
-    throw new Error(`agent '${request.actorAgentId}' needs an active human delegation grant for root task '${rootTask.id}'`)
+    throw new WorkspaceBusinessError(
+      'invalid-task-authority',
+      { taskId: rootTask.id, agentId: request.actorAgentId },
+      `agent '${request.actorAgentId}' needs an active human delegation grant for root task '${rootTask.id}'`,
+    )
   }
   requireOpenTask(rootTask)
   let changed = beginWorkspaceMutation(state)
@@ -274,8 +279,12 @@ function withTaskAndAssignment(state: WorkspaceState, task: WorkspaceTask, assig
 
 function requireEmployedAgent(state: WorkspaceState, agentId: AgentId): AgentInstance {
   const agent = state.agents[agentId]
-  if (agent === undefined) throw new Error(`agent '${agentId}' does not exist`)
-  if (agent.employmentStatus !== 'employed') throw new Error(`agent '${agentId}' is departed and cannot handle tasks`)
+  if (agent === undefined) {
+    throw new WorkspaceBusinessError('agent-missing', { agentId }, `agent '${agentId}' does not exist`)
+  }
+  if (agent.employmentStatus !== 'employed') {
+    throw new WorkspaceBusinessError('agent-departed', { agentId }, `agent '${agentId}' is departed and cannot handle tasks`)
+  }
   return agent
 }
 
@@ -297,7 +306,11 @@ function requireOpenTask(task: WorkspaceTask): void {
 
 function requireAssignmentFor(state: WorkspaceState, taskId: WorkspaceTaskId, agentId: AgentId): void {
   if (!Object.values(state.taskAssignments).some(assignment => assignment.taskId === taskId && assignment.assigneeAgentId === agentId)) {
-    throw new Error(`agent '${agentId}' is not assigned task '${taskId}'`)
+    throw new WorkspaceBusinessError(
+      'invalid-task-authority',
+      { taskId, agentId },
+      `agent '${agentId}' is not assigned task '${taskId}'`,
+    )
   }
 }
 

@@ -13,12 +13,13 @@ import type { AgentHandle, ModelSelection, ModelSelectionRef } from '@deepseek-a
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
+import { WorkspaceBusinessError } from './errors.ts'
 import { AgentId, HumanId, RoomId, TaskId, WorkspaceId } from './ids.ts'
 import { WorkspaceDispatcher } from './dispatcher.ts'
 import type { DispatcherLimits, SubagentRuntimeLike } from './dispatcher.ts'
 import { assertWorkspaceInvariants } from './invariant.ts'
 import { joinRoomWithMemory } from './memory.ts'
-import { assertRoomMessageAuthorized, resolveHumanWakeTargets } from './room-policy.ts'
+import { assertDirectRoomTextAllowed, assertRoomMessageAuthorized, resolveHumanWakeTargets } from './room-policy.ts'
 import { AGENT_WORKSPACE_RPC_CHANNEL, createWorkspaceRpcHandler } from './rpc.ts'
 import type { WorkspaceDirectRoomResult, WorkspaceRoomRuntimeStatus, WorkspaceRuntimeStatus } from './rpc.ts'
 import { EmployeeAgentPool } from './runtime.ts'
@@ -206,8 +207,16 @@ export class AgentWorkspaceDomainService extends Service {
     let resolvedRoomId: RoomId | undefined
     const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => {
       const agent = current.agents[agentId]
-      if (agent === undefined) throw new Error(`agent '${agentId}' does not exist`)
-      if (agent.employmentStatus !== 'employed') throw new Error(`agent '${agentId}' is departed and cannot be opened for direct chat`)
+      if (agent === undefined) {
+        throw new WorkspaceBusinessError('agent-missing', { agentId }, `agent '${agentId}' does not exist`)
+      }
+      if (agent.employmentStatus !== 'employed') {
+        throw new WorkspaceBusinessError(
+          'agent-departed',
+          { agentId },
+          `agent '${agentId}' is departed and cannot be opened for direct chat`,
+        )
+      }
 
       const matches = Object.values(current.rooms).filter(room => {
         if (room.kind !== 'direct') return false
@@ -347,7 +356,9 @@ export class AgentWorkspaceDomainService extends Service {
    * Host and is exposed to the Browser through runtimeStatus().
    */
   async postHumanMessage(roomId: RoomId, humanId: HumanId, text: string, mentions: readonly AgentId[]): Promise<WorkspaceState> {
-    const targets = resolveHumanWakeTargets(this.snapshot(), roomId, mentions)
+    const snapshot = this.snapshot()
+    if (snapshot.rooms[roomId]?.kind === 'direct') assertDirectRoomTextAllowed(roomId, text)
+    const targets = resolveHumanWakeTargets(snapshot, roomId, mentions)
     const started = await this.requireDispatcher().startHumanMessage(roomId, humanId, text, targets)
     if (targets.length === 0) return started.state
     this.beginRoomDispatch(roomId)

@@ -1,5 +1,6 @@
 /** Pure Workspace aggregate construction, mutations, and invariant checks. */
 
+import { WorkspaceBusinessError } from './errors.ts'
 import {
   AgentDefinitionId,
   AgentId,
@@ -300,10 +301,14 @@ function joinRoom(state: WorkspaceState, roomId: WorkspaceRoomId, agentId: Insta
   requireRoom(state, roomId)
   const agent = requireAgent(state, agentId)
   if (agent.employmentStatus === 'departed') {
-    throw new Error(`agent '${agentId}' is departed and cannot join room '${roomId}'`)
+    throw new WorkspaceBusinessError('agent-departed', { agentId }, `agent '${agentId}' is departed and cannot join room '${roomId}'`)
   }
   if (Object.values(state.memberships).some(membership => membership.roomId === roomId && membership.agentId === agentId && membership.leftEventId === undefined)) {
-    throw new Error(`agent '${agentId}' already has an active membership in room '${roomId}'`)
+    throw new WorkspaceBusinessError(
+      'duplicate-membership',
+      { roomId, agentId },
+      `agent '${agentId}' already has an active membership in room '${roomId}'`,
+    )
   }
   if (memoryStart.type === 'event-range' && memoryStart.startSequence > memoryStart.endSequence) {
     throw new Error(`room '${roomId}' membership history range is invalid`)
@@ -333,7 +338,9 @@ function appendRoomMessageEvent(state: WorkspaceState, command: RoomMessageComma
   requireText('room message', command.text)
   for (const agentId of command.mentions) {
     const agent = requireAgent(state, agentId)
-    if (agent.employmentStatus === 'departed') throw new Error(`mentioned agent '${agentId}' is departed`)
+    if (agent.employmentStatus === 'departed') {
+      throw new WorkspaceBusinessError('agent-departed', { agentId }, `mentioned agent '${agentId}' is departed`)
+    }
   }
   let changed = beginWorkspaceMutation(state)
   let event: WorkspaceEvent
@@ -365,14 +372,20 @@ function requireDefinition(state: WorkspaceState, definitionId: DefinitionId): A
 function requireRevision(state: WorkspaceState, definitionId: DefinitionId, revisionId: RevisionId): DefinitionRevision {
   const revision = state.definitionRevisions[revisionId]
   if (revision === undefined || revision.definitionId !== definitionId) {
-    throw new Error(`definition revision '${revisionId}' does not exist for definition '${definitionId}'`)
+    throw new WorkspaceBusinessError(
+      'stale-revision',
+      { definitionId, revisionId },
+      `definition revision '${revisionId}' does not exist for definition '${definitionId}'`,
+    )
   }
   return revision
 }
 
 function requireAgent(state: WorkspaceState, agentId: InstanceId): AgentInstance {
   const agent = state.agents[agentId]
-  if (agent === undefined) throw new Error(`agent '${agentId}' does not exist`)
+  if (agent === undefined) {
+    throw new WorkspaceBusinessError('agent-missing', { agentId }, `agent '${agentId}' does not exist`)
+  }
   return agent
 }
 
@@ -383,11 +396,16 @@ function requireRoom(state: WorkspaceState, roomId: WorkspaceRoomId): void {
 function requireActor(state: WorkspaceState, actor: WorkspaceActor): void {
   if (actor.type === 'agent') {
     const agent = requireAgent(state, actor.id)
-    if (agent.employmentStatus === 'departed') throw new Error(`agent '${actor.id}' is departed and cannot create room events`)
+    if (agent.employmentStatus === 'departed') {
+      throw new WorkspaceBusinessError('agent-departed', { agentId: actor.id }, `agent '${actor.id}' is departed and cannot create room events`)
+    }
   }
 }
 
 function requireEmployment(agent: AgentInstance, expected: AgentInstance['employmentStatus']): void {
+  if (agent.employmentStatus === 'departed' && expected === 'employed') {
+    throw new WorkspaceBusinessError('agent-departed', { agentId: agent.id }, `agent '${agent.id}' is already departed`)
+  }
   if (agent.employmentStatus !== expected) throw new Error(`agent '${agent.id}' is already ${agent.employmentStatus}`)
 }
 
