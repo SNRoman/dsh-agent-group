@@ -127,6 +127,16 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
     if (joined?.type !== 'room/member-joined' || joined.subjectId !== membership.id) {
       throw new Error(`membership '${membership.id}' has invalid join event '${membership.joinedEventId}'`)
     }
+    const employmentPeriods = agent.employmentPeriods.filter((period) => {
+      const started = events.get(period.startedEventId)!
+      if (joined.sequence <= started.sequence) return false
+      if (period.endedEventId === undefined) return true
+      return joined.sequence < events.get(period.endedEventId)!.sequence
+    })
+    if (employmentPeriods.length !== 1) {
+      throw new Error(`membership '${membership.id}' join event does not belong to one employment period`)
+    }
+    const employmentPeriod = employmentPeriods[0]!
     if (membership.leftEventId !== undefined) {
       const left = events.get(membership.leftEventId)
       if (left === undefined || left.sequence <= joined.sequence) {
@@ -139,6 +149,9 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
       } else if (left.type === 'agent/departed') {
         if (left.subjectId !== membership.agentId) {
           throw new Error(`membership '${membership.id}' departure event '${left.id}' belongs to another agent`)
+        }
+        if (employmentPeriod.endedEventId !== left.id) {
+          throw new Error(`membership '${membership.id}' employment period does not end with departure event '${left.id}'`)
         }
       } else {
         throw new Error(`membership '${membership.id}' has invalid leave event '${membership.leftEventId}'`)

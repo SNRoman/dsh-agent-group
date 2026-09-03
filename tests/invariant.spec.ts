@@ -285,6 +285,43 @@ describe('assertWorkspaceInvariants', () => {
     expect(() => assertWorkspaceInvariants(corrupt, WorkspaceId('local'))).toThrow(/departure event.*another agent/)
   })
 
+  test('accepts a membership closed by a room leave event', () => {
+    const state = buildState()
+    const membership = Object.values(state.memberships)[0]!
+    const left = mutateWorkspace(state, { type: 'room/leave', membershipId: membership.id })
+    expect(() => assertWorkspaceInvariants(left.state, WorkspaceId('local'))).not.toThrow()
+  })
+
+  test('rejects a membership closed by a later employment period departure', () => {
+    let state = createInitialState(WorkspaceId('local'))
+    const definition = mutateWorkspace(state, { type: 'definition/create', name: 'Worker', description: 'd', instructions: 'i' })
+    const agent = mutateWorkspace(definition.state, {
+      type: 'agent/create', definitionId: definition.definitionId, name: 'Alice',
+    })
+    const room = mutateWorkspace(agent.state, { type: 'room/create', kind: 'group', name: 'room' })
+    const firstJoin = mutateWorkspace(room.state, {
+      type: 'room/join', roomId: room.roomId, agentId: agent.agentId, memoryStart: { type: 'new-events' },
+    })
+    const firstMembership = Object.values(firstJoin.state.memberships)[0]!
+    const firstDeparture = mutateWorkspace(firstJoin.state, { type: 'agent/depart', agentId: agent.agentId })
+    const reemployed = mutateWorkspace(firstDeparture.state, { type: 'agent/employ', agentId: agent.agentId })
+    const secondJoin = mutateWorkspace(reemployed.state, {
+      type: 'room/join', roomId: room.roomId, agentId: agent.agentId, memoryStart: { type: 'new-events' },
+    })
+    const secondDeparture = mutateWorkspace(secondJoin.state, { type: 'agent/depart', agentId: agent.agentId })
+    assertWorkspaceInvariants(secondDeparture.state, WorkspaceId('local'))
+    const memberships = Object.values(secondDeparture.state.memberships)
+    const secondMembership = memberships.find(membership => membership.id !== firstMembership.id)!
+    const corrupt: WorkspaceState = {
+      ...secondDeparture.state,
+      memberships: {
+        ...secondDeparture.state.memberships,
+        [firstMembership.id]: { ...firstMembership, leftEventId: secondMembership.leftEventId },
+      },
+    }
+    expect(() => assertWorkspaceInvariants(corrupt, WorkspaceId('local'))).toThrow(/membership.*employment period.*departure/)
+  })
+
   test('rejects an event id whose suffix does not equal its sequence', () => {
     const state = buildState()
     const event = state.events[0]!
