@@ -62,3 +62,9 @@ Final fresh verification after the fixes:
 - Task 5 focused tests: 4 files, 23/23 passed.
 - `pnpm verify:client-copy`: passed.
 - `pnpm release:check`: AST gate, all three builds, typecheck, and 23 files with 204/204 tests passed.
+
+## Review fix round 2
+
+Scoped re-review approved stream error handling and alias isolation, then found remaining copy-gate bypasses through logical/nullish expressions, concise arrow functions, type assertions, and bare `@all` JSX outside its chip.
+
+RED fixtures added each syntax and increased the required diagnostic counts; the verifier produced only three of five JSX diagnostics before the fix. It now unwraps assertion expressions, follows conditional and display-producing logical/binary branches, checks concise display helpers, and accepts bare `@all` only inside the exact workspace chip class. A passing fixture protects the valid protocol chip.

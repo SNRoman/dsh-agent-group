@@ -8,14 +8,17 @@ export function protocolKind() {
 }
 
 export function PassingFixture({ t, agent }: Props) {
-  return <button
-    type="button"
-    className="workspace-action"
-    data-command="@all"
-    aria-label={t('action.open')}
-    title={t('action.open')}
-  >
-    {agent.name}
-    <span aria-hidden="true">✦</span>
-  </button>
+  return <>
+    <button
+      type="button"
+      className="workspace-action"
+      data-command="@all"
+      aria-label={t('action.open')}
+      title={t('action.open')}
+    >
+      {agent.name}
+      <span aria-hidden="true">✦</span>
+    </button>
+    <button type="button" className="dsh-agent-group-chip">@all</button>
+  </>
 }

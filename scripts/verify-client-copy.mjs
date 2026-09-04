@@ -60,6 +60,12 @@ function inspectFile(file) {
     if (ts.isReturnStatement(node) && containsDisplayLiteral(node.expression) && isDisplayHelper(node)) {
       report(source, node.expression, 'display-helper-return', 'return translated display text instead of a literal')
     }
+    if (ts.isArrowFunction(node)
+      && !ts.isBlock(node.body)
+      && containsDisplayLiteral(node.body)
+      && isDisplayFunction(node)) {
+      report(source, node.body, 'display-helper-return', 'return translated display text instead of a literal')
+    }
     ts.forEachChild(node, visit)
   }
 }
@@ -84,12 +90,21 @@ function containsDisplayLiteral(node) {
   if (ts.isTemplateExpression(node)) {
     return node.head.text.trim() !== '' || node.templateSpans.some(span => span.literal.text.trim() !== '')
   }
+  if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node) || ts.isSatisfiesExpression(node)) {
+    return containsDisplayLiteral(node.expression)
+  }
   if (ts.isParenthesizedExpression(node)) return containsDisplayLiteral(node.expression)
   if (ts.isConditionalExpression(node)) {
     return containsDisplayLiteral(node.whenTrue) || containsDisplayLiteral(node.whenFalse)
   }
-  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    return containsDisplayLiteral(node.left) || containsDisplayLiteral(node.right)
+  if (ts.isBinaryExpression(node)) {
+    const operator = node.operatorToken.kind
+    if (operator === ts.SyntaxKind.PlusToken
+      || operator === ts.SyntaxKind.AmpersandAmpersandToken
+      || operator === ts.SyntaxKind.BarBarToken
+      || operator === ts.SyntaxKind.QuestionQuestionToken) {
+      return containsDisplayLiteral(node.left) || containsDisplayLiteral(node.right)
+    }
   }
   return false
 }
@@ -98,12 +113,16 @@ function isDisplayHelper(returnStatement) {
   let current = returnStatement.parent
   while (current !== undefined) {
     if (ts.isFunctionDeclaration(current) || ts.isMethodDeclaration(current) || ts.isFunctionExpression(current) || ts.isArrowFunction(current)) {
-      const name = functionName(current)
-      return name !== undefined && DISPLAY_HELPER_NAME.test(name)
+      return isDisplayFunction(current)
     }
     current = current.parent
   }
   return false
+}
+
+function isDisplayFunction(node) {
+  const name = functionName(node)
+  return name !== undefined && DISPLAY_HELPER_NAME.test(name)
 }
 
 function functionName(node) {
@@ -129,7 +148,7 @@ function isHiddenGlyph(text) {
 
 function isTechnicalJsxText(text) {
   const value = text.text.trim()
-  if (value === '@all') return true
+  if (value === '@all') return hasLiteralClass(text.parent, 'dsh-agent-group-chip')
   if (value !== '@' && value !== '#') return false
   const parent = text.parent
   if (!ts.isJsxElement(parent)) return false

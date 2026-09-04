@@ -18,9 +18,9 @@ describe('client copy AST verifier', () => {
     expect(result.stderr).toMatch(/failing\.tsx:\d+:\d+ \[title\]/)
     expect(result.stderr).toMatch(/failing\.tsx:\d+:\d+ \[jsx-text\]/)
     expect(result.stderr).toMatch(/failing\.tsx:\d+:\d+ \[placeholder\]/)
-    expect(result.stderr.match(/\[jsx-text\]/g)?.length).toBeGreaterThanOrEqual(3)
-    expect(result.stderr.match(/\[aria-label\]/g)?.length).toBeGreaterThanOrEqual(2)
-    expect(result.stderr.match(/\[display-helper-return\]/g)?.length).toBeGreaterThanOrEqual(3)
+    expect(result.stderr.match(/\[jsx-text\]/g)?.length).toBeGreaterThanOrEqual(5)
+    expect(result.stderr.match(/\[aria-label\]/g)?.length).toBeGreaterThanOrEqual(3)
+    expect(result.stderr.match(/\[display-helper-return\]/g)?.length).toBeGreaterThanOrEqual(6)
   })
 
   it('accepts translations, technical attributes and user data expressions', () => {
