@@ -45,3 +45,20 @@ Vitest resolves the Browser-only store factory and UI primitive bundle to two te
 ## Concerns
 
 The real locale Browser bundle needs a small module-loader harness in Node tests because it is not a Node entry point. The release Browser smoke in Task 6 remains the authoritative assembled-profile proof.
+
+## Review fix round 1
+
+Independent review found that stream failures were formatted and cached in the current locale before render, and that the AST gate missed literals inside TSX expressions and compound display-helper returns. It also noted that the Browser test aliases applied to the whole suite.
+
+RED evidence:
+
+- A real overlay subscription failure rendered two rows after a locale change: a generic English request failure and a stream failure containing the cached Chinese prefix.
+- Extended verifier fixtures using JSX string expressions, expression accessibility attributes, conditional display returns, and interpolated template returns failed their expected diagnostic counts.
+
+The stream now stores its raw display-safe error and formats it once with the current locale and stream-specific fallback. The verifier inspects direct and compound display expressions while preserving only structurally identified technical markers. Vitest uses separate unit and locale projects, so the two Browser-only aliases apply only to the locale test.
+
+Final fresh verification after the fixes:
+
+- Task 5 focused tests: 4 files, 23/23 passed.
+- `pnpm verify:client-copy`: passed.
+- `pnpm release:check`: AST gate, all three builds, typecheck, and 23 files with 204/204 tests passed.

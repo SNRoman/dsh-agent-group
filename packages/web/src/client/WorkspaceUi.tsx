@@ -67,7 +67,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
   const [revisionInstructions, setRevisionInstructions] = useState('')
   const [syncExisting, setSyncExisting] = useState(true)
   const [turnStream, setTurnStream] = useState<WorkspaceTurnStreamSnapshot>(EMPTY_TURN_STREAM)
-  const [streamError, setStreamError] = useState<string | undefined>()
+  const [streamError, setStreamError] = useState<WorkspaceUiError | undefined>()
 
   // One cancellation-aware long-poll subscription replaces the former timer
   // polling. Stream versions wake the Browser only when authoritative Session
@@ -114,9 +114,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
         }
       } catch (error) {
         if (!controller.signal.aborted) {
-          const message = errorMessage(error, t)
-          setStreamError(message)
-          actions.setError(toUiError(error))
+          setStreamError(toUiError(error))
         }
       } finally {
         if (!controller.signal.aborted) actions.setBusy(false)
@@ -214,7 +212,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
         </header>
 
         {ui.error !== undefined ? <div className="dsh-agent-group-error">{errorMessage(ui.error, t)}</div> : null}
-        {streamError !== undefined && errorMessage(ui.error, t) !== streamError ? <div className="dsh-agent-group-error">{t('workspace.streamFailed', { detail: streamError })}</div> : null}
+        {streamError !== undefined ? <div className="dsh-agent-group-error">{errorMessage(streamError, t, 'workspace.streamFailed')}</div> : null}
         {snapshot === undefined
           ? <div className="dsh-agent-group-empty">{t('workspace.loading')}</div>
           : ui.mode === 'chat'
@@ -626,7 +624,11 @@ function toUiError(error: unknown): WorkspaceUiError {
     : String(error)
 }
 
-function errorMessage(error: unknown, t: TranslateNS<'agentWorkspace'>): string {
+function errorMessage(
+  error: unknown,
+  t: TranslateNS<'agentWorkspace'>,
+  fallback: 'workspace.requestFailed' | 'workspace.streamFailed' = 'workspace.requestFailed',
+): string {
   if (error instanceof WorkspaceApiError && error.kind === 'business') {
     switch (error.code) {
       case 'reserved-direct-routing': return t('error.reservedDirectRouting', error.details)
@@ -637,7 +639,7 @@ function errorMessage(error: unknown, t: TranslateNS<'agentWorkspace'>): string 
       case 'invalid-task-authority': return t('error.invalidTaskAuthority', error.details)
     }
   }
-  return t('workspace.requestFailed', { detail: error instanceof Error ? error.message : String(error) })
+  return t(fallback, { detail: error instanceof Error ? error.message : String(error) })
 }
 
 function WorkspaceIcon() {

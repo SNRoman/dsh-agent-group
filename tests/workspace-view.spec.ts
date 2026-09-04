@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HumanId, WorkspaceId } from '../packages/host/src/ids.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import { WorkspaceApiClient, WorkspaceApiError } from '../packages/web/src/client/api.ts'
+import { en, zh } from '../packages/web/src/client/locales.ts'
 import { WorkspaceOverlay } from '../packages/web/src/client/WorkspaceUi.tsx'
 import type { WorkspaceTurnStreamSnapshot } from '../packages/web/src/client/contracts.ts'
 import {
@@ -173,6 +174,11 @@ function isTurnStreamSnapshot(value: unknown): value is WorkspaceTurnStreamSnaps
     && 'turns' in value
 }
 
+function translate(dictionary: typeof zh | typeof en) {
+  return (key: keyof typeof zh, params?: Readonly<Record<string, string | number>>): string =>
+    dictionary[key].replace(/\{([^}]+)\}/g, (_token, name: string) => String(params?.[name] ?? `{${name}}`))
+}
+
 function pendingPromise<T>(): { readonly promise: Promise<T>; readonly reject: (reason: unknown) => void } {
   let reject!: (reason: unknown) => void
   const promise = new Promise<T>((_resolve, rejectPromise) => { reject = rejectPromise })
@@ -298,6 +304,54 @@ describe('workspace UI view model', () => {
     expect(actions.setSnapshot).toHaveBeenLastCalledWith(afterSettlement)
     if (typeof cleanup === 'function') cleanup()
     await Promise.resolve()
+  })
+
+  it('reformats a raw stream failure exactly once after the locale changes', async () => {
+    const fixture = workspaceFixture()
+    const ui: Record<string, unknown> = {
+      open: true,
+      mode: 'chat',
+      selectedRoomId: fixture.roomId,
+      snapshot: fixture.state,
+      busy: false,
+    }
+    const actions = {
+      close: vi.fn(),
+      setMode: vi.fn(),
+      selectRoom: vi.fn(),
+      selectDefinition: vi.fn(),
+      setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
+      setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
+      setError: vi.fn((error: unknown) => { ui['error'] = error }),
+    }
+    const stream = { version: 0, workspaceRevision: fixture.state.revision, turns: [] }
+    const api = {
+      snapshot: vi.fn(async () => fixture.state),
+      streamSnapshot: vi.fn(async () => stream),
+      waitForStream: vi.fn(async () => { throw new Error('upstream detail') }),
+    }
+    const harness = componentHarness()
+    harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector(ui),
+      actions,
+      api,
+      t: translate(zh),
+    })
+    const subscription = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[0]
+    if (subscription === undefined) throw new Error('expected stream subscription effect')
+    const cleanup = subscription()
+    await vi.waitFor(() => expect(api.waitForStream).toHaveBeenCalledOnce())
+
+    const rerendered = harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector(ui),
+      actions,
+      api,
+      t: translate(en),
+    })
+    const errors = harness.findAll(rerendered, element => element.props['className'] === 'dsh-agent-group-error')
+    expect(errors.map(error => error.props['children'])).toEqual(['Live status connection failed: upstream detail'])
+    expect(actions.setError).not.toHaveBeenCalledWith(expect.any(Error))
+    if (typeof cleanup === 'function') cleanup()
   })
 
   it('preserves stable business error code and details from the Host', async () => {

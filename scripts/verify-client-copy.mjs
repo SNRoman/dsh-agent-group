@@ -50,8 +50,14 @@ function inspectFile(file) {
     if (ts.isJsxText(node) && node.text.trim() !== '' && !isHiddenGlyph(node) && !isTechnicalJsxText(node)) {
       report(source, node, 'jsx-text', 'move display text to agentWorkspace locale')
     }
+    if (ts.isJsxExpression(node)
+      && !ts.isJsxAttribute(node.parent)
+      && containsDisplayLiteral(node.expression)
+      && !isTechnicalJsxExpression(node)) {
+      report(source, node, 'jsx-text', 'move display expression text to agentWorkspace locale')
+    }
     if (ts.isJsxAttribute(node)) inspectAttribute(source, node)
-    if (ts.isReturnStatement(node) && isLiteralText(node.expression) && isDisplayHelper(node)) {
+    if (ts.isReturnStatement(node) && containsDisplayLiteral(node.expression) && isDisplayHelper(node)) {
       report(source, node.expression, 'display-helper-return', 'return translated display text instead of a literal')
     }
     ts.forEachChild(node, visit)
@@ -63,11 +69,29 @@ function inspectAttribute(source, attribute) {
   if (!DISPLAY_ATTRIBUTES.has(name)) return
   if (attribute.initializer !== undefined && ts.isStringLiteral(attribute.initializer) && attribute.initializer.text.trim() !== '') {
     report(source, attribute.initializer, name, `translate literal ${name}`)
+    return
+  }
+  if (attribute.initializer !== undefined
+    && ts.isJsxExpression(attribute.initializer)
+    && containsDisplayLiteral(attribute.initializer.expression)) {
+    report(source, attribute.initializer, name, `translate literal ${name} expression`)
   }
 }
 
-function isLiteralText(node) {
-  return node !== undefined && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && node.text.trim() !== ''
+function containsDisplayLiteral(node) {
+  if (node === undefined) return false
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text.trim() !== ''
+  if (ts.isTemplateExpression(node)) {
+    return node.head.text.trim() !== '' || node.templateSpans.some(span => span.literal.text.trim() !== '')
+  }
+  if (ts.isParenthesizedExpression(node)) return containsDisplayLiteral(node.expression)
+  if (ts.isConditionalExpression(node)) {
+    return containsDisplayLiteral(node.whenTrue) || containsDisplayLiteral(node.whenFalse)
+  }
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    return containsDisplayLiteral(node.left) || containsDisplayLiteral(node.right)
+  }
+  return false
 }
 
 function isDisplayHelper(returnStatement) {
@@ -122,6 +146,41 @@ function isTechnicalJsxText(text) {
     && className.initializer !== undefined
     && ts.isStringLiteral(className.initializer)
     && className.initializer.text === 'dsh-agent-group-chip'
+}
+
+function isTechnicalJsxExpression(expression) {
+  const node = expression.expression
+  if (node === undefined) return false
+  if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && node.text === '@all') {
+    return hasLiteralClass(expression.parent, 'dsh-agent-group-chip')
+  }
+  if (!ts.isConditionalExpression(node)
+    || !ts.isStringLiteral(node.whenTrue)
+    || node.whenTrue.text !== '# '
+    || !ts.isStringLiteral(node.whenFalse)
+    || node.whenFalse.text !== '') return false
+  return hasLiteralClass(expression.parent, 'dsh-agent-group-section-title')
+    && isKindComparison(node.condition, 'group')
+}
+
+function hasLiteralClass(node, expected) {
+  if (!ts.isJsxElement(node)) return false
+  const attribute = node.openingElement.attributes.properties.find(property =>
+    ts.isJsxAttribute(property) && property.name.text === 'className',
+  )
+  return attribute !== undefined
+    && ts.isJsxAttribute(attribute)
+    && attribute.initializer !== undefined
+    && ts.isStringLiteral(attribute.initializer)
+    && attribute.initializer.text === expected
+}
+
+function isKindComparison(node, expected) {
+  if (!ts.isBinaryExpression(node) || node.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken) return false
+  return ts.isPropertyAccessExpression(node.left)
+    && node.left.name.text === 'kind'
+    && ts.isStringLiteral(node.right)
+    && node.right.text === expected
 }
 
 function report(source, node, category, message) {
