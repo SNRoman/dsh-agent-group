@@ -10,6 +10,7 @@ import { prepareSourceCompatibility, sanitizeChildEnvironment } from '../scripts
 const execFile = promisify(execFileCallback)
 const peerRange = '>=0.1.1-rc.2 <0.1.2-0'
 const developmentVersion = '0.1.1-rc.2'
+const PROCESS_TEST_TIMEOUT_MS = 30_000
 const temporaryDirectories: string[] = []
 const verifyCompatibilityScript = fileURLToPath(new URL('../scripts/verify-compatibility.mjs', import.meta.url))
 
@@ -93,9 +94,9 @@ function declaration(commit: string): Compatibility {
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map(directory => rm(directory, { recursive: true, force: true })))
-})
+}, PROCESS_TEST_TIMEOUT_MS)
 
-describe('compatibility declaration', () => {
+describe('compatibility declaration', { timeout: PROCESS_TEST_TIMEOUT_MS }, () => {
   it('runs the compatibility validator against a matching fixture repository', async () => {
     const dsh = await createDshFixture()
     const compatibility = declaration(dsh.commit)
