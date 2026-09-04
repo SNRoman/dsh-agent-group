@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent, KeyboardEvent } from 'react'
-import type { PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PropsLocale, PropsRuntime, PropsStore, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
+import { WorkspaceApiError } from './api.ts'
 import type { WorkspaceApiClient } from './api.ts'
 import type {
   AgentDefinitionId,
@@ -15,7 +16,7 @@ import type {
   WorkspaceTurnProjection,
   WorkspaceTurnStreamSnapshot,
 } from './contracts.ts'
-import type { createWorkspaceUiStore } from './store.ts'
+import type { createWorkspaceUiStore, WorkspaceUiError } from './store.ts'
 import { WorkspaceLiveTurn, WorkspaceMarkdownMessage } from './WorkspaceTurn.tsx'
 import {
   activeRoomMembers,
@@ -29,30 +30,30 @@ import {
 
 type WorkspaceStoreProps = PropsStore<ReturnType<typeof createWorkspaceUiStore>>
 
-export type WorkspaceFooterActionProps = PropsRuntime<'sidebar.footer.action'> & WorkspaceStoreProps
-export type WorkspaceOverlayProps = PropsRuntime<'shell.overlay'> & WorkspaceStoreProps & { readonly api: WorkspaceApiClient }
+export type WorkspaceFooterActionProps = PropsRuntime<'sidebar.footer.action'> & WorkspaceStoreProps & PropsLocale<'agentWorkspace'>
+export type WorkspaceOverlayProps = PropsRuntime<'shell.overlay'> & WorkspaceStoreProps & PropsLocale<'agentWorkspace'> & { readonly api: WorkspaceApiClient }
 
 const EMPTY_TURN_STREAM: WorkspaceTurnStreamSnapshot = { version: 0, workspaceRevision: 0, turns: [] }
 
 /** Additive sidebar footer action. It owns no DSH navigation state. */
-export function WorkspaceFooterAction({ wide, actions }: WorkspaceFooterActionProps) {
+export function WorkspaceFooterAction({ wide, actions, t }: WorkspaceFooterActionProps) {
   return (
     <button
       type="button"
       className="dsh-agent-group-footer-button"
       data-wide={wide ? 'true' : 'false'}
       onClick={() => actions.open()}
-      title="智能体工作区"
-      aria-label="打开智能体工作区"
+      title={t('workspace.title')}
+      aria-label={t('workspace.open')}
     >
       <WorkspaceIcon />
-      {wide ? <span>智能体工作区</span> : null}
+      {wide ? <span>{t('workspace.title')}</span> : null}
     </button>
   )
 }
 
 /** Full workbench rendered only while the plugin-local open flag is true. */
-export function WorkspaceOverlay({ useStore, actions, api }: WorkspaceOverlayProps) {
+export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlayProps) {
   const ui = useStore(state => state)
   const [creatingRoom, setCreatingRoom] = useState(false)
   const [roomName, setRoomName] = useState('')
@@ -113,9 +114,9 @@ export function WorkspaceOverlay({ useStore, actions, api }: WorkspaceOverlayPro
         }
       } catch (error) {
         if (!controller.signal.aborted) {
-          const message = errorMessage(error)
+          const message = errorMessage(error, t)
           setStreamError(message)
-          actions.setError(message)
+          actions.setError(toUiError(error))
         }
       } finally {
         if (!controller.signal.aborted) actions.setBusy(false)
@@ -170,7 +171,7 @@ export function WorkspaceOverlay({ useStore, actions, api }: WorkspaceOverlayPro
       actions.setSnapshot(await operation())
       return true
     } catch (error) {
-      actions.setError(errorMessage(error))
+      actions.setError(toUiError(error))
       return false
     } finally {
       actions.setBusy(false)
@@ -186,36 +187,36 @@ export function WorkspaceOverlay({ useStore, actions, api }: WorkspaceOverlayPro
       actions.selectRoom(result.roomId)
       actions.setMode('chat')
     } catch (error) {
-      actions.setError(errorMessage(error))
+      actions.setError(toUiError(error))
     } finally {
       actions.setBusy(false)
     }
   }
 
   return (
-    <div className="dsh-agent-group-overlay-root" role="dialog" aria-modal="true" aria-label="智能体工作区">
+    <div className="dsh-agent-group-overlay-root" role="dialog" aria-modal="true" aria-label={t('workspace.title')}>
       <section className="dsh-agent-group-workbench">
         <header className="dsh-agent-group-topbar">
           <WorkspaceIcon />
-          <span className="dsh-agent-group-title">智能体工作区</span>
-          <nav className="dsh-agent-group-tabs" aria-label="工作区视图">
-            <button type="button" className="dsh-agent-group-tab" data-active={ui.mode === 'chat'} onClick={() => actions.setMode('chat')}>聊天</button>
-            <button type="button" className="dsh-agent-group-tab" data-active={ui.mode === 'agents'} onClick={() => actions.setMode('agents')}>智能体</button>
+          <span className="dsh-agent-group-title">{t('workspace.title')}</span>
+          <nav className="dsh-agent-group-tabs" aria-label={t('workspace.views')}>
+            <button type="button" className="dsh-agent-group-tab" data-active={ui.mode === 'chat'} onClick={() => actions.setMode('chat')}>{t('workspace.chat')}</button>
+            <button type="button" className="dsh-agent-group-tab" data-active={ui.mode === 'agents'} onClick={() => actions.setMode('agents')}>{t('workspace.agents')}</button>
           </nav>
           <span className="dsh-agent-group-spacer" />
           {ui.busy
-            ? <span className="dsh-agent-group-busy">处理中…</span>
+            ? <span className="dsh-agent-group-busy">{t('workspace.processing')}</span>
             : pendingDispatches > 0
-              ? <span className="dsh-agent-group-busy">智能体处理中…</span>
+              ? <span className="dsh-agent-group-busy">{t('workspace.agentsProcessing')}</span>
               : null}
-          <button type="button" className="dsh-agent-group-icon-button" onClick={() => void refresh(api, actions, setTurnStream)} aria-label="刷新" title="刷新"><RefreshIcon /></button>
-          <button type="button" className="dsh-agent-group-icon-button" onClick={() => actions.close()} aria-label="关闭" title="关闭"><CloseIcon /></button>
+          <button type="button" className="dsh-agent-group-icon-button" onClick={() => void refresh(api, actions, setTurnStream)} aria-label={t('workspace.refresh')} title={t('workspace.refresh')}><RefreshIcon /></button>
+          <button type="button" className="dsh-agent-group-icon-button" onClick={() => actions.close()} aria-label={t('workspace.close')} title={t('workspace.close')}><CloseIcon /></button>
         </header>
 
-        {ui.error !== undefined ? <div className="dsh-agent-group-error">{ui.error}</div> : null}
-        {streamError !== undefined && ui.error !== streamError ? <div className="dsh-agent-group-error">实时状态连接失败：{streamError}</div> : null}
+        {ui.error !== undefined ? <div className="dsh-agent-group-error">{errorMessage(ui.error, t)}</div> : null}
+        {streamError !== undefined && errorMessage(ui.error, t) !== streamError ? <div className="dsh-agent-group-error">{t('workspace.streamFailed', { detail: streamError })}</div> : null}
         {snapshot === undefined
-          ? <div className="dsh-agent-group-empty">正在读取智能体工作区…</div>
+          ? <div className="dsh-agent-group-empty">{t('workspace.loading')}</div>
           : ui.mode === 'chat'
             ? <ChatWorkspace
                 snapshot={snapshot}
@@ -246,6 +247,7 @@ export function WorkspaceOverlay({ useStore, actions, api }: WorkspaceOverlayPro
                 onJoin={agentId => ui.selectedRoomId === undefined ? Promise.resolve() : commit(() => api.joinRoom(ui.selectedRoomId as RoomId, agentId)).then(() => undefined)}
                 onLeave={membershipId => commit(() => api.leaveRoom(membershipId)).then(() => undefined)}
                 onOpenDirect={openDirect}
+                t={t}
               />
             : <AgentWorkspace
                 snapshot={snapshot}
@@ -302,6 +304,7 @@ export function WorkspaceOverlay({ useStore, actions, api }: WorkspaceOverlayPro
                 }}
                 onSetEmployment={(agentId, employed) => commit(() => api.setEmployment(agentId, employed)).then(() => undefined)}
                 onOpenDirect={openDirect}
+                t={t}
               />}
       </section>
     </div>
@@ -325,6 +328,7 @@ interface ChatWorkspaceProps {
   readonly onJoin: (agentId: AgentId) => Promise<void>
   readonly onLeave: (membershipId: MembershipId) => Promise<void>
   readonly onOpenDirect: (agentId: AgentId) => Promise<void>
+  readonly t: TranslateNS<'agentWorkspace'>
 }
 
 function ChatWorkspace(props: ChatWorkspaceProps) {
@@ -361,15 +365,15 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
     <div className="dsh-agent-group-body" data-mode="chat">
       <aside className="dsh-agent-group-panel">
         <div className="dsh-agent-group-section-head">
-          <span className="dsh-agent-group-section-title">会话</span>
-          <button type="button" className="dsh-agent-group-icon-button dsh-agent-group-right" onClick={() => props.onCreatingRoomChange(!props.creatingRoom)} aria-label="新建群聊"><PlusIcon /></button>
+          <span className="dsh-agent-group-section-title">{props.t('room.conversations')}</span>
+          <button type="button" className="dsh-agent-group-icon-button dsh-agent-group-right" onClick={() => props.onCreatingRoomChange(!props.creatingRoom)} aria-label={props.t('room.newGroup')}><PlusIcon /></button>
         </div>
         {props.creatingRoom ? <form className="dsh-agent-group-card" onSubmit={(event) => { event.preventDefault(); void props.onCreateRoom() }}>
           <div className="dsh-agent-group-form">
-            <input className="dsh-agent-group-input" value={props.roomName} onChange={event => props.onRoomNameChange(event.target.value)} placeholder="群聊名称" autoFocus />
+            <input className="dsh-agent-group-input" value={props.roomName} onChange={event => props.onRoomNameChange(event.target.value)} placeholder={props.t('room.name')} autoFocus />
             <div className="dsh-agent-group-inline">
-              <button type="submit" className="dsh-agent-group-button" disabled={props.busy || props.roomName.trim() === ''}>创建</button>
-              <button type="button" className="dsh-agent-group-button" data-variant="ghost" onClick={() => props.onCreatingRoomChange(false)}>取消</button>
+              <button type="submit" className="dsh-agent-group-button" disabled={props.busy || props.roomName.trim() === ''}>{props.t('room.create')}</button>
+              <button type="button" className="dsh-agent-group-button" data-variant="ghost" onClick={() => props.onCreatingRoomChange(false)}>{props.t('room.cancel')}</button>
             </div>
           </div>
         </form> : null}
@@ -377,25 +381,25 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
           {rooms.map(room => (
             <button key={room.id} type="button" className="dsh-agent-group-list-button" data-active={room.id === selectedRoomId} onClick={() => props.onSelectRoom(room.id)}>
               <ChatIcon />
-              <span>{roomLabel(snapshot, room.id)}</span>
-              <small>{room.kind === 'direct' ? '私聊' : activeRoomMembers(snapshot, room.id).length}</small>
+              <span>{roomLabel(snapshot, room.id, props.t)}</span>
+              <small>{room.kind === 'direct' ? props.t('room.direct') : activeRoomMembers(snapshot, room.id).length}</small>
             </button>
           ))}
-          {rooms.length === 0 ? <div className="dsh-agent-group-empty">还没有会话，可以新建群聊或从智能体实例发起私聊。</div> : null}
+          {rooms.length === 0 ? <div className="dsh-agent-group-empty">{props.t('room.empty')}</div> : null}
         </div>
       </aside>
 
       <main className="dsh-agent-group-chat">
         {selectedRoomId === undefined || selectedRoom === undefined
-          ? <div className="dsh-agent-group-empty">选择一个会话后开始协作。</div>
+          ? <div className="dsh-agent-group-empty">{props.t('room.select')}</div>
           : <>
             <div className="dsh-agent-group-section-head">
-              <span className="dsh-agent-group-section-title">{selectedRoom.kind === 'group' ? '# ' : ''}{roomLabel(snapshot, selectedRoomId)}</span>
-              <span className="dsh-agent-group-muted">{selectedRoom.kind === 'direct' ? '私聊' : `${members.length} 名成员`}</span>
+              <span className="dsh-agent-group-section-title">{selectedRoom.kind === 'group' ? '# ' : ''}{roomLabel(snapshot, selectedRoomId, props.t)}</span>
+              <span className="dsh-agent-group-muted">{selectedRoom.kind === 'direct' ? props.t('room.direct') : props.t('room.members', { count: members.length })}</span>
             </div>
             <div className="dsh-agent-group-messages">
               {messages.map(event => {
-                const name = actorLabel(snapshot, event.actor)
+                const name = actorLabel(snapshot, event.actor, props.t)
                 const text = formatMessageText(snapshot, event.text ?? '')
                 return <article className="dsh-agent-group-message" key={event.id}>
                   <div className="dsh-agent-group-avatar">{name.slice(0, 1).toUpperCase()}</div>
@@ -412,10 +416,11 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
                   key={`${turn.sessionId}:${turn.turn}:${turn.roomId}:${turn.agentId}`}
                   turn={turn}
                   agentName={snapshot.agents[turn.agentId]?.name ?? turn.agentId}
+                  t={props.t}
                 />
               ))}
               {messages.length === 0 && liveTurns.length === 0
-                ? <div className="dsh-agent-group-empty">这个会话还没有消息。</div>
+                ? <div className="dsh-agent-group-empty">{props.t('room.noMessages')}</div>
                 : null}
             </div>
             <div className="dsh-agent-group-composer">
@@ -429,25 +434,25 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
                   value={props.draft}
                   onChange={event => props.onDraftChange(event.target.value)}
                   onKeyDown={composerKeyDown}
-                  placeholder={selectedRoom.kind === 'group' ? '输入消息；可 @all 或 @成员，Ctrl/⌘ + Enter 发送' : '输入私聊消息，Ctrl/⌘ + Enter 发送'}
+                  placeholder={selectedRoom.kind === 'group' ? props.t('room.groupPlaceholder') : props.t('room.directPlaceholder')}
                 />
-                <button type="button" className="dsh-agent-group-button" disabled={props.busy || props.draft.trim() === ''} onClick={() => void props.onPost()}>发送</button>
+                <button type="button" className="dsh-agent-group-button" disabled={props.busy || props.draft.trim() === ''} onClick={() => void props.onPost()}>{props.t('room.send')}</button>
               </div>
             </div>
           </>}
       </main>
 
       <aside className="dsh-agent-group-panel">
-        <div className="dsh-agent-group-section-head"><span className="dsh-agent-group-section-title">{selectedRoom?.kind === 'direct' ? '私聊对象' : '群成员'}</span></div>
+        <div className="dsh-agent-group-section-head"><span className="dsh-agent-group-section-title">{selectedRoom?.kind === 'direct' ? props.t('room.directTarget') : props.t('room.groupMembers')}</span></div>
         <div className="dsh-agent-group-scroll">
           {selectedRoom?.kind === 'group' && candidates.length > 0 ? <div className="dsh-agent-group-card">
             <div className="dsh-agent-group-field">
-              <label>添加智能体</label>
+              <label>{props.t('room.addAgent')}</label>
               <select className="dsh-agent-group-select" value={candidate} onChange={event => setCandidate(event.target.value)}>
                 {candidates.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
               </select>
             </div>
-            <button type="button" className="dsh-agent-group-button" disabled={props.busy || candidate === ''} onClick={() => void props.onJoin(candidate)}>加入群聊</button>
+            <button type="button" className="dsh-agent-group-button" disabled={props.busy || candidate === ''} onClick={() => void props.onJoin(candidate)}>{props.t('room.join')}</button>
           </div> : null}
           <div className="dsh-agent-group-list">
             {members.map(agent => {
@@ -456,10 +461,10 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
                 <span className="dsh-agent-group-dot" data-employed="true" />
                 <span>{agent.name}</span>
                 {selectedRoom?.kind === 'group'
-                  ? <button type="button" className="dsh-agent-group-button dsh-agent-group-right" data-variant="ghost" disabled={props.busy} onClick={() => void props.onOpenDirect(agent.id)}>私聊</button>
+                  ? <button type="button" className="dsh-agent-group-button dsh-agent-group-right" data-variant="ghost" disabled={props.busy} onClick={() => void props.onOpenDirect(agent.id)}>{props.t('room.direct')}</button>
                   : null}
                 {selectedRoom?.kind === 'group' && membership !== undefined
-                  ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={props.busy} onClick={() => void props.onLeave(membership.id)}>移出</button>
+                  ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={props.busy} onClick={() => void props.onLeave(membership.id)}>{props.t('room.remove')}</button>
                   : null}
               </div>
             })}
@@ -496,6 +501,7 @@ interface AgentWorkspaceProps {
   readonly onCreateAgent: (id: AgentDefinitionId) => Promise<void>
   readonly onSetEmployment: (agentId: AgentId, employed: boolean) => Promise<void>
   readonly onOpenDirect: (agentId: AgentId) => Promise<void>
+  readonly t: TranslateNS<'agentWorkspace'>
 }
 
 function AgentWorkspace(props: AgentWorkspaceProps) {
@@ -508,8 +514,8 @@ function AgentWorkspace(props: AgentWorkspaceProps) {
     <div className="dsh-agent-group-body" data-mode="agents">
       <aside className="dsh-agent-group-panel">
         <div className="dsh-agent-group-section-head">
-          <span className="dsh-agent-group-section-title">智能体定义</span>
-          <button type="button" className="dsh-agent-group-icon-button dsh-agent-group-right" onClick={() => props.onCreatingDefinitionChange(true)} aria-label="新建定义"><PlusIcon /></button>
+          <span className="dsh-agent-group-section-title">{props.t('agent.definitions')}</span>
+          <button type="button" className="dsh-agent-group-icon-button dsh-agent-group-right" onClick={() => props.onCreatingDefinitionChange(true)} aria-label={props.t('agent.newDefinition')}><PlusIcon /></button>
         </div>
         <div className="dsh-agent-group-scroll dsh-agent-group-list">
           {definitions.map(definition => {
@@ -518,61 +524,61 @@ function AgentWorkspace(props: AgentWorkspaceProps) {
               <BotIcon /><span>{definition.name}</span><small>{count}</small>
             </button>
           })}
-          {definitions.length === 0 ? <div className="dsh-agent-group-empty">先创建一个智能体定义，例如 Java 工程师、产品经理或架构师。</div> : null}
+          {definitions.length === 0 ? <div className="dsh-agent-group-empty">{props.t('agent.noDefinitions')}</div> : null}
         </div>
       </aside>
 
       <main className="dsh-agent-group-panel">
         <div className="dsh-agent-group-section-head">
-          <span className="dsh-agent-group-section-title">{props.creatingDefinition ? '新建智能体定义' : selected?.name ?? '智能体'}</span>
-          {revision !== undefined && !props.creatingDefinition ? <span className="dsh-agent-group-muted">Revision {revision.number}</span> : null}
+          <span className="dsh-agent-group-section-title">{props.creatingDefinition ? props.t('agent.newDefinitionTitle') : selected?.name ?? props.t('agent.fallbackTitle')}</span>
+          {revision !== undefined && !props.creatingDefinition ? <span className="dsh-agent-group-muted">{props.t('agent.revision', { number: revision.number })}</span> : null}
         </div>
         <div className="dsh-agent-group-scroll">
           {props.creatingDefinition
             ? <form className="dsh-agent-group-form" onSubmit={(event: FormEvent) => { event.preventDefault(); void props.onCreateDefinition() }}>
-                <Field label="名称"><input className="dsh-agent-group-input" value={props.definitionName} onChange={event => props.onDefinitionNameChange(event.target.value)} placeholder="例如：Java 工程师" autoFocus /></Field>
-                <Field label="职责说明"><textarea className="dsh-agent-group-textarea" value={props.definitionDescription} onChange={event => props.onDefinitionDescriptionChange(event.target.value)} placeholder="这个角色负责什么" /></Field>
-                <Field label="Instructions"><textarea className="dsh-agent-group-textarea" value={props.definitionInstructions} onChange={event => props.onDefinitionInstructionsChange(event.target.value)} placeholder="给智能体的角色指令" /></Field>
+                <Field label={props.t('agent.name')}><input className="dsh-agent-group-input" value={props.definitionName} onChange={event => props.onDefinitionNameChange(event.target.value)} placeholder={props.t('agent.namePlaceholder')} autoFocus /></Field>
+                <Field label={props.t('agent.description')}><textarea className="dsh-agent-group-textarea" value={props.definitionDescription} onChange={event => props.onDefinitionDescriptionChange(event.target.value)} placeholder={props.t('agent.descriptionPlaceholder')} /></Field>
+                <Field label={props.t('agent.instructions')}><textarea className="dsh-agent-group-textarea" value={props.definitionInstructions} onChange={event => props.onDefinitionInstructionsChange(event.target.value)} placeholder={props.t('agent.instructionsPlaceholder')} /></Field>
                 <div className="dsh-agent-group-inline">
-                  <button type="submit" className="dsh-agent-group-button" disabled={props.busy || props.definitionName.trim() === ''}>创建定义</button>
-                  <button type="button" className="dsh-agent-group-button" data-variant="ghost" onClick={() => props.onCreatingDefinitionChange(false)}>取消</button>
+                  <button type="submit" className="dsh-agent-group-button" disabled={props.busy || props.definitionName.trim() === ''}>{props.t('agent.createDefinition')}</button>
+                  <button type="button" className="dsh-agent-group-button" data-variant="ghost" onClick={() => props.onCreatingDefinitionChange(false)}>{props.t('room.cancel')}</button>
                 </div>
               </form>
             : selected === undefined || revision === undefined
-              ? <div className="dsh-agent-group-empty">从左侧选择一个定义。</div>
+              ? <div className="dsh-agent-group-empty">{props.t('agent.selectDefinition')}</div>
               : <>
                   <section className="dsh-agent-group-card">
                     <div className="dsh-agent-group-form">
-                      <Field label="职责说明"><textarea className="dsh-agent-group-textarea" value={props.revisionDescription} onChange={event => props.onRevisionDescriptionChange(event.target.value)} /></Field>
-                      <Field label="Instructions"><textarea className="dsh-agent-group-textarea" value={props.revisionInstructions} onChange={event => props.onRevisionInstructionsChange(event.target.value)} /></Field>
+                      <Field label={props.t('agent.description')}><textarea className="dsh-agent-group-textarea" value={props.revisionDescription} onChange={event => props.onRevisionDescriptionChange(event.target.value)} /></Field>
+                      <Field label={props.t('agent.instructions')}><textarea className="dsh-agent-group-textarea" value={props.revisionInstructions} onChange={event => props.onRevisionInstructionsChange(event.target.value)} /></Field>
                       <label className="dsh-agent-group-inline dsh-agent-group-muted">
                         <input type="checkbox" checked={props.syncExisting} onChange={event => props.onSyncExistingChange(event.target.checked)} />
-                        保存新 Revision 后同步到现有实例
+                        {props.t('agent.syncExisting')}
                       </label>
-                      <div><button type="button" className="dsh-agent-group-button" disabled={props.busy} onClick={() => void props.onReviseDefinition(selected.id)}>保存新 Revision</button></div>
+                      <div><button type="button" className="dsh-agent-group-button" disabled={props.busy} onClick={() => void props.onReviseDefinition(selected.id)}>{props.t('agent.saveRevision')}</button></div>
                     </div>
                   </section>
 
                   <section className="dsh-agent-group-card">
-                    <div className="dsh-agent-group-card-head"><strong>实例</strong><span className="dsh-agent-group-muted">每个实例拥有独立会话、记忆和群成员关系</span></div>
+                    <div className="dsh-agent-group-card-head"><strong>{props.t('agent.instances')}</strong><span className="dsh-agent-group-muted">{props.t('agent.instancesHint')}</span></div>
                     <form className="dsh-agent-group-inline" onSubmit={(event) => { event.preventDefault(); void props.onCreateAgent(selected.id) }}>
-                      <input className="dsh-agent-group-input" value={props.agentName} onChange={event => props.onAgentNameChange(event.target.value)} placeholder="实例名称，例如：后端-Alice" />
-                      <button type="submit" className="dsh-agent-group-button" disabled={props.busy || props.agentName.trim() === ''}>创建实例</button>
+                      <input className="dsh-agent-group-input" value={props.agentName} onChange={event => props.onAgentNameChange(event.target.value)} placeholder={props.t('agent.instanceNamePlaceholder')} />
+                      <button type="submit" className="dsh-agent-group-button" disabled={props.busy || props.agentName.trim() === ''}>{props.t('agent.createInstance')}</button>
                     </form>
                     <div className="dsh-agent-group-list">
                       {agents.map(agent => <div className="dsh-agent-group-list-button" key={agent.id}>
                         <span className="dsh-agent-group-dot" data-employed={agent.employmentStatus === 'employed'} />
                         <span>{agent.name}</span>
-                        <small>{agent.employmentStatus === 'employed' ? '在职' : '已离职'}</small>
+                        <small>{agent.employmentStatus === 'employed' ? props.t('agent.employed') : props.t('agent.departed')}</small>
                         <button
                           type="button"
                           className="dsh-agent-group-button"
                           data-variant="ghost"
                           disabled={props.busy || agent.employmentStatus !== 'employed'}
                           onClick={() => void props.onOpenDirect(agent.id)}
-                        >私聊</button>
+                        >{props.t('room.direct')}</button>
                         <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={props.busy} onClick={() => void props.onSetEmployment(agent.id, agent.employmentStatus !== 'employed')}>
-                          {agent.employmentStatus === 'employed' ? '离职' : '重新入职'}
+                          {agent.employmentStatus === 'employed' ? props.t('agent.depart') : props.t('agent.reemploy')}
                         </button>
                       </div>)}
                     </div>
@@ -608,14 +614,30 @@ async function refresh(
     actions.setSnapshot(snapshot)
     setTurnStream(stream)
   } catch (error) {
-    actions.setError(errorMessage(error))
+    actions.setError(toUiError(error))
   } finally {
     actions.setBusy(false)
   }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function toUiError(error: unknown): WorkspaceUiError {
+  return error instanceof WorkspaceApiError || error instanceof Error || typeof error === 'string'
+    ? error
+    : String(error)
+}
+
+function errorMessage(error: unknown, t: TranslateNS<'agentWorkspace'>): string {
+  if (error instanceof WorkspaceApiError && error.kind === 'business') {
+    switch (error.code) {
+      case 'reserved-direct-routing': return t('error.reservedDirectRouting', error.details)
+      case 'agent-missing': return t('error.agentMissing', error.details)
+      case 'agent-departed': return t('error.agentDeparted', error.details)
+      case 'duplicate-membership': return t('error.duplicateMembership', error.details)
+      case 'stale-revision': return t('error.staleRevision', error.details)
+      case 'invalid-task-authority': return t('error.invalidTaskAuthority', error.details)
+    }
+  }
+  return t('workspace.requestFailed', { detail: error instanceof Error ? error.message : String(error) })
 }
 
 function WorkspaceIcon() {

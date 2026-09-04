@@ -74,7 +74,7 @@ describe('Workspace Browser source contract', () => {
   it('exposes private chat and group-only @all composition in the workspace UI', () => {
     const source = readFileSync(resolve('packages/web/src/client/WorkspaceUi.tsx'), 'utf8')
     expect(source).toContain('openDirect')
-    expect(source).toContain('私聊')
+    expect(source).toContain("props.t('room.direct')")
     expect(source).toContain('@all')
     expect(source).toContain("selectedRoom.kind === 'group'")
   })

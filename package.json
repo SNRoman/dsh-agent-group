@@ -16,7 +16,8 @@
     "test:dsh-source": "node scripts/test-dsh-source.mjs",
     "typecheck": "tsc -b tsconfig.host.json && tsc -b packages/web/tsconfig.client.json && tsc -p tests/types/tsconfig.json --noEmit",
     "verify:compatibility": "node scripts/verify-compatibility.mjs",
-    "release:check": "pnpm build && pnpm typecheck && pnpm test",
+    "verify:client-copy": "node scripts/verify-client-copy.mjs",
+    "release:check": "pnpm verify:client-copy && pnpm build && pnpm typecheck && pnpm test",
     "release:pack": "pnpm release:check && node scripts/release.mjs pack",
     "release:publish": "pnpm release:check && node scripts/release.mjs publish"
   },
@@ -26,6 +27,7 @@
     "@deepseek-ai/dsh-agent": "0.1.1-rc.2",
     "@deepseek-ai/dsh-attachment": "0.1.1-rc.2",
     "@deepseek-ai/dsh-brand": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-locale": "0.1.1-rc.2",
     "@deepseek-ai/dsh-invariants": "0.1.1-rc.2",
     "@deepseek-ai/dsh-llm": "0.1.1-rc.2",
     "@deepseek-ai/dsh-scope": "0.1.1-rc.2",

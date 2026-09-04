@@ -40,6 +40,9 @@ jobs:
       - name: Verify compatibility declaration
         run: pnpm verify:compatibility
 
+      - name: Verify localized client copy
+        run: pnpm verify:client-copy
+
       - name: Build
         shell: bash
         run: set -o pipefail; pnpm build 2>&1 | tee build.log

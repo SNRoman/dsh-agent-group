@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { DisclosureRow, MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   WorkspaceTurnProjection,
   WorkspaceTurnReasoningBlock,
@@ -15,10 +16,10 @@ export function WorkspaceMarkdownMessage({ text }: { readonly text: string }) {
 }
 
 /** Render one authoritative, transient DSH employee turn while it is in flight. */
-export function WorkspaceLiveTurn({ turn, agentName }: {
+export function WorkspaceLiveTurn({ turn, agentName, t }: {
   readonly turn: WorkspaceTurnProjection
   readonly agentName: string
-}) {
+} & PropsLocale<'agentWorkspace'>) {
   const streaming = turn.status === 'running'
   return (
     <article
@@ -30,7 +31,7 @@ export function WorkspaceLiveTurn({ turn, agentName }: {
       <div className="dsh-agent-group-message-body">
         <div className="dsh-agent-group-message-meta">
           <strong>{agentName}</strong>
-          <span>{streaming ? '正在回复…' : '正在保存…'}</span>
+          <span>{streaming ? t('turn.replying') : t('turn.saving')}</span>
         </div>
         <div className="dsh-agent-group-live-blocks">
           {turn.blocks.map(block => {
@@ -38,15 +39,15 @@ export function WorkspaceLiveTurn({ turn, agentName }: {
               return <MarkdownText key={`text:${block.index}`} text={block.text} streaming={streaming} />
             }
             if (block.kind === 'reasoning') {
-              return <ReasoningDisclosure key={`reasoning:${block.index}`} block={block} streaming={streaming} />
+              return <ReasoningDisclosure key={`reasoning:${block.index}`} block={block} streaming={streaming} t={t} />
             }
             if (block.kind === 'tool') {
-              return <ToolDisclosure key={`tool:${block.callId}:${block.index}`} block={block} />
+              return <ToolDisclosure key={`tool:${block.callId}:${block.index}`} block={block} t={t} />
             }
-            return <UnknownDisclosure key={`unknown:${block.index}`} block={block} />
+            return <UnknownDisclosure key={`unknown:${block.index}`} block={block} t={t} />
           })}
           {turn.blocks.length === 0 && streaming
-            ? <div className="dsh-agent-group-muted">正在思考…</div>
+            ? <div className="dsh-agent-group-muted">{t('turn.thinking')}</div>
             : null}
           {turn.error !== undefined
             ? <div className="dsh-agent-group-error dsh-agent-group-turn-error">{turn.error}</div>
@@ -57,20 +58,20 @@ export function WorkspaceLiveTurn({ turn, agentName }: {
   )
 }
 
-function ReasoningDisclosure({ block, streaming }: {
+function ReasoningDisclosure({ block, streaming, t }: {
   readonly block: WorkspaceTurnReasoningBlock
   readonly streaming: boolean
-}) {
+} & PropsLocale<'agentWorkspace'>) {
   const [open, setOpen] = useState(false)
   return (
     <DisclosureRow
       icon={<span aria-hidden="true">✦</span>}
-      title="思考过程"
+      title={t('turn.reasoning')}
       open={open}
       expandable={block.text.trim() !== ''}
       onToggle={() => setOpen(value => !value)}
       expandOnRowClick
-      collapsedContent={<span className="dsh-agent-group-disclosure-status">{streaming ? '生成中' : '已完成'}</span>}
+      collapsedContent={<span className="dsh-agent-group-disclosure-status">{streaming ? t('turn.generating') : t('turn.completed')}</span>}
     >
       <div className="dsh-agent-group-disclosure-content">
         <MarkdownText text={block.text} streaming={streaming} />
@@ -79,10 +80,10 @@ function ReasoningDisclosure({ block, streaming }: {
   )
 }
 
-function ToolDisclosure({ block }: { readonly block: WorkspaceTurnToolBlock }) {
+function ToolDisclosure({ block, t }: { readonly block: WorkspaceTurnToolBlock } & PropsLocale<'agentWorkspace'>) {
   const [open, setOpen] = useState(false)
-  const title = block.name.trim() === '' ? '工具调用' : `工具：${block.name}`
-  const status = block.status === 'running' ? '执行中' : block.status === 'failed' ? '失败' : '已完成'
+  const title = block.name.trim() === '' ? t('turn.toolCall') : t('turn.toolNamed', { name: block.name })
+  const status = block.status === 'running' ? t('turn.running') : block.status === 'failed' ? t('turn.failed') : t('turn.completed')
   return (
     <DisclosureRow
       icon={<span aria-hidden="true">⌘</span>}
@@ -95,25 +96,25 @@ function ToolDisclosure({ block }: { readonly block: WorkspaceTurnToolBlock }) {
     >
       <div className="dsh-agent-group-disclosure-content dsh-agent-group-tool-detail">
         {block.arguments.trim() !== ''
-          ? <Detail label="参数" value={block.arguments} />
+          ? <Detail label={t('turn.arguments')} value={block.arguments} />
           : null}
         {block.resultText !== undefined
-          ? <Detail label="结果" value={block.resultText} />
+          ? <Detail label={t('turn.result')} value={block.resultText} />
           : null}
         {block.error !== undefined
-          ? <Detail label="错误" value={block.error} />
+          ? <Detail label={t('turn.error')} value={block.error} />
           : null}
       </div>
     </DisclosureRow>
   )
 }
 
-function UnknownDisclosure({ block }: { readonly block: WorkspaceTurnUnknownBlock }) {
+function UnknownDisclosure({ block, t }: { readonly block: WorkspaceTurnUnknownBlock } & PropsLocale<'agentWorkspace'>) {
   const [open, setOpen] = useState(false)
   return (
     <DisclosureRow
       icon={<span aria-hidden="true">…</span>}
-      title={block.label || '扩展输出'}
+      title={block.label || t('turn.extensionOutput')}
       open={open}
       expandable
       onToggle={() => setOpen(value => !value)}

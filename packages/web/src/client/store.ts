@@ -1,6 +1,7 @@
 /** Shared root-scoped UI state for the footer entry and workspace overlay. */
 
 import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-runtime/client'
+import type { WorkspaceApiError } from './api.ts'
 import type { AgentDefinitionId, RoomId, WorkspaceSnapshot } from './contracts.ts'
 
 export type WorkspaceViewMode = 'chat' | 'agents'
@@ -12,8 +13,11 @@ export interface WorkspaceUiState {
   selectedDefinitionId?: AgentDefinitionId
   snapshot?: WorkspaceSnapshot
   busy: boolean
-  error?: string
+  error?: WorkspaceUiError
 }
+
+/** Display-safe failure retained until the locale-owning overlay renders it. */
+export type WorkspaceUiError = WorkspaceApiError | Error | string
 
 type WorkspaceUiActions = {
   open: (draft: WorkspaceUiState) => void
@@ -23,7 +27,7 @@ type WorkspaceUiActions = {
   selectDefinition: (draft: WorkspaceUiState, definitionId: AgentDefinitionId | undefined) => void
   setSnapshot: (draft: WorkspaceUiState, snapshot: WorkspaceSnapshot) => void
   setBusy: (draft: WorkspaceUiState, busy: boolean) => void
-  setError: (draft: WorkspaceUiState, error: string | undefined) => void
+  setError: (draft: WorkspaceUiState, error: WorkspaceUiError | undefined) => void
 }
 
 /** One handle is created inside apply and shared by the two additive slot entries. */

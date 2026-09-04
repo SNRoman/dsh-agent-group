@@ -1,0 +1,215 @@
+import { createRequire } from 'node:module'
+import { readFileSync } from 'node:fs'
+import { Context } from '@deepseek-ai/cordis'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { WorkspaceApiError } from '../packages/web/src/client/api.ts'
+import type { WorkspaceTurnProjection } from '../packages/web/src/client/contracts.ts'
+import { apply, inject } from '../packages/web/src/client/index.ts'
+import { WorkspaceFooterAction, WorkspaceOverlay } from '../packages/web/src/client/WorkspaceUi.tsx'
+import { WorkspaceLiveTurn } from '../packages/web/src/client/WorkspaceTurn.tsx'
+
+const browserRuntime = vi.hoisted(() => {
+  const publishedLocale: Record<string, unknown> = {}
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      __ModuleLoader__: {
+        load(module: { readonly factory: (require: (id: string) => unknown) => Record<string, unknown> }) {
+          const bundle = module as { readonly id?: string; readonly factory: (require: (id: string) => unknown) => Record<string, unknown> }
+          if (bundle.id === '@deepseek-ai/dsh-client-runtime') return
+          if (bundle.id === '@deepseek-ai/dsh-client-locale') {
+            Object.assign(publishedLocale, bundle.factory(() => ({})))
+            return
+          }
+          throw new Error(`unexpected client bundle: ${bundle.id ?? 'unknown'}`)
+        },
+      },
+    },
+  })
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { languages: ['en'], language: 'en' },
+  })
+  return { navigatorDescriptor, publishedLocale, windowDescriptor }
+})
+
+const { publishedLocale } = browserRuntime
+
+afterAll(() => {
+  if (browserRuntime.windowDescriptor === undefined) Reflect.deleteProperty(globalThis, 'window')
+  else Object.defineProperty(globalThis, 'window', browserRuntime.windowDescriptor)
+  if (browserRuntime.navigatorDescriptor === undefined) Reflect.deleteProperty(globalThis, 'navigator')
+  else Object.defineProperty(globalThis, 'navigator', browserRuntime.navigatorDescriptor)
+})
+
+type LocaleRuntimeInstance = {
+  setLocale(id: string): void
+  bind(ns: string): (key: string, params?: Readonly<Record<string, string | number>>) => string
+  register(ns: string, dictionaries: Readonly<Record<string, Readonly<Record<string, string>>>>): () => void
+}
+
+vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
+  DisclosureRow: (props: Readonly<Record<string, unknown>>) => ({ type: 'section', props }),
+  MarkdownText: ({ text }: { readonly text: string }) => text,
+}))
+
+vi.mock('@deepseek-ai/dsh-client-runtime/client', () => ({
+  defineStore: (definition: { readonly init: () => unknown }) => ({ definition }),
+}))
+
+const localeClientPath = createRequire(new URL('../package.json', import.meta.url)).resolve('@deepseek-ai/dsh-client-locale/client')
+new Function(readFileSync(localeClientPath, 'utf8'))()
+if (typeof publishedLocale['LocaleRuntime'] !== 'function') {
+  throw new Error(`locale runtime did not publish: ${Object.keys(publishedLocale).join(', ')}`)
+}
+const LocaleRuntime = publishedLocale['LocaleRuntime'] as new (ctx: Context) => LocaleRuntimeInstance
+
+interface TestElement {
+  readonly type: unknown
+  readonly props: Readonly<Record<string, unknown>>
+}
+
+type TestComponent = (props: Readonly<Record<string, unknown>>) => unknown
+
+const restorers: Array<() => void> = []
+
+afterEach(() => {
+  for (const restore of restorers.splice(0).reverse()) restore()
+})
+
+function renderHarness() {
+  const webRequire = createRequire(new URL('../packages/web/package.json', import.meta.url))
+  const react = webRequire('react') as {
+    __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: {
+      ReactCurrentDispatcher: { current: unknown }
+    }
+  }
+  const dispatcher = react.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED.ReactCurrentDispatcher
+  const previous = dispatcher.current
+  restorers.push(() => { dispatcher.current = previous })
+  let states: unknown[] = []
+  let hook = 0
+  dispatcher.current = {
+    useState(initial: unknown) {
+      const index = hook++
+      if (!(index in states)) states[index] = typeof initial === 'function' ? (initial as () => unknown)() : initial
+      return [states[index], (next: unknown) => {
+        states[index] = typeof next === 'function'
+          ? (next as (previousValue: unknown) => unknown)(states[index])
+          : next
+      }]
+    },
+    useEffect() { hook += 1 },
+    useMemo(factory: () => unknown) { hook += 1; return factory() },
+  }
+  return (component: TestComponent, props: Readonly<Record<string, unknown>>): unknown => {
+    hook = 0
+    return component(props)
+  }
+}
+
+function strings(root: unknown): string[] {
+  if (typeof root === 'string') return [root]
+  if (Array.isArray(root)) return root.flatMap(strings)
+  if (!isElement(root)) return []
+  const attributes = ['aria-label', 'title', 'placeholder']
+    .map(key => root.props[key])
+    .filter((value): value is string => typeof value === 'string')
+  return [...attributes, ...strings(root.props['children'])]
+}
+
+function isElement(value: unknown): value is TestElement {
+  return typeof value === 'object' && value !== null && 'type' in value && 'props' in value
+}
+
+function registerPlugin(locale: LocaleRuntimeInstance) {
+  const entries: Array<{ readonly options: Record<string, unknown>; readonly component: TestComponent }> = []
+  const disposers: Array<() => void> = []
+  const ctx = {
+    locale,
+    get: () => ({ rpc: { call: vi.fn() } }),
+    effect: (effect: () => void | (() => void)) => {
+      const dispose = effect()
+      if (typeof dispose === 'function') disposers.push(dispose)
+    },
+    slots: {
+      inject: (_name: string, register: () => unknown) => { register() },
+      register: (options: Record<string, unknown>, component: TestComponent) => {
+        entries.push({ options, component })
+        return () => {}
+      },
+    },
+  }
+  apply(ctx as never)
+  return { entries, dispose: () => disposers.reverse().forEach(dispose => dispose()) }
+}
+
+const liveTurn: WorkspaceTurnProjection = {
+  roomId: 'room-1',
+  agentId: 'agent-1',
+  sessionId: 'session-1',
+  turn: 1,
+  status: 'running',
+  blocks: [],
+}
+
+describe('Agent Workspace locale runtime', () => {
+  it.each([
+    ['zh', ['智能体工作区', '打开智能体工作区', '正在读取智能体工作区…', '正在回复…', '正在思考…', '工作区请求失败：upstream detail']],
+    ['en', ['Agent Workspace', 'Open Agent Workspace', 'Loading Agent Workspace…', 'Replying…', 'Thinking…', 'Workspace request failed: upstream detail']],
+  ] as const)('renders footer, overlay, live, empty, error and accessibility copy in %s', (localeId, expected) => {
+    const locale = new LocaleRuntime(new Context())
+    locale.setLocale(localeId)
+    const registered = registerPlugin(locale)
+    const t = locale.bind('agentWorkspace' as never)
+    const render = renderHarness()
+    const actions = { open: vi.fn(), close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn() }
+    const footer = WorkspaceFooterAction({ wide: true, actions, t } as never)
+    const overlay = render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (select: (state: unknown) => unknown) => select({ open: true, mode: 'chat', busy: false, error: new Error('upstream detail') }),
+      actions,
+      api: {},
+      t,
+    })
+    const live = render(WorkspaceLiveTurn as unknown as TestComponent, { turn: liveTurn, agentName: 'Alice', t })
+    const rendered = [...strings(footer), ...strings(overlay), ...strings(live)]
+    for (const value of expected) expect(rendered).toContain(value)
+    expect(registered.entries).toHaveLength(2)
+    expect(registered.entries.every(entry => entry.options['locale'] === 'agentWorkspace')).toBe(true)
+    registered.dispose()
+  })
+
+  it.each([
+    ['zh', '私聊 room-direct 不能使用保留路由 @all。'],
+    ['en', 'Direct room room-direct cannot use reserved route @all.'],
+  ] as const)('formats stable business details without parsing the Host message in %s', (localeId, expected) => {
+    const locale = new LocaleRuntime(new Context())
+    locale.setLocale(localeId)
+    const registered = registerPlugin(locale)
+    const t = locale.bind('agentWorkspace' as never)
+    const render = renderHarness()
+    const error = new WorkspaceApiError({
+      kind: 'business',
+      code: 'reserved-direct-routing',
+      message: 'do not parse this diagnostic',
+      details: { roomId: 'room-direct', token: '@all' },
+    })
+    const overlay = render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (select: (state: unknown) => unknown) => select({ open: true, mode: 'chat', busy: false, error }),
+      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn() },
+      api: {},
+      t,
+    })
+    expect(strings(overlay)).toContain(expected)
+    expect(strings(overlay)).not.toContain('do not parse this diagnostic')
+    registered.dispose()
+  })
+})
+
+describe('Agent Workspace locale wiring', () => {
+  it('declares the locale service alongside slots and connection', () => {
+    expect(inject).toEqual(['slots', 'connection', 'locale'])
+  })
+})

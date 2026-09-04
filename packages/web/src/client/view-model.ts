@@ -1,6 +1,7 @@
 /** Pure Browser projections over a Workspace snapshot. */
 
 import type { AgentId, AgentInstanceView, RoomId, WorkspaceEventView, WorkspaceSnapshot } from './contracts.ts'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 
 const MENTION_RE = /<@([^>\s]+)>/g
 const DISPLAY_MENTION_BOUNDARY = /[\s,，。.!！？?;；:：、)）\]】}》>"'“”‘’]/u
@@ -115,18 +116,18 @@ export function formatMessageText(state: WorkspaceSnapshot, text: string): strin
 }
 
 /** Human-readable room label with a stable fallback for direct rooms. */
-export function roomLabel(state: WorkspaceSnapshot, roomId: RoomId): string {
+export function roomLabel(state: WorkspaceSnapshot, roomId: RoomId, t: TranslateNS<'agentWorkspace'>): string {
   const room = state.rooms[roomId]
   if (room === undefined) return roomId
   if (room.name !== undefined && room.name.trim() !== '') return room.name
   const names = activeRoomMembers(state, roomId).map(agent => agent.name)
-  return names.length > 0 ? names.join('、') : '私聊'
+  return names.length > 0 ? names.join('、') : t('room.direct')
 }
 
 /** Resolve a durable actor to display copy without changing the event. */
-export function actorLabel(state: WorkspaceSnapshot, actor: WorkspaceEventView['actor']): string {
-  if (actor === undefined) return '系统'
-  if (actor.type === 'human') return actor.id === 'web-user' ? '我' : actor.id
+export function actorLabel(state: WorkspaceSnapshot, actor: WorkspaceEventView['actor'], t: TranslateNS<'agentWorkspace'>): string {
+  if (actor === undefined) return t('actor.system')
+  if (actor.type === 'human') return actor.id === 'web-user' ? t('actor.me') : actor.id
   return state.agents[actor.id]?.name ?? actor.id
 }
 

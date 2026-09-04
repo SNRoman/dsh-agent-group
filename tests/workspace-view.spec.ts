@@ -211,6 +211,8 @@ function settlementFixture() {
 }
 
 describe('workspace UI view model', () => {
+  const t = (key: string) => key
+
   it('renders one agent row across pre-commit, racing, and retired settlement snapshots', () => {
     const { fixture, beforeSettlement, afterSettlement, laggingStream, retiredStream } = settlementFixture()
     const ui = {
@@ -229,7 +231,7 @@ describe('workspace UI view model', () => {
       setBusy: vi.fn(),
       setError: vi.fn(),
     }
-    const props = { useStore: (selector: (state: unknown) => unknown) => selector(ui), actions, api: {} }
+    const props = { useStore: (selector: (state: unknown) => unknown) => selector(ui), actions, api: {}, t }
     const isMessageRow = (element: TestElement): boolean => element.props['className'] === 'dsh-agent-group-message'
       || element.props['className'] === 'dsh-agent-group-message dsh-agent-group-live-turn'
 
@@ -286,6 +288,7 @@ describe('workspace UI view model', () => {
       useStore: (selector: (state: unknown) => unknown) => selector(ui),
       actions,
       api: reconnectApi,
+      t,
     })
     const subscription = reconnectHarness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[0]
     if (subscription === undefined) throw new Error('expected stream subscription effect')
@@ -346,7 +349,7 @@ describe('workspace UI view model', () => {
       selectDefinition: vi.fn(),
       setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
       setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
-      setError: vi.fn((error: string | undefined) => { ui['error'] = error }),
+      setError: vi.fn((error: unknown) => { ui['error'] = error }),
     }
     const api = {
       postMessage: vi.fn(async () => {
@@ -362,6 +365,7 @@ describe('workspace UI view model', () => {
       useStore: (selector: (state: unknown) => unknown) => selector(ui),
       actions,
       api,
+      t,
     }
     const harness = componentHarness()
     const renderOverlay = (): unknown => harness.render(WorkspaceOverlay as unknown as TestComponent, props)
@@ -377,7 +381,7 @@ describe('workspace UI view model', () => {
     const send = harness.find(composer, element => element.type === 'button')
     expect(send).toBeDefined()
     ;(send!.props['onClick'] as () => void)()
-    await vi.waitFor(() => expect(ui['error']).toBe('reserved-direct-routing'))
+    await vi.waitFor(() => expect(ui['error']).toBeInstanceOf(WorkspaceApiError))
     expect(api.postMessage).toHaveBeenCalledWith(direct.roomId, '@all hello', [])
     expect(actions.setSnapshot).not.toHaveBeenCalled()
 

@@ -2,15 +2,17 @@
 
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
+import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import { WorkspaceApiClient } from './api.ts'
 import { createWorkspaceUiStore } from './store.ts'
 import { WORKSPACE_UI_CSS, WORKSPACE_UI_STYLE_ID } from './styles.ts'
 import { WorkspaceFooterAction, WorkspaceOverlay } from './WorkspaceUi.tsx'
+import { AGENT_WORKSPACE_LOCALE, en, zh } from './locales.ts'
 
 /** Services used only by the Browser half. */
-export const inject = ['slots', 'connection']
+export const inject = ['slots', 'connection', 'locale']
 
 /**
  * Register two additive root-scoped entries. Nothing occupies the core
@@ -21,6 +23,7 @@ export function apply(ctx: ClientContext): void {
   const store = createWorkspaceUiStore()
   const connection = ctx.get('connection') as ConnectionHandle
   const api = new WorkspaceApiClient(connection)
+  ctx.effect(() => ctx.locale.register(AGENT_WORKSPACE_LOCALE, { zh, en }))
 
   ctx.effect(() => {
     if (typeof document === 'undefined') return () => {}
@@ -40,6 +43,7 @@ export function apply(ctx: ClientContext): void {
     id: 'agent-workspace',
     order: 40,
     store,
+    locale: AGENT_WORKSPACE_LOCALE,
   }, WorkspaceFooterAction))
 
   ctx.slots.inject('shell.overlay', () => ctx.slots.register({
@@ -47,6 +51,7 @@ export function apply(ctx: ClientContext): void {
     id: 'agent-workspace',
     order: 40,
     store,
+    locale: AGENT_WORKSPACE_LOCALE,
     inject: () => ({ api }),
   }, WorkspaceOverlay))
 }
