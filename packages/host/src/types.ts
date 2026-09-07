@@ -1,9 +1,16 @@
 /** Durable Agent Workspace aggregate records and pure mutation commands. */
 
+import type { MessageId } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
-    'agent-workspace-delivery': { kind: 'agent-workspace-delivery' }
+    'agent-workspace-delivery': {
+      kind: 'agent-workspace-delivery'
+      workspaceId: WorkspaceId
+      source: { kind: 'room'; roomId: RoomId } | { kind: 'task'; taskId: TaskId }
+      sourceEventId: WorkspaceEventId
+      taskDeliveryAttemptId?: TaskDeliveryAttemptId | undefined
+    }
     'agent-workspace-recall': { kind: 'agent-workspace-recall' }
   }
 }
@@ -18,6 +25,7 @@ import type {
   HumanId,
   MembershipId,
   RoomId,
+  TaskDeliveryAttemptId,
   TaskAssignmentId,
   TaskId,
   WorkspaceEventId,
@@ -115,8 +123,15 @@ export const WORKSPACE_EVENT_TYPES = [
   'conversation/stopped',
   'task/assigned',
   'task/delegation-granted',
+  'task/delegation-revoked',
   'task/delegated',
   'task/completed',
+  'task/cancelled',
+  'task/delivery-started',
+  'task/delivery-accepted',
+  'task/delivery-failed',
+  'task/result',
+  'task/result-after-cancel',
   'child/run-started',
   'child/run-finished',
 ] as const
@@ -141,14 +156,71 @@ export interface ChildRunFinishedEvent extends WorkspaceEventBase {
   readonly childRunStatus: ChildRunTerminalStatus
 }
 
+interface TaskDeliveryEventBase extends WorkspaceEventBase {
+  readonly taskId: TaskId
+  readonly taskDeliveryAttemptId: TaskDeliveryAttemptId
+  readonly messageId: MessageId
+}
+
+/** A task delivery that has started or was accepted by the inbox. */
+export interface TaskDeliveryProgressEvent extends TaskDeliveryEventBase {
+  readonly type: 'task/delivery-started' | 'task/delivery-accepted'
+  readonly failureCode?: never | undefined
+  readonly failureSummary?: never | undefined
+}
+
+/** A task delivery rejected with stable, display-safe failure details. */
+export interface TaskDeliveryFailedEvent extends TaskDeliveryEventBase {
+  readonly type: 'task/delivery-failed'
+  readonly failureCode: string
+  readonly failureSummary: string
+}
+
+/** A durable task delivery lifecycle fact. */
+export type TaskDeliveryEvent = TaskDeliveryProgressEvent | TaskDeliveryFailedEvent
+
+/** A task result recorded against the delivery and active role revision. */
+export interface TaskResultEvent extends WorkspaceEventBase {
+  readonly type: 'task/result' | 'task/result-after-cancel'
+  readonly taskId: TaskId
+  readonly taskDeliveryAttemptId: TaskDeliveryAttemptId
+  readonly definitionRevisionId: DefinitionRevisionId
+  readonly text: string
+}
+
+/** A human cancellation of one durable task. */
+export interface TaskCancelledEvent extends WorkspaceEventBase {
+  readonly type: 'task/cancelled'
+  readonly subjectId: TaskId
+}
+
+/** A human revocation of one durable delegation grant. */
+export interface TaskDelegationRevokedEvent extends WorkspaceEventBase {
+  readonly type: 'task/delegation-revoked'
+  readonly subjectId: DelegationGrantId
+}
+
 /** A workspace fact that is not a terminal child result. */
 export interface OtherWorkspaceEvent extends WorkspaceEventBase {
-  readonly type: Exclude<WorkspaceEventType, 'child/run-finished'>
+  readonly type: Exclude<
+    WorkspaceEventType,
+    | 'child/run-finished'
+    | TaskDeliveryEvent['type']
+    | TaskResultEvent['type']
+    | TaskCancelledEvent['type']
+    | TaskDelegationRevokedEvent['type']
+  >
   readonly childRunStatus?: never | undefined
 }
 
 /** One immutable, sequence-ordered workspace fact. */
-export type WorkspaceEvent = ChildRunFinishedEvent | OtherWorkspaceEvent
+export type WorkspaceEvent =
+  | ChildRunFinishedEvent
+  | TaskDeliveryEvent
+  | TaskResultEvent
+  | TaskCancelledEvent
+  | TaskDelegationRevokedEvent
+  | OtherWorkspaceEvent
 
 /** A durable association between an agent and an event it can recall. */
 export interface AgentMemoryEntry {

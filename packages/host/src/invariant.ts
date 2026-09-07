@@ -1,6 +1,6 @@
 /** Pure validation of relationships owned by one durable workspace aggregate. */
 
-import type { WorkspaceEvent, WorkspaceState } from './types.ts'
+import type { ChildRunFinishedEvent, WorkspaceEvent, WorkspaceState } from './types.ts'
 import type { WorkspaceId } from './ids.ts'
 
 /**
@@ -230,7 +230,7 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
     }
     const starts = state.events.filter(event => event.type === 'child/run-started' && event.subjectId === childRun.id)
     if (starts.length !== 1) throw new Error(`child run '${childRun.id}' must have exactly one start event`)
-    const finishes = state.events.filter(event => event.type === 'child/run-finished' && event.subjectId === childRun.id)
+    const finishes = state.events.filter((event): event is ChildRunFinishedEvent => event.type === 'child/run-finished' && event.subjectId === childRun.id)
     if (childRun.status === 'running') {
       if (finishes.length !== 0) throw new Error(`running child run '${childRun.id}' has a finish event`)
     } else {
@@ -346,14 +346,49 @@ function assertEventRelationships(state: WorkspaceState, event: WorkspaceEvent):
     case 'task/delegation-granted':
       requireEventSubject(event, state.delegationGrants, 'delegation grant')
       return
+    case 'task/delegation-revoked':
+      requireEventSubject(event, state.delegationGrants, 'delegation grant')
+      return
     case 'task/completed':
+    case 'task/cancelled':
       requireEventSubject(event, state.tasks, 'task')
       return
+    case 'task/delivery-started':
+    case 'task/delivery-accepted':
+    case 'task/delivery-failed':
+      requireTaskReference(state, event.taskId, event.id)
+      return
+    case 'task/result':
+    case 'task/result-after-cancel': {
+      requireTaskReference(state, event.taskId, event.id)
+      const revision = state.definitionRevisions[event.definitionRevisionId]
+      if (revision === undefined) {
+        throw new Error(`event '${event.id}' references missing definition revision '${event.definitionRevisionId}'`)
+      }
+      const assignment = Object.values(state.taskAssignments).find(candidate => candidate.taskId === event.taskId)
+      const assignee = assignment === undefined ? undefined : state.agents[assignment.assigneeAgentId]
+      if (assignee === undefined || revision.definitionId !== assignee.definitionId) {
+        throw new Error(`event '${event.id}' definition revision '${revision.id}' does not belong to its task assignee`)
+      }
+      return
+    }
     case 'child/run-started':
     case 'child/run-finished':
       requireEventSubject(event, state.childRuns, 'child run')
       return
+    default:
+      return assertNever(event)
   }
+}
+
+function requireTaskReference(state: WorkspaceState, taskId: string, eventId: string): void {
+  if (state.tasks[taskId as keyof typeof state.tasks] === undefined) {
+    throw new Error(`event '${eventId}' references missing task '${taskId}'`)
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unsupported workspace event type '${String(value)}'`)
 }
 
 function requireEventSubject<T>(event: WorkspaceEvent, records: Readonly<Record<string, T>>, label: string): T {
@@ -376,6 +411,7 @@ function greatestDurableId(state: WorkspaceState): number {
     ...Object.keys(state.taskAssignments),
     ...Object.keys(state.delegationGrants),
     ...Object.keys(state.childRuns),
+    ...state.events.flatMap(event => 'taskDeliveryAttemptId' in event ? [event.taskDeliveryAttemptId] : []),
   ]
   let greatest = 0
   for (const id of ids) {

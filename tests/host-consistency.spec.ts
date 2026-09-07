@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
+import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import Storage from '@deepseek-ai/dsh-storage'
 import { apply as domainApply, Config as DomainConfig, inject as domainInject } from '@deepseek-ai/dsh-storage-domain'
 import { apply as jsonApply, Config as JsonConfig, inject as jsonInject } from '@deepseek-ai/dsh-storage-json'
@@ -50,6 +51,7 @@ function buildWorkspace(agentNames: string[], joinedNames = agentNames): { state
 interface FakeHost extends WorkspaceDispatcherHost {
   state: WorkspaceState
   delivered: AgentId[]
+  deliveryMessages: UserMessage[]
   transact<T>(mutation: (state: WorkspaceState) => { state: WorkspaceState; result: T }): Promise<T>
 }
 
@@ -57,6 +59,7 @@ function fakeHost(initial: WorkspaceState, replies = new Map<AgentId, string>())
   const host: FakeHost = {
     state: structuredClone(initial),
     delivered: [],
+    deliveryMessages: [],
     snapshot: () => structuredClone(host.state),
     execute: async command => {
       host.state = mutateWorkspace(host.state, command).state
@@ -72,8 +75,9 @@ function fakeHost(initial: WorkspaceState, replies = new Map<AgentId, string>())
       host.state = result.state
       return result.result
     },
-    deliver: async agentId => {
+    deliver: async (agentId, delivery) => {
       host.delivered.push(agentId)
+      host.deliveryMessages.push(delivery)
       return { output: [{ type: 'text', text: replies.get(agentId) ?? '' }], stopReason: 'completed' }
     },
     ensureEmployee: async () => handle(),
@@ -82,6 +86,70 @@ function fakeHost(initial: WorkspaceState, replies = new Map<AgentId, string>())
 }
 
 describe('dispatcher consistency', () => {
+  test('room deliveries identify their workspace and exact source event', async () => {
+    const { state, roomId, agentIds } = buildWorkspace(['alice'])
+    const alice = agentIds[0]!
+    const host = fakeHost(state)
+    const dispatcher = new WorkspaceDispatcher(host, { start: vi.fn() } as unknown as SubagentRuntimeLike, 'spawn', limits)
+
+    await dispatcher.postHumanMessage(roomId, HumanId('owner'), 'please review', [alice])
+
+    const sourceEvent = host.state.events.find(event => event.type === 'room/message' && event.text === 'please review')!
+    expect(host.deliveryMessages[0]?.source).toEqual({
+      kind: 'agent-workspace-delivery',
+      workspaceId: 'local',
+      source: { kind: 'room', roomId },
+      sourceEventId: sourceEvent.id,
+    })
+  })
+
+  test('concurrent root messages keep each delivery bound to its own source event', async () => {
+    const { state, roomId, agentIds } = buildWorkspace(['alice'])
+    const alice = agentIds[0]!
+    const host = fakeHost(state)
+    const dispatcher = new WorkspaceDispatcher(host, { start: vi.fn() } as unknown as SubagentRuntimeLike, 'spawn', limits)
+    const pending: Array<{ readonly state: WorkspaceState; readonly resolve: (state: WorkspaceState) => void }> = []
+    host.execute = async command => {
+      host.state = mutateWorkspace(host.state, command).state
+      const committed = structuredClone(host.state)
+      if (command.type !== 'room/message') return committed
+      return await new Promise<WorkspaceState>(resolve => pending.push({ state: committed, resolve }))
+    }
+
+    const firstStarted = dispatcher.startHumanMessage(roomId, HumanId('owner'), 'first root', [alice])
+    const secondStarted = dispatcher.startHumanMessage(roomId, HumanId('owner'), 'second root', [alice])
+    expect(pending).toHaveLength(2)
+    pending[1]!.resolve(pending[1]!.state)
+    pending[0]!.resolve(pending[0]!.state)
+    const [first, second] = await Promise.all([firstStarted, secondStarted])
+    await Promise.all([first.completion, second.completion])
+
+    for (const text of ['first root', 'second root']) {
+      const sourceEvent = host.state.events.find(event => event.type === 'room/message' && event.text === text)!
+      const delivery = host.deliveryMessages.find(message => message.content.some(block => block.type === 'text' && block.text === text))
+      expect(delivery?.source).toMatchObject({ sourceEventId: sourceEvent.id })
+    }
+  })
+
+  test('task deliveries point to the durable assignment event', async () => {
+    const { state, agentIds } = buildWorkspace(['alice'])
+    const alice = agentIds[0]!
+    const assigned = assignHumanTask(state, { humanId: HumanId('owner'), assigneeAgentId: alice, title: 'formal task' })
+    const host = fakeHost(assigned.state)
+    const dispatcher = new WorkspaceDispatcher(host, { start: vi.fn() } as unknown as SubagentRuntimeLike, 'spawn', limits)
+
+    await dispatcher.runAssignedTask(alice, assigned.taskId)
+
+    const assignment = Object.values(assigned.state.taskAssignments).find(candidate => candidate.taskId === assigned.taskId)!
+    const assignmentEvent = assigned.state.events.find(event => event.type === 'task/assigned' && event.subjectId === assignment.id)!
+    expect(host.deliveryMessages[0]?.source).toEqual({
+      kind: 'agent-workspace-delivery',
+      workspaceId: 'local',
+      source: { kind: 'task', taskId: assigned.taskId },
+      sourceEventId: assignmentEvent.id,
+    })
+  })
+
   test('concurrent child runs keep distinct committed ids and both settle', async () => {
     const { state, agentIds } = buildWorkspace(['alice'])
     const alice = agentIds[0]!

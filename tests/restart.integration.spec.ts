@@ -1,4 +1,4 @@
-import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
@@ -50,15 +50,13 @@ describe('agent workspace persistence', () => {
   test('opens, mutates, and restarts an authentic v0.1.0 workspace', async () => {
     const root = await freshRoot()
     const fixture = new URL('./fixtures/v0.1.0/agent-workspace.json', import.meta.url)
+    const stored = JSON.parse(await readFile(fixture, 'utf8')) as {
+      tables: { workspaces: { local: unknown } }
+    }
     await copyFile(fixture, join(root, 'agent_workspace.json'))
 
     const first = await boot(root)
-    expect(first.service.snapshot()).toMatchObject({
-      workspaceId: 'local',
-      revision: 5,
-      nextId: 8,
-      nextSequence: 6,
-    })
+    expect(first.service.snapshot()).toEqual(stored.tables.workspaces.local)
     await first.service.execute({ type: 'room/create', kind: 'group', name: 'release follow-up' })
     const afterMutation = first.service.snapshot()
     expect(afterMutation.revision).toBe(6)

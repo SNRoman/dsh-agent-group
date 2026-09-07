@@ -22,6 +22,7 @@ import type {
   CreateDefinitionResult,
   CreateRoomCommand,
   CreateRoomResult,
+  ChildRunTerminalStatus,
   DefinitionRevision,
   MutationResult,
   RecordSessionBindingCommand,
@@ -136,9 +137,22 @@ export function mintWorkspaceId<T extends string>(state: WorkspaceState, prefix:
  */
 export function appendWorkspaceEvent(
   state: WorkspaceState,
-  type: WorkspaceEventType,
+  type: Exclude<WorkspaceEventType,
+    | 'task/delegation-revoked'
+    | 'task/cancelled'
+    | 'task/delivery-started'
+    | 'task/delivery-accepted'
+    | 'task/delivery-failed'
+    | 'task/result'
+    | 'task/result-after-cancel'>,
   subjectId?: WorkspaceSubjectId,
-  details?: Pick<WorkspaceEvent, 'actor' | 'childRunStatus' | 'definitionRevisionId' | 'text' | 'mentions'>,
+  details?: {
+    readonly actor?: WorkspaceEvent['actor']
+    readonly childRunStatus?: ChildRunTerminalStatus
+    readonly definitionRevisionId?: DefinitionRevisionId
+    readonly text?: string
+    readonly mentions?: readonly AgentId[]
+  },
 ): readonly [WorkspaceState, WorkspaceEvent] {
   const base = {
     id: WorkspaceEventId(`event-${state.nextSequence}`),

@@ -9,7 +9,7 @@ import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import { AgentId, HumanId, RoomId, TaskId } from './ids.ts'
-import type { AgentDefinitionId, ChildRunId as ChildId } from './ids.ts'
+import type { AgentDefinitionId, ChildRunId as ChildId, WorkspaceEventId } from './ids.ts'
 import { finishChildRun } from './child-runs.ts'
 import { recallAgentEvents } from './memory.ts'
 import { assertRoomMessageAuthorized } from './room-policy.ts'
@@ -64,8 +64,11 @@ export interface DispatcherLimits {
 interface PendingWake {
   readonly agentId: AgentId
   readonly triggeredBy: string
+  readonly sourceEventId: WorkspaceEventId
   readonly depth: number
 }
+
+type DeliverySource = { readonly kind: 'room'; readonly roomId: RoomId } | { readonly kind: 'task'; readonly taskId: TaskId }
 
 interface ActiveRoomMember {
   readonly id: AgentId
@@ -118,7 +121,7 @@ export class WorkspaceDispatcher {
   async runAssignedTask(agentId: AgentId, taskId: TaskId): Promise<string> {
     const state = this.host.snapshot()
     const task = assertAssignedTaskRunnable(state, agentId, taskId)
-    const reply = await this.wake(agentId, undefined, task.title)
+    const reply = await this.wake(agentId, { kind: 'task', taskId }, taskSourceEventId(state, taskId), task.title)
     await this.host.apply(current => completeTask(current, { actorAgentId: agentId, taskId }).state)
     return reply
   }
@@ -191,13 +194,14 @@ export class WorkspaceDispatcher {
   private async startDispatch(roomId: RoomId, actor: WorkspaceActor, text: string, mentions: readonly AgentId[]): Promise<StartedWorkspaceDispatch> {
     assertRoomMessageAuthorized(this.host.snapshot(), roomId, actor, mentions)
     const state = await this.host.execute({ type: 'room/message', roomId, actor, text, mentions })
-    const completion = this.continueDispatch(roomId, text, mentions)
+    const sourceEventId = requireLatestRoomMessageId(state, roomId)
+    const completion = this.continueDispatch(roomId, text, mentions, sourceEventId)
     return { state, completion }
   }
 
   /** Continue only the agent wake/reply portion after the root event is durable. */
-  private async continueDispatch(roomId: RoomId, text: string, mentions: readonly AgentId[]): Promise<void> {
-    const queue: PendingWake[] = mentions.map(agentId => ({ agentId, triggeredBy: text, depth: 1 }))
+  private async continueDispatch(roomId: RoomId, text: string, mentions: readonly AgentId[], sourceEventId: WorkspaceEventId): Promise<void> {
+    const queue: PendingWake[] = mentions.map(agentId => ({ agentId, triggeredBy: text, sourceEventId, depth: 1 }))
     let replies = 0
     let stopped = false
     while (queue.length > 0 && !stopped) {
@@ -209,7 +213,7 @@ export class WorkspaceDispatcher {
         break
       }
       if (!this.isEmployed(this.host.snapshot(), item.agentId)) continue
-      const outcome = await this.wakeOutcome(item.agentId, roomId, item.triggeredBy)
+      const outcome = await this.wakeOutcome(item.agentId, { kind: 'room', roomId }, item.sourceEventId, item.triggeredBy)
       const reply = textOf(outcome.output)
       const successful = outcome.stopReason.kind === 'completed' || outcome.stopReason.kind === 'max-tokens'
       if (successful && reply.trim() !== '') {
@@ -217,12 +221,13 @@ export class WorkspaceDispatcher {
         const next = parseRoomMentions(this.host.snapshot(), roomId, reply)
         const actor: WorkspaceActor = { type: 'agent', id: item.agentId }
         assertRoomMessageAuthorized(this.host.snapshot(), roomId, actor, next)
-        await this.host.execute(
+        const committed = await this.host.execute(
           { type: 'room/message', roomId, actor, text: reply, mentions: next },
           outcome.workspaceTurn,
         )
+        const replyEventId = requireLatestRoomMessageId(committed, roomId)
         for (const nextAgentId of next) {
-          queue.push({ agentId: nextAgentId, triggeredBy: reply, depth: item.depth + 1 })
+          queue.push({ agentId: nextAgentId, triggeredBy: reply, sourceEventId: replyEventId, depth: item.depth + 1 })
         }
       } else if (outcome.workspaceTurn !== undefined) {
         // A tool-only/empty-text reply has no Workspace room message to commit,
@@ -233,20 +238,21 @@ export class WorkspaceDispatcher {
     }
   }
 
-  private async wake(agentId: AgentId, roomId: RoomId | undefined, query: string): Promise<string> {
-    const outcome = await this.wakeOutcome(agentId, roomId, query)
+  private async wake(agentId: AgentId, source: DeliverySource, sourceEventId: WorkspaceEventId, query: string): Promise<string> {
+    const outcome = await this.wakeOutcome(agentId, source, sourceEventId, query)
     return textOf(outcome.output)
   }
 
-  private async wakeOutcome(agentId: AgentId, roomId: RoomId | undefined, query: string): Promise<WorkspaceTurnOutcome> {
+  private async wakeOutcome(agentId: AgentId, source: DeliverySource, sourceEventId: WorkspaceEventId, query: string): Promise<WorkspaceTurnOutcome> {
     const state = this.host.snapshot()
+    const roomId = source.kind === 'room' ? source.roomId : undefined
     const recall = roomId === undefined
       ? { rendered: '' }
       : recallAgentEvents(state, { agentId, roomId, query, characterBudget: this.limits.recallCharacterBudget })
     const collaboration = roomId === undefined ? '' : renderCollaborationContext(state, roomId)
     const delivery = createUserMessage({
       content: [{ type: 'text', text: query }],
-      source: { kind: 'agent-workspace-delivery' },
+      source: { kind: 'agent-workspace-delivery', workspaceId: state.workspaceId, source, sourceEventId },
     })
     const supplemental = [recall.rendered, collaboration].filter(value => value.trim() !== '').join('\n\n')
     const recallMessage = supplemental === ''
@@ -273,6 +279,25 @@ function textOf(blocks: readonly ContentBlock[]): string {
     .filter((block): block is { readonly type: 'text'; readonly text: string } => block.type === 'text')
     .map(block => block.text)
     .join('\n')
+}
+
+function requireLatestRoomMessageId(state: WorkspaceState, roomId: RoomId): WorkspaceEventId {
+  const event = state.events.at(-1)
+  if (event?.type !== 'room/message' || event.subjectId !== roomId) {
+    throw new Error(`room '${roomId}' mutation did not append its message event`)
+  }
+  return event.id
+}
+
+function taskSourceEventId(state: WorkspaceState, taskId: TaskId): WorkspaceEventId {
+  const assignment = Object.values(state.taskAssignments).find(candidate => candidate.taskId === taskId)
+  if (assignment === undefined) throw new Error(`task '${taskId}' has no assignment`)
+  const event = state.events.find(candidate =>
+    (candidate.type === 'task/assigned' || candidate.type === 'task/delegated')
+    && candidate.subjectId === assignment.id,
+  )
+  if (event === undefined) throw new Error(`task '${taskId}' has no assignment event`)
+  return event.id
 }
 
 /** Extract canonical, instance-name and unique role-name mentions from a reply. */

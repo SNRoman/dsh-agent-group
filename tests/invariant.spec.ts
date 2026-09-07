@@ -11,6 +11,7 @@ import {
   WorkspaceId,
 } from '../packages/host/src/ids.ts'
 import { assertWorkspaceInvariants } from '../packages/host/src/invariant.ts'
+import { workspaceStateSchema } from '../packages/host/src/spec.ts'
 import { appendWorkspaceEvent, createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import {
   assignDelegatedTask,
@@ -56,6 +57,25 @@ function buildState(): WorkspaceState {
 }
 
 type Corruption = readonly [string, (state: WorkspaceState) => WorkspaceState, RegExp]
+
+function withRawEvent(state: WorkspaceState, event: Readonly<Record<string, unknown>>): unknown {
+  return {
+    ...state,
+    nextSequence: state.nextSequence + 1,
+    events: [...state.events, { id: `event-${state.nextSequence}`, sequence: state.nextSequence, ...event }],
+  }
+}
+
+function acceptsRawEvent(state: WorkspaceState, event: Readonly<Record<string, unknown>>): boolean {
+  const parsed = workspaceStateSchema.safeParse(withRawEvent(state, event))
+  if (!parsed.success) return false
+  try {
+    assertWorkspaceInvariants(parsed.data, state.workspaceId)
+    return true
+  } catch {
+    return false
+  }
+}
 
 function buildEmploymentHistory(departureCount: number): WorkspaceState {
   let state = createInitialState(WorkspaceId('local'))
@@ -188,6 +208,74 @@ const relationshipCorruptions: readonly Corruption[] = [
 ]
 
 describe('assertWorkspaceInvariants', () => {
+  test('parses every strict v0.2 task event variant', () => {
+    const initial = buildState()
+    const state = { ...initial, nextId: initial.nextId + 1 }
+    const task = Object.values(state.tasks)[0]!
+    const grant = Object.values(state.delegationGrants)[0]!
+    const revision = Object.values(state.definitionRevisions)[0]!
+    const delivery = {
+      taskId: task.id,
+      taskDeliveryAttemptId: `task-delivery-attempt-${initial.nextId}`,
+      messageId: 'message-900',
+    }
+    const events = [
+      { type: 'task/delivery-started', ...delivery },
+      { type: 'task/delivery-accepted', ...delivery },
+      { type: 'task/delivery-failed', ...delivery, failureCode: 'delivery-rejected', failureSummary: 'Inbox rejected the message.' },
+      { type: 'task/result', taskId: task.id, taskDeliveryAttemptId: delivery.taskDeliveryAttemptId, definitionRevisionId: revision.id, text: 'done' },
+      { type: 'task/result-after-cancel', taskId: task.id, taskDeliveryAttemptId: delivery.taskDeliveryAttemptId, definitionRevisionId: revision.id, text: 'late result' },
+      { type: 'task/delegation-revoked', subjectId: grant.id },
+      { type: 'task/cancelled', subjectId: task.id },
+    ]
+    for (const event of events) {
+      expect(acceptsRawEvent(state, event), event.type).toBe(true)
+    }
+  })
+
+  test.each([
+    ['delivery without message id', { type: 'task/delivery-started', taskId: 'task-1', taskDeliveryAttemptId: 'attempt-1' }],
+    ['failure without safe fields', { type: 'task/delivery-failed', taskId: 'task-1', taskDeliveryAttemptId: 'attempt-1', messageId: 'message-1' }],
+    ['failure with a blank code', { type: 'task/delivery-failed', taskId: 'task-1', taskDeliveryAttemptId: 'attempt-1', messageId: 'message-1', failureCode: '  ', failureSummary: 'safe' }],
+    ['failure with a blank summary', { type: 'task/delivery-failed', taskId: 'task-1', taskDeliveryAttemptId: 'attempt-1', messageId: 'message-1', failureCode: 'safe', failureSummary: '\t' }],
+    ['accepted delivery with failure fields', { type: 'task/delivery-accepted', taskId: 'task-1', taskDeliveryAttemptId: 'attempt-1', messageId: 'message-1', failureCode: 'unexpected', failureSummary: 'unexpected' }],
+    ['result without definition revision', { type: 'task/result', taskId: 'task-1', taskDeliveryAttemptId: 'attempt-1', text: 'done' }],
+    ['cancellation with a grant subject', { type: 'task/cancelled', subjectId: 'grant-1' }],
+    ['revocation with a task subject', { type: 'task/delegation-revoked', subjectId: 'task-1' }],
+  ])('rejects %s', (_name, event) => {
+    expect(acceptsRawEvent(buildState(), event)).toBe(false)
+  })
+
+  test('rejects nextId that can reuse a durable task delivery attempt id', () => {
+    const state = buildState()
+    const task = Object.values(state.tasks)[0]!
+    const raw = withRawEvent(state, {
+      type: 'task/delivery-started',
+      taskId: task.id,
+      taskDeliveryAttemptId: `task-delivery-attempt-${state.nextId}`,
+      messageId: 'message-next-id',
+    })
+    const parsed = workspaceStateSchema.parse(raw)
+    expect(() => assertWorkspaceInvariants(parsed, state.workspaceId)).toThrow(/nextId/)
+  })
+
+  test('rejects a task result attributed to another definition', () => {
+    const state = buildState()
+    const task = Object.values(state.tasks)[0]!
+    const other = mutateWorkspace(state, {
+      type: 'definition/create', name: 'Other role', description: 'other', instructions: 'other',
+    })
+    const raw = withRawEvent(other.state, {
+      type: 'task/result',
+      taskId: task.id,
+      taskDeliveryAttemptId: 'task-delivery-attempt-1',
+      definitionRevisionId: other.definitionRevisionId,
+      text: 'misattributed result',
+    })
+    const parsed = workspaceStateSchema.parse(raw)
+    expect(() => assertWorkspaceInvariants(parsed, state.workspaceId)).toThrow(/does not belong to its task assignee/)
+  })
+
   test('accepts a valid complete aggregate for its table key', () => {
     expect(() => assertWorkspaceInvariants(buildState(), WorkspaceId('local'))).not.toThrow()
   })

@@ -1,6 +1,7 @@
 /** Zod schema and storage-domain declaration for the Workspace aggregate. */
 
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
+import { MessageId } from '@deepseek-ai/dsh-llm'
 import { z } from 'zod'
 import {
   AgentDefinitionId,
@@ -13,6 +14,7 @@ import {
   HumanId,
   MembershipId,
   RoomId,
+  TaskDeliveryAttemptId,
   TaskAssignmentId,
   TaskId,
   WorkspaceEventId,
@@ -33,6 +35,8 @@ const membershipId = z.string().min(1).transform(MembershipId)
 const eventId = z.string().min(1).transform(WorkspaceEventId)
 const memoryEntryId = z.string().min(1).transform(AgentMemoryEntryId)
 const taskId = z.string().min(1).transform(TaskId)
+const taskDeliveryAttemptId = z.string().min(1).transform(TaskDeliveryAttemptId)
+const messageId = z.string().min(1).transform(MessageId)
 const taskAssignmentId = z.string().min(1).transform(TaskAssignmentId)
 const delegationGrantId = z.string().min(1).transform(DelegationGrantId)
 const childRunId = z.string().min(1).transform(ChildRunId)
@@ -82,7 +86,52 @@ const workspaceEvent = z.discriminatedUnion('type', [
   }).strict(),
   z.object({
     ...workspaceEventBase,
-    type: workspaceEventType.exclude(['child/run-finished']),
+    type: z.enum(['task/delivery-started', 'task/delivery-accepted']),
+    taskId,
+    taskDeliveryAttemptId,
+    messageId,
+    failureCode: z.never().optional(),
+    failureSummary: z.never().optional(),
+  }).strict(),
+  z.object({
+    ...workspaceEventBase,
+    type: z.literal('task/delivery-failed'),
+    taskId,
+    taskDeliveryAttemptId,
+    messageId,
+    failureCode: z.string().refine(value => value.trim() !== '', 'failure code must not be blank'),
+    failureSummary: z.string().refine(value => value.trim() !== '', 'failure summary must not be blank'),
+  }).strict(),
+  z.object({
+    ...workspaceEventBase,
+    type: z.enum(['task/result', 'task/result-after-cancel']),
+    taskId,
+    taskDeliveryAttemptId,
+    definitionRevisionId,
+    text: z.string().refine(value => value.trim() !== '', 'task result must not be blank'),
+  }).strict(),
+  z.object({
+    ...workspaceEventBase,
+    type: z.literal('task/cancelled'),
+    subjectId: taskId,
+  }).strict(),
+  z.object({
+    ...workspaceEventBase,
+    type: z.literal('task/delegation-revoked'),
+    subjectId: delegationGrantId,
+  }).strict(),
+  z.object({
+    ...workspaceEventBase,
+    type: workspaceEventType.exclude([
+      'child/run-finished',
+      'task/delivery-started',
+      'task/delivery-accepted',
+      'task/delivery-failed',
+      'task/result',
+      'task/result-after-cancel',
+      'task/cancelled',
+      'task/delegation-revoked',
+    ]),
     childRunStatus: z.never().optional(),
   }).strict(),
 ])

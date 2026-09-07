@@ -22,6 +22,10 @@ export type WorkspaceEventId = Branded<'AgentWorkspaceEventId'>
 export type AgentMemoryEntryId = Branded<'AgentWorkspaceMemoryEntryId'>
 /** Identifies one root or derived task. */
 export type TaskId = Branded<'AgentWorkspaceTaskId'>
+/** Identifies one durable attempt to deliver a task to an agent inbox. */
+export type TaskDeliveryAttemptId = Branded<'AgentWorkspaceTaskDeliveryAttemptId'>
+/** Identifies one ephemeral Workspace activity exposed by the Host. */
+export type WorkspaceActivityId = Branded<'AgentWorkspaceActivityId'>
 /** Identifies one task assignment. */
 export type TaskAssignmentId = Branded<'AgentWorkspaceTaskAssignmentId'>
 /** Identifies one human-authorized delegation grant. */
@@ -51,6 +55,10 @@ export function WorkspaceEventId(value: string): WorkspaceEventId { return value
 export function AgentMemoryEntryId(value: string): AgentMemoryEntryId { return value as AgentMemoryEntryId }
 /** Brand a durable task identifier. */
 export function TaskId(value: string): TaskId { return value as TaskId }
+/** Brand a durable task-delivery-attempt identifier. */
+export function TaskDeliveryAttemptId(value: string): TaskDeliveryAttemptId { return value as TaskDeliveryAttemptId }
+/** Brand an ephemeral Workspace activity identifier. */
+export function WorkspaceActivityId(value: string): WorkspaceActivityId { return value as WorkspaceActivityId }
 /** Brand a durable task-assignment identifier. */
 export function TaskAssignmentId(value: string): TaskAssignmentId { return value as TaskAssignmentId }
 /** Brand a durable delegation-grant identifier. */
