@@ -219,6 +219,231 @@ function settlementFixture() {
 describe('workspace UI view model', () => {
   const t = (key: string) => key
 
+  it('labels agent rows as accessible groups in chat and definition views', () => {
+    const fixture = workspaceFixture()
+    const definitionId = Object.keys(fixture.state.definitions)[0]
+    expect(definitionId).toBeDefined()
+    const actions = {
+      close: vi.fn(),
+      setMode: vi.fn(),
+      selectRoom: vi.fn(),
+      selectDefinition: vi.fn(),
+      setSnapshot: vi.fn(),
+      setBusy: vi.fn(),
+      setError: vi.fn(),
+    }
+    const renderMode = (mode: 'chat' | 'agents') => {
+      const harness = componentHarness()
+      const tree = harness.render(WorkspaceOverlay as unknown as TestComponent, {
+        useStore: (selector: (state: unknown) => unknown) => selector({
+          open: true,
+          mode,
+          selectedRoomId: fixture.roomId,
+          selectedDefinitionId: definitionId,
+          snapshot: fixture.state,
+          busy: false,
+        }),
+        actions,
+        api: {},
+        t,
+      })
+      return harness.findAll(tree, element => element.props['role'] === 'group')
+    }
+
+    expect(renderMode('chat').map(element => element.props['aria-label'])).toEqual(['Alice', 'Bob'])
+    expect(renderMode('agents').map(element => element.props['aria-label'])).toEqual(['Alice', 'Bob'])
+  })
+
+  it('names the member panel and its candidate combobox for browser automation', () => {
+    const fixture = workspaceFixture()
+    const definitionId = Object.keys(fixture.state.definitions)[0]
+    expect(definitionId).toBeDefined()
+    const withCandidate = mutateWorkspace(fixture.state, {
+      type: 'agent/create', definitionId: definitionId!, name: 'Carol',
+    }).state
+    const harness = componentHarness()
+    const tree = harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector({
+        open: true,
+        mode: 'chat',
+        selectedRoomId: fixture.roomId,
+        selectedDefinitionId: undefined,
+        snapshot: withCandidate,
+        busy: false,
+      }),
+      actions: {
+        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(),
+      },
+      api: {},
+      t,
+    })
+
+    const memberPanel = harness.findAll(tree, element => element.type === 'aside')
+      .find(element => element.props['aria-label'] === 'room.groupMembers')
+    const candidate = harness.find(tree, element => element.type === 'select')
+    expect(memberPanel).toBeDefined()
+    expect(candidate?.props['aria-label']).toBe('room.addAgent')
+  })
+
+  it('starts each membership join without a memory default', () => {
+    const fixture = workspaceFixture()
+    const definitionId = Object.keys(fixture.state.definitions)[0]
+    expect(definitionId).toBeDefined()
+    const withCandidate = mutateWorkspace(fixture.state, {
+      type: 'agent/create', definitionId: definitionId!, name: 'Carol',
+    }).state
+    const harness = componentHarness()
+    const tree = harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector({
+        open: true,
+        mode: 'chat',
+        selectedRoomId: fixture.roomId,
+        selectedDefinitionId: undefined,
+        snapshot: withCandidate,
+        busy: false,
+      }),
+      actions: {
+        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(),
+      },
+      api: {},
+      t,
+    })
+
+    const memoryStart = harness.find(tree, element => element.type === 'select' && element.props['aria-label'] === 'room.memoryStart')
+    const join = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'room.join')
+    expect(memoryStart?.props['value']).toBe('')
+    expect(harness.findAll(memoryStart, element => element.type === 'option').map(option => [
+      option.props['value'], option.props['children'], option.props['disabled'],
+    ])).toEqual([
+      ['', 'room.selectMemoryStart', true],
+      ['new-events', 'room.memoryNewEvents', undefined],
+      ['event-range', 'room.memoryEventRange', undefined],
+    ])
+    expect(join?.props['disabled']).toBe(true)
+  })
+
+  it('requires a valid human-selected historical range before joining a group', async () => {
+    const fixture = workspaceFixture()
+    const definitionId = Object.keys(fixture.state.definitions)[0]
+    expect(definitionId).toBeDefined()
+    const withCandidate = mutateWorkspace(fixture.state, {
+      type: 'agent/create', definitionId: definitionId!, name: 'Carol',
+    }).state
+    const carolId = Object.keys(withCandidate.agents).find(id => withCandidate.agents[id]?.name === 'Carol')
+    expect(carolId).toBeDefined()
+    const ui: Record<string, unknown> = {
+      open: true,
+      mode: 'chat',
+      selectedRoomId: fixture.roomId,
+      selectedDefinitionId: undefined,
+      snapshot: withCandidate,
+      busy: false,
+    }
+    const actions = {
+      close: vi.fn(),
+      setMode: vi.fn(),
+      selectRoom: vi.fn(),
+      selectDefinition: vi.fn(),
+      setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
+      setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
+      setError: vi.fn(),
+    }
+    const api = { joinRoom: vi.fn(async () => withCandidate) }
+    const harness = componentHarness()
+    const render = (): unknown => harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector(ui),
+      actions,
+      api,
+      t,
+    })
+
+    let tree = render()
+    const candidate = harness.find(tree, element => element.type === 'select' && element.props['aria-label'] === 'room.addAgent')
+    const memoryStart = harness.find(tree, element => element.type === 'select' && element.props['aria-label'] === 'room.memoryStart')
+    expect(candidate).toBeDefined()
+    expect(memoryStart).toBeDefined()
+    expect(memoryStart?.props['value']).toBe('')
+    ;(candidate!.props['onChange'] as (event: unknown) => void)({ target: { value: carolId } })
+    ;(memoryStart!.props['onChange'] as (event: unknown) => void)({ target: { value: 'event-range' } })
+
+    tree = render()
+    const start = harness.find(tree, element => element.type === 'input' && element.props['aria-label'] === 'room.startSequence')
+    const end = harness.find(tree, element => element.type === 'input' && element.props['aria-label'] === 'room.endSequence')
+    expect(start).toBeDefined()
+    expect(end).toBeDefined()
+    expect(start?.props['type']).toBe('number')
+    expect(end?.props['type']).toBe('number')
+    ;(start!.props['onChange'] as (event: unknown) => void)({ target: { value: '4' } })
+    ;(end!.props['onChange'] as (event: unknown) => void)({ target: { value: '3' } })
+
+    tree = render()
+    let join = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'room.join')
+    expect(join?.props['disabled']).toBe(true)
+    let renderedEnd = harness.find(tree, element => element.type === 'input' && element.props['aria-label'] === 'room.endSequence')!
+    ;(renderedEnd.props['onChange'] as (event: unknown) => void)({ target: { value: '999' } })
+
+    tree = render()
+    join = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'room.join')
+    expect(join?.props['disabled']).toBe(true)
+    renderedEnd = harness.find(tree, element => element.type === 'input' && element.props['aria-label'] === 'room.endSequence')!
+    ;(renderedEnd.props['onChange'] as (event: unknown) => void)({ target: { value: '5' } })
+
+    tree = render()
+    join = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'room.join')
+    expect(join?.props['disabled']).toBe(false)
+    ;(join!.props['onClick'] as () => void)()
+    await vi.waitFor(() => expect(api.joinRoom).toHaveBeenCalledWith(
+      fixture.roomId,
+      carolId,
+      { type: 'event-range', startSequence: 4, endSequence: 5 },
+    ))
+  })
+
+  it('clears the selected memory start when the candidate changes', () => {
+    const fixture = workspaceFixture()
+    const definitionId = Object.keys(fixture.state.definitions)[0]
+    expect(definitionId).toBeDefined()
+    const carol = mutateWorkspace(fixture.state, {
+      type: 'agent/create', definitionId: definitionId!, name: 'Carol',
+    })
+    const dave = mutateWorkspace(carol.state, {
+      type: 'agent/create', definitionId: definitionId!, name: 'Dave',
+    })
+    const harness = componentHarness()
+    const props = {
+      useStore: (selector: (state: unknown) => unknown) => selector({
+        open: true,
+        mode: 'chat',
+        selectedRoomId: fixture.roomId,
+        selectedDefinitionId: undefined,
+        snapshot: dave.state,
+        busy: false,
+      }),
+      actions: {
+        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(),
+      },
+      api: {},
+      t,
+    }
+    const render = (): unknown => harness.render(WorkspaceOverlay as unknown as TestComponent, props)
+
+    let tree = render()
+    let candidate = harness.find(tree, element => element.type === 'select' && element.props['aria-label'] === 'room.addAgent')!
+    let memoryStart = harness.find(tree, element => element.type === 'select' && element.props['aria-label'] === 'room.memoryStart')!
+    ;(candidate.props['onChange'] as (event: unknown) => void)({ target: { value: carol.agentId } })
+    ;(memoryStart.props['onChange'] as (event: unknown) => void)({ target: { value: 'new-events' } })
+
+    tree = render()
+    expect(harness.find(tree, element => element.type === 'button' && element.props['children'] === 'room.join')?.props['disabled']).toBe(false)
+    candidate = harness.find(tree, element => element.type === 'select' && element.props['aria-label'] === 'room.addAgent')!
+    ;(candidate.props['onChange'] as (event: unknown) => void)({ target: { value: dave.agentId } })
+
+    tree = render()
+    memoryStart = harness.find(tree, element => element.type === 'select' && element.props['aria-label'] === 'room.memoryStart')!
+    expect(memoryStart.props['value']).toBe('')
+    expect(harness.find(tree, element => element.type === 'button' && element.props['children'] === 'room.join')?.props['disabled']).toBe(true)
+  })
+
   it('renders one agent row across pre-commit, racing, and retired settlement snapshots', () => {
     const { fixture, beforeSettlement, afterSettlement, laggingStream, retiredStream } = settlementFixture()
     const ui = {

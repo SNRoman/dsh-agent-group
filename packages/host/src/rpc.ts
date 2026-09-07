@@ -132,7 +132,7 @@ const membershipMemoryStart = z.discriminatedUnion('type', [
     endSequence: z.number().int().positive(),
   }).strict(),
 ])
-const joinRoomPayload = z.object({ roomId: id, agentId: id, memoryStart: membershipMemoryStart.optional() }).strict()
+const joinRoomPayload = z.object({ roomId: id, agentId: id, memoryStart: membershipMemoryStart }).strict()
 const leaveRoomPayload = z.object({ membershipId: id }).strict()
 const postRoomPayload = z.object({ roomId: id, text, mentions: z.array(id) }).strict()
 
@@ -232,7 +232,7 @@ export function createWorkspaceRpcHandler(service: WorkspaceRpcService): Workspa
             type: 'room/join',
             roomId: RoomId(parsed.data.roomId),
             agentId: AgentId(parsed.data.agentId),
-            memoryStart: parsed.data.memoryStart ?? { type: 'new-events' },
+            memoryStart: parsed.data.memoryStart,
           }))
         }
         case 'room/leave': {

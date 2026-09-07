@@ -52,6 +52,27 @@ async function boot(): Promise<{ service: AgentWorkspaceDomainService; dispose: 
 }
 
 describe('direct workspace rooms', () => {
+  it('reuses the same direct room when an employed agent is opened twice', async () => {
+    const booted = await boot()
+    try {
+      await booted.service.execute({ type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+      let snapshot = booted.service.snapshot()
+      const definition = Object.values(snapshot.definitions)[0]!
+      await booted.service.execute({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+      snapshot = booted.service.snapshot()
+      const alice = Object.values(snapshot.agents)[0]!
+
+      const created = await booted.service.openDirectRoom(alice.id)
+      const reopened = await booted.service.openDirectRoom(alice.id)
+
+      expect(reopened.roomId).toBe(created.roomId)
+      expect(reopened.state).toEqual(created.state)
+      expect(Object.values(reopened.state.rooms).filter(room => room.kind === 'direct')).toHaveLength(1)
+    } finally {
+      await booted.dispose()
+    }
+  })
+
   it('allows exactly one active agent membership', () => {
     const fixture = twoAgents()
     const direct = mutateWorkspace(fixture.state, { type: 'room/create', kind: 'direct' })

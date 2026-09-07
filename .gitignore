@@ -4,3 +4,4 @@ coverage/
 release/
 *.tsbuildinfo
 *.tgz
+.release-smoke/

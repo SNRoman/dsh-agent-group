@@ -1,4 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const readText = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
@@ -8,6 +11,12 @@ const packages = [
   'packages/host/package.json',
   'packages/web/package.json',
   'packages/bundle/package.json',
+] as const
+const browserFixtureFiles = [
+  'tests/fixtures/browser/cordis.test.yml',
+  'tests/fixtures/browser/scripted-llm.ts',
+  'tests/e2e/workspace-browser.mjs',
+  '.github/workflows/registry-smoke.yml',
 ] as const
 
 const dshRange = '>=0.1.1-rc.2 <0.1.2-0'
@@ -61,10 +70,519 @@ describe('public release contract', () => {
     const root = readJson('package.json')
     expect(root.scripts['release:pack']).toBeTruthy()
     expect(root.scripts['release:publish']).toBeTruthy()
+    expect(root.scripts['smoke:packed']).toBeTruthy()
 
     const workflow = readText('.github/workflows/release-smoke.yml')
-    expect(workflow).toContain('pnpm pack')
-    expect(workflow).toContain('dsh plugin --profile web add')
-    expect(workflow).toContain('--dump-config')
+    expect(workflow).toContain('pnpm release:pack')
+    expect(workflow).toContain('pnpm smoke:packed')
+    expect(workflow).toContain('timeout-minutes: 30')
+    for (const path of [
+      'compatibility.json',
+      'pnpm-lock.yaml',
+      'pnpm-workspace.yaml',
+      'scripts/release-artifacts.mjs',
+      'scripts/release-smoke-contract.mjs',
+    ]) {
+      expect(workflow).toContain(`- '${path}'`)
+    }
+    const driver = readText('scripts/release-smoke.mjs')
+    expect(driver).toContain("['dsh', '--profile', 'web'")
+    expect(driver).toContain("'--port', '0'")
+    expect(driver).toContain('verifyReleaseArtifacts')
+    const release = readText('scripts/release.mjs')
+    expect(release).toContain('writeReleaseManifest')
+    expect(release).toContain('verifyReleaseSmokeReceipt')
+    expect(release).toContain('releasePublishCommands(release.artifacts, forwarded)')
+  })
+
+  it('binds publishing and packed smoke to the same current release artifacts', async () => {
+    const {
+      releasePublishCommands,
+      verifyReleaseArtifacts,
+      verifyReleaseSmokeReceipt,
+      writeReleaseManifest,
+      writeReleaseSmokeReceipt,
+    } = await import('../scripts/release-artifacts.mjs')
+    const root = await mkdtemp(join(tmpdir(), 'dsh-agent-group-release-artifacts-'))
+    try {
+      await writeFile(join(root, 'LICENSE'), 'license\n', 'utf8')
+      for (const directory of ['host', 'web', 'bundle']) {
+        await mkdir(join(root, 'packages', directory, 'src'), { recursive: true })
+        await writeFile(join(root, 'packages', directory, 'package.json'), `${JSON.stringify({ version: '1.2.3' })}\n`, 'utf8')
+        await writeFile(join(root, 'packages', directory, 'README.md'), `${directory}\n`, 'utf8')
+        await writeFile(join(root, 'packages', directory, 'src', 'index.ts'), `export const value = '${directory}'\n`, 'utf8')
+      }
+      await writeFile(join(root, 'packages', 'bundle', 'cordis.patch.yml'), 'plugins: []\n', 'utf8')
+      await mkdir(join(root, 'scripts'), { recursive: true })
+      await mkdir(join(root, 'tests', 'e2e'), { recursive: true })
+      await mkdir(join(root, 'tests', 'fixtures', 'browser'), { recursive: true })
+      await writeFile(join(root, 'scripts', 'release-smoke.mjs'), 'smoke driver\n', 'utf8')
+      await writeFile(join(root, 'scripts', 'release-smoke-contract.mjs'), 'smoke assertions\n', 'utf8')
+      await writeFile(join(root, 'tests', 'e2e', 'workspace-browser.mjs'), 'browser scenario\n', 'utf8')
+      await writeFile(join(root, 'tests', 'fixtures', 'browser', 'cordis.test.yml'), 'fixture\n', 'utf8')
+      const releaseDir = join(root, 'release')
+      await mkdir(releaseDir)
+      for (const filename of [
+        'dsh-agent-group-host-1.2.3.tgz',
+        'dsh-agent-group-web-1.2.3.tgz',
+        'dsh-agent-group-1.2.3.tgz',
+      ]) await writeFile(join(releaseDir, filename), filename, 'utf8')
+
+      writeReleaseManifest(root, '1.2.3')
+      expect(() => verifyReleaseArtifacts(root, '1.2.3')).not.toThrow()
+      expect(() => verifyReleaseSmokeReceipt(root, '1.2.3', { version: '0.1.1-rc.2', commit: 'abc' })).toThrow('smoke receipt')
+      writeReleaseSmokeReceipt(root, '1.2.3', { version: '0.1.1-rc.2', commit: 'abc' })
+      expect(() => verifyReleaseSmokeReceipt(root, '1.2.3', { version: '0.1.1-rc.2', commit: 'abc' })).not.toThrow()
+      const release = verifyReleaseArtifacts(root, '1.2.3')
+      const publish = releasePublishCommands(release.artifacts, ['--tag', 'next'])
+      expect(publish).toEqual([
+        ['publish', release.artifacts.host, '--access', 'public', '--tag', 'next'],
+        ['publish', release.artifacts.web, '--access', 'public', '--tag', 'next'],
+        ['publish', release.artifacts.bundle, '--access', 'public', '--tag', 'next'],
+      ])
+      expect(publish.flat()).not.toContain('pack')
+      expect(publish.flat()).not.toContain('--filter')
+
+      await writeFile(join(root, 'tests', 'e2e', 'workspace-browser.mjs'), 'stronger browser scenario\n', 'utf8')
+      expect(() => verifyReleaseSmokeReceipt(root, '1.2.3', { version: '0.1.1-rc.2', commit: 'abc' })).toThrow('smoke receipt')
+      await writeFile(join(root, 'tests', 'e2e', 'workspace-browser.mjs'), 'browser scenario\n', 'utf8')
+      await writeFile(join(root, 'packages', 'host', 'src', 'index.ts'), 'changed\n', 'utf8')
+      expect(() => verifyReleaseArtifacts(root, '1.2.3')).toThrow('source')
+      await writeFile(join(root, 'packages', 'host', 'src', 'index.ts'), "export const value = 'host'\n", 'utf8')
+      await writeFile(join(releaseDir, 'dsh-agent-group-host-1.2.3.tgz'), 'changed artifact', 'utf8')
+      expect(() => verifyReleaseArtifacts(root, '1.2.3')).toThrow('artifact')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('ships executable packed and registry smoke entry points', () => {
+    for (const path of browserFixtureFiles) {
+      expect(existsSync(new URL(`../${path}`, import.meta.url))).toBe(true)
+    }
+
+    const fixture = readText('tests/fixtures/browser/cordis.test.yml')
+    expect(fixture).toContain('agent-workspace-scripted-llm')
+    expect(fixture).toContain("name: './scripted-llm.ts'")
+    expect(fixture).toContain('id: directory-picker')
+    expect(fixture).toContain('id: directory-picker-browse')
+    expect(fixture).toContain("name: '@deepseek-ai/dsh-host-directory-picker-browse'")
+    expect(fixture).toContain('id: ui-directory-picker-browse')
+    expect(fixture).toContain("name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'")
+
+    const scripted = readText('tests/fixtures/browser/scripted-llm.ts')
+    expect(scripted).toContain('@deepseek-ai/dsh-llm')
+    expect(scripted).toContain('scripted')
+
+    const smoke = readText('tests/e2e/workspace-browser.mjs')
+    expect(smoke).toContain('playwright')
+    expect(smoke).toContain('toMatchAriaSnapshot')
+    expect(smoke).toContain('@all')
+
+    const registryWorkflow = readText('.github/workflows/registry-smoke.yml')
+    expect(registryWorkflow).toContain('workflow_dispatch')
+    expect(registryWorkflow).toContain('plugin-version')
+    expect(registryWorkflow).toContain('pnpm smoke:registry')
+    expect(registryWorkflow).toContain('--dsh "$GITHUB_WORKSPACE/deepseek-harness"')
+    expect(registryWorkflow).toContain('timeout-minutes: 30')
+    const releaseDriver = readText('scripts/release-smoke.mjs')
+    expect(releaseDriver).toContain("['view', `${name}@${version}`, 'version', 'dist.integrity'")
+    expect(releaseDriver).toContain('verifyInstalledPackages')
+    expect(releaseDriver).toContain('assertPublishedRegistryPackage')
+    expect(releaseDriver).toContain('assertProfileManifest')
+    expect(releaseDriver).toContain('assertResolvedPackages')
+    expect(releaseDriver).toContain('registryProfileCommands')
+    expect(releaseDriver).toContain('assertProfileLock')
+    expect(releaseDriver).toContain('assertAssembledConfig')
+    expect(releaseDriver).toContain('packed-manifests.json')
+    expect(releaseDriver).toContain("REGISTRY_PACKAGES = ['@dsh-agent-group/host', '@dsh-agent-group/web', 'dsh-agent-group']")
+  })
+
+  it('rejects incomplete registry and profile evidence before the browser smoke', async () => {
+    const {
+      assertAssembledConfig,
+      assertProfileLock,
+      assertProfileManifest,
+      assertPublishedRegistryPackage,
+      assertResolvedPackages,
+      registryProfileCommands,
+    } = await import('../scripts/release-smoke-contract.mjs')
+    const version = '1.2.3'
+    const registry = {
+      name: '@dsh-agent-group/host',
+      version,
+      integrity: 'sha512-host-integrity',
+      tarball: 'https://registry.npmjs.org/@dsh-agent-group/host/-/host-1.2.3.tgz',
+    }
+    const bundle = {
+      name: 'dsh-agent-group',
+      version,
+      integrity: 'sha512-bundle-integrity',
+      tarball: 'https://registry.npmjs.org/dsh-agent-group/-/dsh-agent-group-1.2.3.tgz',
+      dependencies: { '@dsh-agent-group/host': `^${version}`, '@dsh-agent-group/web': `^${version}` },
+    }
+    const web = {
+      name: '@dsh-agent-group/web',
+      version,
+      integrity: 'sha512-web-integrity',
+      tarball: 'https://registry.npmjs.org/@dsh-agent-group/web/-/web-1.2.3.tgz',
+    }
+    const profile = {
+      dependencies: {
+        '@dsh-agent-group/host': version,
+        '@dsh-agent-group/web': version,
+        'dsh-agent-group': version,
+      },
+    }
+    const lock = `
+importers:
+  .:
+    dependencies:
+      '@dsh-agent-group/host':
+        specifier: 1.2.3
+        version: 1.2.3
+      '@dsh-agent-group/web':
+        specifier: 1.2.3
+        version: 1.2.3
+      dsh-agent-group:
+        specifier: 1.2.3
+        version: 1.2.3
+packages:
+  '@dsh-agent-group/host@1.2.3':
+    resolution: {integrity: sha512-host-integrity}
+  '@dsh-agent-group/web@1.2.3':
+    resolution: {integrity: sha512-web-integrity}
+  dsh-agent-group@1.2.3:
+    resolution: {integrity: sha512-bundle-integrity}
+snapshots:
+  '@dsh-agent-group/host@1.2.3': {}
+  '@dsh-agent-group/web@1.2.3': {}
+  dsh-agent-group@1.2.3: {}
+`
+    const resolved = [registry, web, bundle].map(entry => ({
+      name: entry.name,
+      installations: [{ version, resolved: entry.tarball }],
+      registryIntegrity: entry.integrity,
+    }))
+
+    expect(() => {
+      expect(registryProfileCommands(version)).toEqual([
+        ['dsh', 'plugin', '--profile', 'web', 'add', `dsh-agent-group@${version}`],
+        [
+          'dsh',
+          'plugin',
+          '--profile',
+          'web',
+          'add',
+          '--save-exact',
+          `@dsh-agent-group/host@${version}`,
+          `@dsh-agent-group/web@${version}`,
+        ],
+      ])
+      assertPublishedRegistryPackage(registry, version)
+      assertPublishedRegistryPackage(web, version)
+      assertPublishedRegistryPackage(bundle, version)
+      assertProfileManifest(profile, version)
+      assertProfileLock(lock, version, [registry, web, bundle])
+      assertResolvedPackages(resolved, version)
+      assertAssembledConfig(`
+- id: agent-workspace
+  name: '@dsh-agent-group/host'
+- id: agent-workspace-web
+  name: '@dsh-agent-group/web'
+- id: directory-picker
+  name: '@deepseek-ai/dsh-host-directory-picker-auto'
+  disabled: true
+- id: directory-picker-browse
+  name: '@deepseek-ai/dsh-host-directory-picker-browse'
+- id: ui-directory-picker-browse
+  name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
+- id: agent-workspace-scripted-llm
+  name: file:///scripted-llm.ts
+`, 'file:///scripted-llm.ts')
+      assertAssembledConfig(`
+- id: agent-workspace
+  name: '@dsh-agent-group/host'
+- id: agent-workspace-web
+  name: '@dsh-agent-group/web'
+- id: directory-picker
+  name: '@deepseek-ai/dsh-host-directory-picker-auto'
+  disabled: true
+- id: directory-picker-browse
+  name: '@deepseek-ai/dsh-host-directory-picker-browse'
+- id: ui-directory-picker-browse
+  name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
+- id: agent-workspace-scripted-llm
+  name: >-
+    file:///scripted-llm.ts
+`, 'file:///scripted-llm.ts')
+    }).not.toThrow()
+    expect(() => assertPublishedRegistryPackage({ ...registry, integrity: undefined }, version)).toThrow('integrity')
+    expect(() => assertPublishedRegistryPackage({ ...registry, tarball: 'https://registry.npmjs.org/@dsh-agent-group/host/-/host-1.2.2.tgz' }, version)).toThrow('tarball')
+    expect(() => assertPublishedRegistryPackage({
+      ...registry,
+      name: 'dsh-agent-group',
+      dependencies: { '@dsh-agent-group/host': version, '@dsh-agent-group/web': `^${version}` },
+    }, version)).toThrow('bundle dependency')
+    expect(() => assertProfileManifest({
+      ...profile,
+      dependencies: { ...profile.dependencies, '@dsh-agent-group/host': `^${version}` },
+    }, version)).toThrow('profile dependency')
+    expect(() => assertProfileLock(lock.replace('specifier: 1.2.3', 'specifier: ^1.2.3'), version, [registry, web, bundle])).toThrow('specifier')
+    expect(() => assertProfileLock(`
+packages:
+  '@dsh-agent-group/host@1.2.2':
+    resolution: {integrity: sha512-host-integrity}
+`, version, [registry])).toThrow('expected only')
+    expect(() => assertProfileLock(`
+packages:
+  '@dsh-agent-group/host@1.2.3':
+    resolution: {integrity: sha512-wrong-integrity}
+`, version, [registry])).toThrow('integrity')
+    expect(() => assertResolvedPackages(resolved.map(entry => entry.name === '@dsh-agent-group/web'
+      ? { ...entry, installations: [{ version: '1.2.4' }] }
+      : entry), version)).toThrow('expected only')
+    expect(() => assertAssembledConfig(`
+- id: agent-workspace-scripted-llm
+  name: file:///scripted-llm.ts
+`, 'file:///scripted-llm.ts')).toThrow('Host')
+    expect(() => assertAssembledConfig(`
+- id: agent-workspace
+  name: '@dsh-agent-group/host'
+- id: agent-workspace-web
+  name: '@dsh-agent-group/web'
+- id: directory-picker
+  name: '@deepseek-ai/dsh-host-directory-picker-auto'
+- id: agent-workspace-scripted-llm
+  name: file:///scripted-llm.ts
+`, 'file:///scripted-llm.ts')).toThrow('directory picker')
+    expect(() => assertAssembledConfig(`
+- id: agent-workspace
+  name: '@dsh-agent-group/host'
+- id: agent-workspace-web
+  name: '@dsh-agent-group/web'
+- id: directory-picker
+  name: '@deepseek-ai/dsh-host-directory-picker-auto'
+  disabled: true
+- id: directory-picker-browse
+  name: '@deepseek-ai/dsh-host-directory-picker-browse'
+- id: ui-directory-picker-browse
+  name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
+- id: agent-workspace-scripted-llm
+  name: file:///scripted-llm.ts
+`, 'file:///wrong-scripted-llm.ts')).toThrow('scripted')
+    expect(() => assertAssembledConfig(`
+- id: agent-workspace
+  config:
+    name: '@dsh-agent-group/host'
+- id: agent-workspace-web
+  name: '@dsh-agent-group/web'
+- id: agent-workspace-scripted-llm
+  name: file:///scripted-llm.ts
+`, 'file:///scripted-llm.ts')).toThrow('Host')
+  })
+
+  it('rejects incomplete durable Browser evidence', async () => {
+    const { assertBrowserDurableEvidence } = await import('../scripts/release-smoke-contract.mjs')
+    const durable = {
+      agents: {
+        alice: { id: 'alice', name: 'Alice' },
+        bob: { id: 'bob', name: 'Bob' },
+      },
+      rooms: {
+        release: { id: 'release', kind: 'group', name: 'Release room' },
+      },
+      memberships: {
+        alice: { id: 'membership-alice', roomId: 'release', agentId: 'alice', memoryStart: { type: 'new-events' } },
+        bob: { id: 'membership-bob', roomId: 'release', agentId: 'bob', memoryStart: { type: 'event-range', startSequence: 7, endSequence: 7 } },
+      },
+      events: [
+        { id: 'history', sequence: 7, type: 'room/message', subjectId: 'release', actor: { type: 'human', id: 'web-user' }, text: 'HISTORY_BEFORE_JOIN' },
+        { id: 'direct', type: 'room/message', actor: { type: 'agent', id: 'alice' }, text: 'DIRECT_REPLY Alice' },
+        { id: 'hold', type: 'room/message', actor: { type: 'agent', id: 'alice' }, text: 'HOLD_REPLY Alice' },
+        { id: 'memory', type: 'room/message', actor: { type: 'agent', id: 'alice' }, text: 'MEMORY_OK Alice' },
+      ],
+      memoryEntries: [
+        { id: 'bob-history', agentId: 'bob', eventId: 'history', acquiredBy: 'history-sync' },
+      ],
+    }
+
+    expect(() => assertBrowserDurableEvidence(durable)).not.toThrow()
+    expect(() => assertBrowserDurableEvidence({
+      ...durable,
+      memberships: {
+        ...durable.memberships,
+        alice: { ...durable.memberships.alice, memoryStart: { type: 'event-range', startSequence: 1, endSequence: 1 } },
+      },
+    })).toThrow('new-events')
+    expect(() => assertBrowserDurableEvidence({
+      ...durable,
+      memberships: {
+        ...durable.memberships,
+        bob: { ...durable.memberships.bob, memoryStart: { type: 'new-events' } },
+      },
+    })).toThrow('historical')
+    expect(() => assertBrowserDurableEvidence({
+      ...durable,
+      memberships: {
+        ...durable.memberships,
+        bob: { ...durable.memberships.bob, memoryStart: { type: 'event-range', startSequence: 6, endSequence: 7 } },
+      },
+    })).toThrow('historical')
+    expect(() => assertBrowserDurableEvidence({
+      ...durable,
+      memoryEntries: [...durable.memoryEntries, { id: 'alice-history', agentId: 'alice', eventId: 'history', acquiredBy: 'history-sync' }],
+    })).toThrow('Alice')
+    expect(() => assertBrowserDurableEvidence({ ...durable, memoryEntries: [] })).toThrow('Bob')
+    expect(() => assertBrowserDurableEvidence({
+      ...durable,
+      memoryEntries: [...durable.memoryEntries, { id: 'duplicate-bob-history', agentId: 'bob', eventId: 'history', acquiredBy: 'history-sync' }],
+    })).toThrow('Bob')
+    expect(() => assertBrowserDurableEvidence({
+      ...durable,
+      memoryEntries: [...durable.memoryEntries, { id: 'wrong-bob-history', agentId: 'bob', eventId: 'history', acquiredBy: 'room-membership' }],
+    })).toThrow('Bob')
+    for (const text of ['DIRECT_REPLY Alice', 'HOLD_REPLY Alice', 'MEMORY_OK Alice']) {
+      expect(() => assertBrowserDurableEvidence({
+        ...durable,
+        events: [...durable.events, { id: `duplicate-${text}`, type: 'room/message', actor: { type: 'agent', id: 'alice' }, text }],
+      })).toThrow(text)
+    }
+    expect(() => assertBrowserDurableEvidence({
+      ...durable,
+      events: [...durable.events, { id: 'partial', type: 'room/message', actor: { type: 'agent', id: 'alice' }, text: 'LIVE_PARTIAL' }],
+    })).toThrow('LIVE_PARTIAL')
+  })
+
+  it('derives an uninstall command from only the release packages that are direct profile dependencies', async () => {
+    const { uninstallProfileCommand } = await import('../scripts/release-smoke-contract.mjs')
+
+    expect(uninstallProfileCommand({
+      dependencies: {
+        '@deepseek-ai/dsh-base': '0.1.1-rc.2',
+        'dsh-agent-group': 'file:C:/release/dsh-agent-group.tgz',
+      },
+    })).toEqual([
+      'dsh', 'plugin', '--profile', 'web', 'remove', 'dsh-agent-group',
+    ])
+    expect(uninstallProfileCommand({
+      dependencies: {
+        '@dsh-agent-group/host': '1.2.3',
+        '@dsh-agent-group/web': '1.2.3',
+        'dsh-agent-group': '1.2.3',
+      },
+    })).toEqual([
+      'dsh', 'plugin', '--profile', 'web', 'remove',
+      '@dsh-agent-group/host', '@dsh-agent-group/web', 'dsh-agent-group',
+    ])
+    expect(uninstallProfileCommand({ dependencies: { unrelated: '1.0.0' } })).toBeNull()
+  })
+
+  it('rejects an uninstall result that leaves a release package or loses the external fixture', async () => {
+    const { assertUninstalledProfile } = await import('../scripts/release-smoke-contract.mjs')
+    const fixture = 'file:///scripted-llm.ts'
+    const manifest = {
+      dependencies: { '@deepseek-ai/dsh-base': '0.1.1-rc.2' },
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base'] } },
+    }
+    const config = `
+- id: directory-picker
+  name: '@deepseek-ai/dsh-host-directory-picker-auto'
+  disabled: true
+- id: directory-picker-browse
+  name: '@deepseek-ai/dsh-host-directory-picker-browse'
+- id: ui-directory-picker-browse
+  name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
+- id: agent-workspace-scripted-llm
+  name: ${fixture}
+- id: dsh-base
+  name: '@deepseek-ai/dsh-base'
+`
+
+    expect(() => assertUninstalledProfile(manifest, config, fixture)).not.toThrow()
+    for (const name of ['@dsh-agent-group/host', '@dsh-agent-group/web', 'dsh-agent-group']) {
+      expect(() => assertUninstalledProfile({
+        ...manifest,
+        dependencies: { ...manifest.dependencies, [name]: '1.2.3' },
+      }, config, fixture)).toThrow('direct dependency')
+      expect(() => assertUninstalledProfile({
+        ...manifest,
+        dsh: { profile: { bundles: [...manifest.dsh.profile.bundles, name] } },
+      }, config, fixture)).toThrow('bundle')
+    }
+    expect(() => assertUninstalledProfile(manifest, `
+- id: agent-workspace
+  name: '@dsh-agent-group/host'
+${config}`, fixture)).toThrow('Host')
+    expect(() => assertUninstalledProfile(manifest, `
+- id: agent-workspace-web
+  name: '@dsh-agent-group/web'
+${config}`, fixture)).toThrow('Web')
+    expect(() => assertUninstalledProfile(manifest, `
+- id: directory-picker
+  name: '@deepseek-ai/dsh-host-directory-picker-auto'
+  disabled: true
+- id: directory-picker-browse
+  name: '@deepseek-ai/dsh-host-directory-picker-browse'
+- id: ui-directory-picker-browse
+  name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
+- id: dsh-base
+  name: '@deepseek-ai/dsh-base'
+`, fixture)).toThrow('scripted')
+    expect(() => assertUninstalledProfile(manifest, config.replace(
+      '  disabled: true',
+      '  disabled: false',
+    ), fixture)).toThrow('directory picker')
+  })
+
+  it('requires every pre-uninstall session file to remain addressable after restart', async () => {
+    const { assertFileTreePreserved } = await import('../scripts/release-smoke-contract.mjs')
+    const before = [
+      { path: 'alpha.jsonl', size: 17, sha256: 'a'.repeat(64) },
+      { path: 'nested/beta.json', size: 29, sha256: 'b'.repeat(64) },
+    ]
+
+    expect(() => assertFileTreePreserved(before, structuredClone(before))).not.toThrow()
+    expect(() => assertFileTreePreserved(before, [
+      before[0],
+      { ...before[1], sha256: 'c'.repeat(64) },
+    ])).not.toThrow()
+    expect(() => assertFileTreePreserved(before, [...before, {
+      path: 'new.jsonl', size: 1, sha256: 'd'.repeat(64),
+    }])).not.toThrow()
+    expect(() => assertFileTreePreserved(before, [before[0]])).toThrow('nested/beta.json')
+  })
+
+  it('manifests every persisted Session file with stable relative paths and byte hashes', async () => {
+    const { manifestFileTree } = await import('../scripts/release-smoke-contract.mjs')
+    const root = await mkdtemp(join(tmpdir(), 'dsh-agent-group-manifest-'))
+    try {
+      await mkdir(join(root, 'nested'))
+      await writeFile(join(root, 'z.jsonl'), 'alpha', 'utf8')
+      await writeFile(join(root, 'nested', 'a.json'), 'beta', 'utf8')
+
+      await expect(manifestFileTree(root)).resolves.toEqual([
+        {
+          path: 'nested/a.json',
+          size: 4,
+          sha256: 'f44e64e75f3948e9f73f8dfa94721c4ce8cbb4f265c4790c702b2d41cfbf2753',
+        },
+        {
+          path: 'z.jsonl',
+          size: 5,
+          sha256: '8ed3f6ad685b959ead7022518e1af76cd816f8e8ec7ccdda1ed4018e8f2223f8',
+        },
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('documents the packed and exact-version registry smoke commands', () => {
+    const readme = readText('README.md')
+    expect(readme).toContain('pnpm exec playwright install chromium')
+    expect(readme).toContain('pnpm smoke:packed')
+    expect(readme).toContain('pnpm smoke:registry -- --version')
+    expect(readme).toContain('tests/e2e/workspace-browser.mjs')
   })
 })

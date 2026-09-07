@@ -1,21 +1,19 @@
 import { mkdirSync, readFileSync, rmSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
-
-const packages = [
-  { name: '@dsh-agent-group/host', manifest: 'packages/host/package.json' },
-  { name: '@dsh-agent-group/web', manifest: 'packages/web/package.json' },
-  { name: 'dsh-agent-group', manifest: 'packages/bundle/package.json' },
-]
+import { execaSync } from 'execa'
+import {
+  RELEASE_PACKAGES,
+  releasePublishCommands,
+  verifyReleaseArtifacts,
+  verifyReleaseSmokeReceipt,
+  writeReleaseManifest,
+} from './release-artifacts.mjs'
 
 const action = process.argv[2]
 const forwarded = process.argv.slice(3)
-const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
-
 function run(args) {
-  const result = spawnSync(pnpm, args, { cwd: process.cwd(), stdio: 'inherit' })
-  if (result.error) throw result.error
-  if (result.status !== 0) process.exit(result.status ?? 1)
+  const result = execaSync('pnpm', args, { cwd: process.cwd(), stdio: 'inherit', reject: false })
+  if (result.exitCode !== 0) process.exit(result.exitCode ?? 1)
 }
 
 function readVersion(path) {
@@ -23,7 +21,8 @@ function readVersion(path) {
   return manifest.version
 }
 
-const versions = new Map(packages.map(pkg => [pkg.name, readVersion(pkg.manifest)]))
+const versions = new Map(RELEASE_PACKAGES.map(pkg => [pkg.name, readVersion(pkg.manifest)]))
+const compatibility = JSON.parse(readFileSync(resolve('compatibility.json'), 'utf8'))
 const uniqueVersions = new Set(versions.values())
 if (uniqueVersions.size !== 1) {
   console.error('Release packages must share one version:')
@@ -35,16 +34,20 @@ if (action === 'pack') {
   const outDir = resolve('release')
   rmSync(outDir, { recursive: true, force: true })
   mkdirSync(outDir, { recursive: true })
-  for (const pkg of packages) {
+  for (const pkg of RELEASE_PACKAGES) {
     console.log(`\nPacking ${pkg.name}@${versions.get(pkg.name)}...`)
     run(['--filter', pkg.name, 'pack', '--pack-destination', outDir])
   }
+  writeReleaseManifest(process.cwd(), [...uniqueVersions][0])
   console.log(`\nPacked release artifacts in ${outDir}`)
 } else if (action === 'publish') {
+  verifyReleaseSmokeReceipt(process.cwd(), [...uniqueVersions][0], compatibility.verifiedSource)
+  const release = verifyReleaseArtifacts(process.cwd(), [...uniqueVersions][0])
   console.log('Publishing in dependency order: host -> web -> bundle')
-  for (const pkg of packages) {
+  const commands = releasePublishCommands(release.artifacts, forwarded)
+  for (const [index, pkg] of RELEASE_PACKAGES.entries()) {
     console.log(`\nPublishing ${pkg.name}@${versions.get(pkg.name)}...`)
-    run(['--filter', pkg.name, 'publish', '--access', 'public', ...forwarded])
+    run(commands[index])
   }
 } else {
   console.error('Usage: node scripts/release.mjs <pack|publish> [pnpm publish args...]')

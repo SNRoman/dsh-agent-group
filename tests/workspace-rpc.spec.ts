@@ -190,6 +190,24 @@ describe('workspace rpc handler', () => {
     expect(posts).toEqual([])
   })
 
+  it('rejects a room join that omits the human-selected memory start', async () => {
+    const { service, commands } = serviceFixture()
+    const handler = createWorkspaceRpcHandler(service)
+    const result = await handler('room/join', {
+      roomId: 'room-1',
+      agentId: 'agent-1',
+    }, new AbortController().signal)
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.kind).toBe('bad-request')
+    expect(result.error.code).toBe('bad-request')
+    expect(result.error.details).toEqual({
+      issues: expect.arrayContaining([expect.objectContaining({ path: ['memoryStart'] })]),
+    })
+    expect(commands).toEqual([])
+  })
+
   it('maps unexpected exceptions to a display-safe internal error', async () => {
     const { service } = serviceFixture()
     service.execute = async () => {

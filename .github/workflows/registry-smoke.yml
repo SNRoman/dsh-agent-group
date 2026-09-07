@@ -1,45 +1,31 @@
-name: Release smoke
+name: Registry smoke
 
 on:
-  pull_request:
-    paths:
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - 'compatibility.json'
-      - 'packages/**/package.json'
-      - 'packages/**/cordis.patch.yml'
-      - 'packages/**/src/**'
-      - 'scripts/release.mjs'
-      - 'scripts/release-artifacts.mjs'
-      - 'scripts/release-smoke.mjs'
-      - 'scripts/release-smoke-contract.mjs'
-      - 'tests/e2e/workspace-browser.mjs'
-      - 'tests/fixtures/browser/**'
-      - 'tests/release-contract.spec.ts'
-      - 'README.md'
-      - 'LICENSE'
-      - '.github/workflows/release-smoke.yml'
   workflow_dispatch:
+    inputs:
+      plugin-version:
+        description: Exact published dsh-agent-group version
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-smoke-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: registry-smoke-${{ inputs.plugin-version }}
+  cancel-in-progress: false
 
 jobs:
-  packed-install:
+  exact-version:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout plugin
+      - name: Checkout plugin smoke driver
         uses: actions/checkout@v4
         with:
           path: plugin/dsh-agent-group
 
-      - name: Checkout DeepSeek Harness
+      - name: Checkout verified DeepSeek Harness
         uses: actions/checkout@v4
         with:
           repository: deepseek-ai/deepseek-harness
@@ -61,7 +47,7 @@ jobs:
             deepseek-harness/pnpm-lock.yaml
             plugin/dsh-agent-group/pnpm-lock.yaml
 
-      - name: Install plugin dependencies
+      - name: Install smoke dependencies
         working-directory: plugin/dsh-agent-group
         run: pnpm install --frozen-lockfile
 
@@ -69,16 +55,17 @@ jobs:
         working-directory: plugin/dsh-agent-group
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Pack and run the assembled Browser smoke
+      - name: Wait for all manifests and run exact-version smoke
         working-directory: plugin/dsh-agent-group
-        run: |
-          pnpm release:pack
-          pnpm smoke:packed -- --dsh "$GITHUB_WORKSPACE/deepseek-harness"
+        run: >-
+          pnpm smoke:registry --
+          --version "${{ inputs.plugin-version }}"
+          --dsh "$GITHUB_WORKSPACE/deepseek-harness"
 
-      - name: Upload release-smoke evidence
+      - name: Upload registry evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: packed-release-smoke
+          name: registry-smoke-${{ inputs.plugin-version }}
           path: plugin/dsh-agent-group/.release-smoke/
           if-no-files-found: error

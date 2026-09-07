@@ -84,10 +84,16 @@ export interface RoomView {
   readonly name?: string
 }
 
+/** Browser request for memory admission at the beginning of a membership period. */
+export type MembershipMemoryStart =
+  | { readonly type: 'new-events' }
+  | { readonly type: 'event-range'; readonly startSequence: number; readonly endSequence: number }
+
 export interface RoomMembershipView {
   readonly id: MembershipId
   readonly roomId: RoomId
   readonly agentId: AgentId
+  readonly memoryStart: MembershipMemoryStart
   readonly leftEventId?: string
 }
 

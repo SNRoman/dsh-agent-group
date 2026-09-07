@@ -93,10 +93,24 @@ The command copies this plugin to an operating-system temporary directory, gener
 Before publishing, run the packed release gate:
 
 ```sh
+pnpm exec playwright install chromium
 pnpm release:pack
+pnpm smoke:packed -- --dsh <absolute-path-to-deepseek-harness-0.1.1-rc.2>
 ```
 
-It runs build, typecheck, tests, and packs the three npm artifacts in dependency order into `release/`.
+The Playwright command installs the Chromium runtime used by the smoke. `release:pack` runs build, typecheck, tests, packs the three npm artifacts in dependency order into `release/`, clears any earlier smoke receipt, and records their hashes together with the deterministic build-input hash. `smoke:packed` rejects stale or changed artifacts, verifies the named Harness checkout, builds its host and Browser artifacts, installs only those packed plugin artifacts into a new Web profile, starts it through `pnpm dsh --profile web`, and runs `tests/e2e/workspace-browser.mjs` against the assembled UI. A successful full smoke writes a receipt bound to the source hash, the Browser smoke driver and fixtures, all three tarball hashes, and the verified DSH commit. `release:publish` requires that receipt and publishes those exact tarballs instead of repacking the workspaces.
+
+After all three packages are published, verify the exact immutable registry version:
+
+```sh
+pnpm smoke:registry -- --version 0.1.1 --dsh <absolute-path-to-deepseek-harness-0.1.1-rc.2>
+```
+
+Before publishing a candidate, maintainers may prove registry-only installation and startup mechanics against the existing public version without applying newer Browser assertions:
+
+```sh
+pnpm smoke:registry -- --version 0.1.0 --installation-only --dsh <absolute-path-to-deepseek-harness-0.1.1-rc.2>
+```
 
 Publishing is intentionally ordered so the bundle never references packages that do not exist yet:
 
@@ -116,7 +130,7 @@ Extra `pnpm publish` arguments can be forwarded, for example:
 pnpm release:publish -- --tag next
 ```
 
-The `Release smoke` GitHub Actions workflow goes further than the development build: it runs `pnpm pack`, stages the packed Host/Web artifacts into the packed bundle, creates a clean DSH home, installs the bundle through `dsh plugin --profile web add`, and verifies the composed config with `--dump-config`.
+The `Release smoke` GitHub Actions workflow runs the packed command above and retains assembled configuration, Host logs, ARIA milestones, console diagnostics, and the final durable aggregate. The manual `Registry smoke` workflow waits with bounded retries for all three exact package manifests, then runs the same installation, startup, and Browser scenario from registry specifications only.
 
 ## Known limitations
 

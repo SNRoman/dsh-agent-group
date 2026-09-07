@@ -29,6 +29,28 @@ function apiFixture(responses: Record<string, unknown>) {
 }
 
 describe('WorkspaceApiClient upgraded conversation contract', () => {
+  it('passes the human-selected membership memory start to the Host', async () => {
+    const state = workspaceSnapshot(5)
+    const { api, calls } = apiFixture({ 'room/join': state })
+    const controller = new AbortController()
+
+    await expect(api.joinRoom('room-1', 'agent-1', {
+      type: 'event-range',
+      startSequence: 2,
+      endSequence: 4,
+    }, controller.signal)).resolves.toEqual(state)
+    expect(calls).toEqual([expect.objectContaining({
+      channel: '/agent-workspace',
+      endpoint: 'room/join',
+      payload: {
+        roomId: 'room-1',
+        agentId: 'agent-1',
+        memoryStart: { type: 'event-range', startSequence: 2, endSequence: 4 },
+      },
+      signal: controller.signal,
+    })])
+  })
+
   it('normalizes the Host direct-room result into a browser snapshot and room id', async () => {
     const state = workspaceSnapshot(4)
     const { api, calls } = apiFixture({ 'room/direct/open': { state, roomId: 'room-direct' } })

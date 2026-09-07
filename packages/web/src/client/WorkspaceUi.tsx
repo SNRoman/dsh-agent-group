@@ -10,6 +10,7 @@ import type { WorkspaceApiClient } from './api.ts'
 import type {
   AgentDefinitionId,
   AgentId,
+  MembershipMemoryStart,
   MembershipId,
   RoomId,
   WorkspaceSnapshot,
@@ -217,6 +218,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
           ? <div className="dsh-agent-group-empty">{t('workspace.loading')}</div>
           : ui.mode === 'chat'
             ? <ChatWorkspace
+                key={ui.selectedRoomId ?? 'no-room'}
                 snapshot={snapshot}
                 liveTurns={visibleWorkspaceTurns(snapshot.revision, turnStream)}
                 selectedRoomId={ui.selectedRoomId}
@@ -242,7 +244,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                   const roomId = ui.selectedRoomId as RoomId
                   if (await commit(() => api.postMessage(roomId, text, parseRoomMentionIds(snapshot, roomId, text)))) setDraft('')
                 }}
-                onJoin={agentId => ui.selectedRoomId === undefined ? Promise.resolve() : commit(() => api.joinRoom(ui.selectedRoomId as RoomId, agentId)).then(() => undefined)}
+                onJoin={(agentId, memoryStart) => ui.selectedRoomId === undefined ? Promise.resolve() : commit(() => api.joinRoom(ui.selectedRoomId as RoomId, agentId, memoryStart)).then(() => undefined)}
                 onLeave={membershipId => commit(() => api.leaveRoom(membershipId)).then(() => undefined)}
                 onOpenDirect={openDirect}
                 t={t}
@@ -323,7 +325,7 @@ interface ChatWorkspaceProps {
   readonly onRoomNameChange: (value: string) => void
   readonly onCreateRoom: () => Promise<void>
   readonly onPost: () => Promise<void>
-  readonly onJoin: (agentId: AgentId) => Promise<void>
+  readonly onJoin: (agentId: AgentId, memoryStart: MembershipMemoryStart) => Promise<void>
   readonly onLeave: (membershipId: MembershipId) => Promise<void>
   readonly onOpenDirect: (agentId: AgentId) => Promise<void>
   readonly t: TranslateNS<'agentWorkspace'>
@@ -343,10 +345,36 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
     ? []
     : props.liveTurns.filter(turn => turn.roomId === selectedRoomId)
   const [candidate, setCandidate] = useState('')
+  const [memoryStartType, setMemoryStartType] = useState<'' | MembershipMemoryStart['type']>('')
+  const [startSequence, setStartSequence] = useState('')
+  const [endSequence, setEndSequence] = useState('')
+  const latestSequence = snapshot.events.at(-1)?.sequence ?? 0
+  const parsedStartSequence = Number(startSequence)
+  const parsedEndSequence = Number(endSequence)
+  const memoryStart: MembershipMemoryStart | undefined = memoryStartType === 'new-events'
+    ? { type: 'new-events' }
+    : Number.isSafeInteger(parsedStartSequence)
+        && parsedStartSequence > 0
+        && Number.isSafeInteger(parsedEndSequence)
+        && parsedEndSequence >= parsedStartSequence
+        && parsedEndSequence <= latestSequence
+      ? { type: 'event-range', startSequence: parsedStartSequence, endSequence: parsedEndSequence }
+      : undefined
 
   useEffect(() => {
-    if (!candidates.some(agent => agent.id === candidate)) setCandidate(candidates[0]?.id ?? '')
+    if (!candidates.some(agent => agent.id === candidate)) {
+      setCandidate(candidates[0]?.id ?? '')
+      setMemoryStartType('')
+      setStartSequence('')
+      setEndSequence('')
+    }
   }, [snapshot.revision, selectedRoomId])
+
+  useEffect(() => {
+    setMemoryStartType('')
+    setStartSequence('')
+    setEndSequence('')
+  }, [selectedRoomId])
 
   const appendMention = (name: string): void => {
     props.onDraftChange(appendDisplayMention(props.draft, name))
@@ -440,22 +468,57 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
           </>}
       </main>
 
-      <aside className="dsh-agent-group-panel">
+      <aside className="dsh-agent-group-panel" aria-label={selectedRoom?.kind === 'direct' ? props.t('room.directTarget') : props.t('room.groupMembers')}>
         <div className="dsh-agent-group-section-head"><span className="dsh-agent-group-section-title">{selectedRoom?.kind === 'direct' ? props.t('room.directTarget') : props.t('room.groupMembers')}</span></div>
         <div className="dsh-agent-group-scroll">
           {selectedRoom?.kind === 'group' && candidates.length > 0 ? <div className="dsh-agent-group-card">
             <div className="dsh-agent-group-field">
               <label>{props.t('room.addAgent')}</label>
-              <select className="dsh-agent-group-select" value={candidate} onChange={event => setCandidate(event.target.value)}>
+              <select className="dsh-agent-group-select" aria-label={props.t('room.addAgent')} value={candidate} onChange={event => {
+                setCandidate(event.target.value)
+                setMemoryStartType('')
+                setStartSequence('')
+                setEndSequence('')
+              }}>
                 {candidates.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
               </select>
             </div>
-            <button type="button" className="dsh-agent-group-button" disabled={props.busy || candidate === ''} onClick={() => void props.onJoin(candidate)}>{props.t('room.join')}</button>
+            <div className="dsh-agent-group-field">
+              <label>{props.t('room.memoryStart')}</label>
+              <select className="dsh-agent-group-select" aria-label={props.t('room.memoryStart')} value={memoryStartType} onChange={event => setMemoryStartType(event.target.value as '' | MembershipMemoryStart['type'])}>
+                <option value="" disabled>{props.t('room.selectMemoryStart')}</option>
+                <option value="new-events">{props.t('room.memoryNewEvents')}</option>
+                <option value="event-range">{props.t('room.memoryEventRange')}</option>
+              </select>
+            </div>
+            {memoryStartType === 'event-range' ? <div className="dsh-agent-group-inline">
+              <input
+                className="dsh-agent-group-input"
+                type="number"
+                min={1}
+                max={latestSequence}
+                step={1}
+                value={startSequence}
+                onChange={event => setStartSequence(event.target.value)}
+                aria-label={props.t('room.startSequence')}
+              />
+              <input
+                className="dsh-agent-group-input"
+                type="number"
+                min={1}
+                max={latestSequence}
+                step={1}
+                value={endSequence}
+                onChange={event => setEndSequence(event.target.value)}
+                aria-label={props.t('room.endSequence')}
+              />
+            </div> : null}
+            <button type="button" className="dsh-agent-group-button" disabled={props.busy || candidate === '' || memoryStart === undefined} onClick={() => { if (memoryStart !== undefined) void props.onJoin(candidate, memoryStart) }}>{props.t('room.join')}</button>
           </div> : null}
           <div className="dsh-agent-group-list">
             {members.map(agent => {
               const membership = Object.values(snapshot.memberships).find(item => item.roomId === selectedRoomId && item.agentId === agent.id && item.leftEventId === undefined)
-              return <div className="dsh-agent-group-list-button" key={agent.id}>
+              return <div className="dsh-agent-group-list-button" key={agent.id} role="group" aria-label={agent.name}>
                 <span className="dsh-agent-group-dot" data-employed="true" />
                 <span>{agent.name}</span>
                 {selectedRoom?.kind === 'group'
@@ -564,7 +627,7 @@ function AgentWorkspace(props: AgentWorkspaceProps) {
                       <button type="submit" className="dsh-agent-group-button" disabled={props.busy || props.agentName.trim() === ''}>{props.t('agent.createInstance')}</button>
                     </form>
                     <div className="dsh-agent-group-list">
-                      {agents.map(agent => <div className="dsh-agent-group-list-button" key={agent.id}>
+                      {agents.map(agent => <div className="dsh-agent-group-list-button" key={agent.id} role="group" aria-label={agent.name}>
                         <span className="dsh-agent-group-dot" data-employed={agent.employmentStatus === 'employed'} />
                         <span>{agent.name}</span>
                         <small>{agent.employmentStatus === 'employed' ? props.t('agent.employed') : props.t('agent.departed')}</small>

@@ -5,6 +5,7 @@ import type {
   AgentDefinitionId,
   AgentId,
   CreateDefinitionInput,
+  MembershipMemoryStart,
   MembershipId,
   ReviseDefinitionInput,
   RoomId,
@@ -92,8 +93,8 @@ export class WorkspaceApiClient {
     }
   }
 
-  joinRoom(roomId: RoomId, agentId: AgentId, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
-    return this.callSnapshot('room/join', { roomId, agentId, memoryStart: { type: 'new-events' } }, signal)
+  joinRoom(roomId: RoomId, agentId: AgentId, memoryStart: MembershipMemoryStart, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return this.callSnapshot('room/join', { roomId, agentId, memoryStart }, signal)
   }
 
   leaveRoom(membershipId: MembershipId, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
