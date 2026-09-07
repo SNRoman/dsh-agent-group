@@ -6,12 +6,14 @@ A persistent multi-agent workspace for [DeepSeek Harness](https://github.com/dee
 
 - **Agent definitions and instances** — define reusable roles, create multiple named instances, and keep each instance's employment lifecycle, memory, memberships, tasks, and durable DSH session independent.
 - **Group rooms and direct chat** — create group rooms, open a stable direct room for an employed agent, and retain durable room history in the plugin-owned `agent_workspace` domain.
+- **Explicit join memory** — every group join requires the human to choose either events created after the join or an inclusive historical event range; joining never silently selects a history policy.
 - **Mention routing** — `@agent` wakes only the selected employed room members; lowercase `@all` expands to all active employed members of a group. Agent-to-agent chains remain bounded by the workspace dispatcher.
 - **Live turns** — stream assistant text, reasoning, and tool activity into the Workspace UI while a DSH employee turn is in flight, then converge to the durable room event.
 - **DSH-native rendering** — final and streaming text use DeepSeek Harness Markdown primitives; reasoning and tool calls use disclosure rows instead of a second conversation renderer.
 - **Tasks and delegation** — ordinary mentions are communication. Formal peer delegation requires a human-created, task-scoped `DelegationGrant`.
 - **Child agents** — an employed agent can run a one-shot DSH child agent and retain the terminal result in personal memory without turning the child into a workspace colleague.
 - **Additive integration** — the Browser package registers only `sidebar.footer.action` and `shell.overlay`; it does not replace the core `sidebar`, `conversation`, or `details` surfaces and does not intercept `/api`.
+- **Localized policy feedback** — Simplified Chinese and English dictionaries own plugin UI copy, while stable Host error codes keep localization independent from exception text.
 
 ## Requirements
 
@@ -131,6 +133,8 @@ pnpm release:publish -- --tag next
 ```
 
 The `Release smoke` GitHub Actions workflow runs the packed command above and retains assembled configuration, Host logs, ARIA milestones, console diagnostics, and the final durable aggregate. The manual `Registry smoke` workflow waits with bounded retries for all three exact package manifests, then runs the same installation, startup, and Browser scenario from registry specifications only.
+
+See the [v0.1.1 release notes](docs/releases/v0.1.1.md) for the candidate changes, verified compatibility point, and publication checkpoint.
 
 ## Known limitations
 

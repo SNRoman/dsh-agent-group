@@ -22,7 +22,9 @@ dsh plugin --profile web remove dsh-agent-group
 
 This bundle mounts `@dsh-agent-group/host` and `@dsh-agent-group/web` through its `dsh.bundle.patch` declaration. It expects the selected DeepSeek Harness profile to provide the normal core and storage stack.
 
-Compatibility for v0.1.0 is intentionally limited to the verified DeepSeek Harness `0.1.1` release line starting at `0.1.1-rc.2`.
+Compatibility for v0.1.1 is intentionally limited to DeepSeek Harness `>=0.1.1-rc.2 <0.1.2-0`, verified at `0.1.1-rc.2` commit `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`.
+
+The release gate installs this bundle from packed tarballs into a clean Web profile, runs the Browser workspace scenario, removes the bundle, restarts the same profile, and reopens a pre-existing core DSH conversation. Publication uses the exact three tarballs named by that successful smoke receipt.
 
 For features, architecture, limitations, development, and release instructions, see the [repository README](https://github.com/SNRoman/dsh-agent-group#readme).
 

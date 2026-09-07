@@ -19,6 +19,8 @@ One `WorkspaceState` record holds every durable fact, stored once in a storage-d
 
 `AgentWorkspaceDomainService` (`index.ts`) opens the `agent_workspace` domain through `ctx.storageDomain`, materializes the local aggregate on first boot, and routes every mutation through one atomic `table.update`. Reads return detached snapshots; writes serialize on the domain chain, reach durability before the detached result is returned, and emit `domain/changed`. A `room/join` command is projected through `joinRoomWithMemory` so its requested historical range is acquired atomically with the membership mutation.
 
+Every group join supplies one explicit memory-start value. `new-events` starts observation after the join; `event-range` adds the selected inclusive historical interval during the same durable mutation. Subsequent room events are projected to every active member, including members who remain silent. Mention routing controls execution, not memory acquisition.
+
 The installable bundle intentionally mounts only the Host service and Browser overlay. The enclosing DSH profile (`dsh-web-app` or `dsh-headless`) owns the storage hub, backend, domain form, and persistence root; the plugin must not redeclare those rows.
 
 ## Employee runtime
@@ -32,6 +34,12 @@ The installable bundle intentionally mounts only the Host service and Browser ov
 `WorkspaceDispatcher` (`dispatcher.ts`) validates room communication admission before recording or waking anything, records a room message (projecting memory to every active member), then walks a bounded mention queue. Mentioned employed room members are woken one at a time inside that root dispatch; their replies are validated, recorded, and their `<@agentId>` mentions enqueue the next hop. Separate root dispatches may overlap, while durable aggregate mutations serialize at the storage-domain boundary. The shared hop and reply budgets stop runaway chains.
 
 Formal task execution validates employment, task openness, and assignment before the assignee is woken. `runChild` records the committed child-run id inside the durable mutation, passes an optional caller cancellation signal to `ctx.subagents`, always disposes a published run, and terminalizes accepted child work as `completed`, `failed`, or `cancelled`. A child that started while its parent was employed can still reach a durable terminal state if that parent departs while the child is running.
+
+Workspace policy failures use stable business-error codes with JSON-safe identifiers and counters. The RPC layer distinguishes those failures from malformed requests, caller cancellation, and unexpected internal errors. The Browser maps known codes through its typed Simplified Chinese and English dictionaries instead of parsing Host prose.
+
+## Release validation
+
+Default development resolves the declared DSH packages from the registry. Source compatibility is an explicit isolated check against the exact point in `compatibility.json`; it does not mutate either checkout. The packed release gate hashes deterministic build inputs and all three tarballs, assembles a clean DSH Web profile, exercises the Browser workflow, then verifies removal, restart, preservation of core files, and recovery of a pre-existing core conversation. Its receipt also hashes the Browser driver and fixtures. Publishing consumes those verified tarball paths and never repacks them.
 
 ## Extension seams
 
