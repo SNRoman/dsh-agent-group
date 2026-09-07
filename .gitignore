@@ -5,3 +5,4 @@ release/
 *.tsbuildinfo
 *.tgz
 .release-smoke/
+.worktrees/
