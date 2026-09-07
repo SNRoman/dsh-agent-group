@@ -23,6 +23,17 @@ export function sanitizeChildEnvironment(environment = process.env) {
   return Object.fromEntries(Object.entries(environment).filter(([name, value]) => value !== undefined && !sensitiveEnvironmentName.test(name)))
 }
 
+/** Returns a pnpm child-process invocation supported by the selected platform. */
+export function pnpmInvocation(platform, environment, args) {
+  if (platform === 'win32') {
+    return {
+      command: environment.ComSpec || 'cmd.exe',
+      args: ['/d', '/s', '/c', 'pnpm.cmd', ...args],
+    }
+  }
+  return { command: 'pnpm', args }
+}
+
 /** Reads and validates the repository compatibility declaration. */
 export async function readCompatibility(pluginDirectory) {
   const declaration = await readJson(join(pluginDirectory, 'compatibility.json'))

@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { rm } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
-import { prepareSourceCompatibility, sanitizeChildEnvironment } from './source-compatibility.mjs'
+import { pnpmInvocation, prepareSourceCompatibility, sanitizeChildEnvironment } from './source-compatibility.mjs'
 
 const argumentsAfterSeparator = process.argv.slice(2)
 const dshFlag = argumentsAfterSeparator.indexOf('--dsh')
@@ -28,8 +28,9 @@ try {
 }
 
 function runPnpm(cwd, args) {
-  const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
-  const result = spawnSync(pnpm, args, { cwd, env: sanitizeChildEnvironment(), stdio: 'inherit' })
+  const environment = sanitizeChildEnvironment()
+  const invocation = pnpmInvocation(process.platform, environment, args)
+  const result = spawnSync(invocation.command, invocation.args, { cwd, env: environment, stdio: 'inherit' })
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error(`pnpm ${args.join(' ')} exited with status ${String(result.status)}`)
 }

@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
-import { prepareSourceCompatibility, sanitizeChildEnvironment } from '../scripts/source-compatibility.mjs'
+import { pnpmInvocation, prepareSourceCompatibility, sanitizeChildEnvironment } from '../scripts/source-compatibility.mjs'
 
 const execFile = promisify(execFileCallback)
 const peerRange = '>=0.1.1-rc.2 <0.1.2-0'
@@ -199,6 +199,14 @@ describe('compatibility declaration', { timeout: PROCESS_TEST_TIMEOUT_MS }, () =
       PNPM_HOME: 'C:\\pnpm',
       PUBLIC_VALUE: 'retained',
     })
+  })
+
+  it('launches pnpm through the Windows command interpreter without composing user paths', () => {
+    expect(pnpmInvocation('win32', { ComSpec: 'C:\\Windows\\System32\\cmd.exe' }, ['install', '--frozen-lockfile'])).toEqual({
+      command: 'C:\\Windows\\System32\\cmd.exe',
+      args: ['/d', '/s', '/c', 'pnpm.cmd', 'install', '--frozen-lockfile'],
+    })
+    expect(pnpmInvocation('linux', {}, ['test'])).toEqual({ command: 'pnpm', args: ['test'] })
   })
 
   it('writes generated source overrides only inside the temporary plugin copy', async () => {
