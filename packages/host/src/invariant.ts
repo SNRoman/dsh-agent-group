@@ -268,6 +268,7 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
   }
 
   for (const event of state.events) assertEventRelationships(state, event)
+  assertTaskDeliveryLifecycles(state)
   let lastSequence = 0
   let greatestEventId = 0
   const sequences = new Set<number>()
@@ -289,6 +290,101 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
   }
   const greatestId = greatestDurableId(state)
   if (state.nextId <= greatestId) throw new Error(`nextId ${state.nextId} is not above the greatest durable id ${greatestId}`)
+}
+
+/** Verify that delivery facts form one non-overlapping lifecycle per task attempt. */
+function assertTaskDeliveryLifecycles(state: WorkspaceState): void {
+  type Attempt = {
+    readonly taskId: string
+    readonly messageId: string
+    started?: WorkspaceEvent | undefined
+    accepted?: WorkspaceEvent | undefined
+    terminal?: WorkspaceEvent | undefined
+  }
+  const attempts = new Map<string, Attempt>()
+  for (const event of state.events) {
+    if (!('taskDeliveryAttemptId' in event)) continue
+    const attemptId = event.taskDeliveryAttemptId
+    const taskId = event.taskId
+    const expectedMessageId = `agent-workspace-task:${state.workspaceId}:${attemptId}`
+    const existing = attempts.get(attemptId)
+    const attempt = existing ?? {
+      taskId,
+      messageId: 'messageId' in event ? event.messageId : expectedMessageId,
+    }
+    if (attempt.taskId !== taskId) throw new Error(`task delivery attempt '${attemptId}' references more than one task`)
+    if ('messageId' in event && event.messageId !== expectedMessageId) {
+      throw new Error(`task delivery attempt '${attemptId}' has non-deterministic message '${event.messageId}'`)
+    }
+    if ('messageId' in event && attempt.messageId !== event.messageId) {
+      throw new Error(`task delivery attempt '${attemptId}' uses more than one message identity`)
+    }
+    switch (event.type) {
+      case 'task/delivery-started':
+        if (attempt.started !== undefined || attempt.terminal !== undefined) {
+          throw new Error(`task delivery attempt '${attemptId}' has an invalid start`)
+        }
+        attempt.started = event
+        break
+      case 'task/delivery-accepted':
+        if (attempt.started === undefined || attempt.accepted !== undefined || attempt.terminal !== undefined) {
+          throw new Error(`task delivery attempt '${attemptId}' has an invalid acceptance`)
+        }
+        attempt.accepted = event
+        break
+      case 'task/delivery-failed':
+        if (attempt.started === undefined || attempt.terminal !== undefined) {
+          throw new Error(`task delivery attempt '${attemptId}' has an invalid failure terminal`)
+        }
+        attempt.terminal = event
+        break
+      case 'task/result':
+      case 'task/result-after-cancel':
+        if (attempt.started === undefined || attempt.accepted === undefined || attempt.terminal !== undefined) {
+          throw new Error(`task delivery attempt '${attemptId}' has an invalid result terminal`)
+        }
+        attempt.terminal = event
+        assertTaskResultTerminal(state, event)
+        break
+      default:
+        break
+    }
+    attempts.set(attemptId, attempt)
+  }
+  for (const task of Object.values(state.tasks)) {
+    const pending = [...attempts.values()].filter(attempt => (
+      attempt.taskId === task.id && attempt.terminal === undefined && (attempt.started !== undefined || attempt.accepted !== undefined)
+    ))
+    if (task.status === 'open' && pending.length > 1) {
+      throw new Error(`open task '${task.id}' has more than one pending delivery attempt`)
+    }
+  }
+}
+
+/** Verify a terminal task-result fact against task state, event order, and memory ownership. */
+function assertTaskResultTerminal(state: WorkspaceState, event: Extract<WorkspaceEvent, { readonly type: 'task/result' | 'task/result-after-cancel' }>): void {
+  const task = state.tasks[event.taskId]!
+  if (event.type === 'task/result') {
+    if (task.status === 'open') throw new Error(`open task '${task.id}' has a task result`)
+    const completion = state.events.find(candidate => (
+      candidate.type === 'task/completed' && candidate.subjectId === task.id && candidate.sequence > event.sequence
+    ))
+    if (task.status !== 'completed' || completion === undefined) {
+      throw new Error(`task result '${event.id}' does not complete task '${task.id}'`)
+    }
+  } else {
+    const cancellation = state.events.find(candidate => (
+      candidate.type === 'task/cancelled' && candidate.subjectId === task.id && candidate.sequence < event.sequence
+    ))
+    if (task.status !== 'cancelled' || cancellation === undefined) {
+      throw new Error(`cancelled task result '${event.id}' has no earlier cancellation`)
+    }
+  }
+  const assignment = Object.values(state.taskAssignments).find(candidate => candidate.taskId === task.id)
+  const acquired = assignment === undefined ? [] : state.memoryEntries.filter(entry => (
+    entry.agentId === assignment.assigneeAgentId && entry.eventId === event.id && entry.acquiredBy === 'task'
+  ))
+  if (acquired.length !== 1) throw new Error(`task result '${event.id}' must enter assignee memory exactly once`)
 }
 
 function assertRecordKeys<T extends { readonly id: string }>(label: string, records: Readonly<Record<string, T>>): void {

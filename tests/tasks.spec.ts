@@ -10,6 +10,7 @@ import {
   recordChildRunStarted,
   revokeTaskDelegation,
 } from '../packages/host/src/tasks.ts'
+import { startTaskDelivery, acceptTaskDelivery, terminalizeTask } from '../packages/host/src/task-delivery.ts'
 import { workspaceStateSchema } from '../packages/host/src/spec.ts'
 import { recallAgentEvents } from '../packages/host/src/memory.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
@@ -286,6 +287,22 @@ describe('formal task delegation', () => {
       for (const action of actions) expect(action).toThrow(expect.objectContaining({ code: 'task-not-open' }))
       expect(terminal).toEqual(before)
     }
+  })
+
+  test('treats delivery terminalization as task completion for later task actions', () => {
+    const workspace = createWorkspace()
+    const root = assignHumanTask(workspace.state, {
+      humanId: HumanId('owner'), assigneeAgentId: workspace.managerId, title: 'Deliver the release',
+    })
+    const started = startTaskDelivery(root.state, { taskId: root.taskId })
+    const accepted = acceptTaskDelivery(started.state, { taskId: root.taskId, attemptId: started.attemptId, messageId: started.message.id })
+    const terminal = terminalizeTask(accepted.state, {
+      actorAgentId: workspace.managerId, taskId: root.taskId, attemptId: started.attemptId,
+      result: 'Delivered.', definitionRevisionId: Object.values(root.state.definitionRevisions)[0]!.id,
+    })
+
+    expect(() => recordChildRunStarted(terminal.state, { parentAgentId: workspace.managerId, taskId: root.taskId }))
+      .toThrow(expect.objectContaining({ code: 'task-not-open' }))
   })
 
   test('requires an active human grant for the exact root task and expires it at root completion', () => {

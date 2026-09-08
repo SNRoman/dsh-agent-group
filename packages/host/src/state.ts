@@ -34,7 +34,11 @@ import type {
   StopConversationCommand,
   SynchronizeDefinitionCommand,
   TaskCancelledEvent,
+  TaskDeliveryEvent,
+  TaskDeliveryFailedEvent,
+  TaskDeliveryProgressEvent,
   TaskDelegationRevokedEvent,
+  TaskResultEvent,
   WorkspaceCommand,
   WorkspaceEvent,
   WorkspaceEventType,
@@ -210,6 +214,41 @@ export function appendTaskDelegationRevokedEvent(
     actor: { type: 'human', id: humanId },
   }
   return [{ ...state, nextSequence: state.nextSequence + 1, events: [...state.events, event] }, event]
+}
+
+/**
+ * Append one canonical task-delivery lifecycle fact.
+ * @param state Immutable workspace state.
+ * @param event Durable lifecycle fields.
+ * @returns State with the next sequence consumed and the appended event.
+ */
+export function appendTaskDeliveryEvent(
+  state: WorkspaceState,
+  event: Omit<TaskDeliveryProgressEvent, 'id' | 'sequence'> | Omit<TaskDeliveryFailedEvent, 'id' | 'sequence'>,
+): readonly [WorkspaceState, TaskDeliveryEvent] {
+  const base = { id: WorkspaceEventId(`event-${state.nextSequence}`), sequence: state.nextSequence }
+  const appended: TaskDeliveryEvent = event.type === 'task/delivery-failed'
+    ? { ...event, ...base } satisfies TaskDeliveryFailedEvent
+    : { ...event, ...base } satisfies TaskDeliveryProgressEvent
+  return [{ ...state, nextSequence: state.nextSequence + 1, events: [...state.events, appended] }, appended]
+}
+
+/**
+ * Append one canonical task result fact after its delivery has settled.
+ * @param state Immutable workspace state.
+ * @param event Durable result fields.
+ * @returns State with the next sequence consumed and the appended event.
+ */
+export function appendTaskResultEvent(
+  state: WorkspaceState,
+  event: Omit<TaskResultEvent, 'id' | 'sequence'>,
+): readonly [WorkspaceState, TaskResultEvent] {
+  const appended: TaskResultEvent = {
+    ...event,
+    id: WorkspaceEventId(`event-${state.nextSequence}`),
+    sequence: state.nextSequence,
+  }
+  return [{ ...state, nextSequence: state.nextSequence + 1, events: [...state.events, appended] }, appended]
 }
 
 function createDefinition(state: WorkspaceState, command: CreateDefinitionCommand): CreateDefinitionResult {

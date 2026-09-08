@@ -227,9 +227,7 @@ describe('assertWorkspaceInvariants', () => {
       { type: 'task/result', taskId: task.id, taskDeliveryAttemptId: delivery.taskDeliveryAttemptId, definitionRevisionId: revision.id, text: 'done' },
       { type: 'task/result-after-cancel', taskId: task.id, taskDeliveryAttemptId: delivery.taskDeliveryAttemptId, definitionRevisionId: revision.id, text: 'late result' },
     ]
-    for (const event of events) {
-      expect(acceptsRawEvent(state, event), event.type).toBe(true)
-    }
+    for (const event of events) expect(workspaceStateSchema.safeParse(withRawEvent(state, event)).success, event.type).toBe(true)
     const expiredGrant = {
       ...state,
       delegationGrants: { ...state.delegationGrants, [grant.id]: { ...grant, status: 'expired' as const } },
@@ -267,10 +265,31 @@ describe('assertWorkspaceInvariants', () => {
       type: 'task/delivery-started',
       taskId: task.id,
       taskDeliveryAttemptId: `task-delivery-attempt-${state.nextId}`,
-      messageId: 'message-next-id',
+      messageId: `agent-workspace-task:${state.workspaceId}:task-delivery-attempt-${state.nextId}`,
     })
     const parsed = workspaceStateSchema.parse(raw)
     expect(() => assertWorkspaceInvariants(parsed, state.workspaceId)).toThrow(/nextId/)
+  })
+
+  test('rejects delivery attempts with conflicting identities, terminals, or an open result', () => {
+    const state = buildState()
+    const task = Object.values(state.tasks)[0]!
+    const revision = Object.values(state.definitionRevisions)[0]!
+    const attempt = `task-delivery-attempt-${state.nextId}`
+    const messageId = `agent-workspace-task:${state.workspaceId}:${attempt}`
+    const started = { ...withRawEvent(state, { type: 'task/delivery-started', taskId: task.id, taskDeliveryAttemptId: attempt, messageId }), nextId: state.nextId + 1 } as WorkspaceState
+    const accepted = withRawEvent(started, { type: 'task/delivery-accepted', taskId: task.id, taskDeliveryAttemptId: attempt, messageId }) as WorkspaceState
+
+    expect(() => assertWorkspaceInvariants(withRawEvent(accepted, {
+      type: 'task/delivery-failed', taskId: task.id, taskDeliveryAttemptId: attempt, messageId,
+      failureCode: 'rejected', failureSummary: 'rejected',
+    }) as WorkspaceState, state.workspaceId)).not.toThrow()
+    expect(() => assertWorkspaceInvariants(withRawEvent(accepted, {
+      type: 'task/result', taskId: task.id, taskDeliveryAttemptId: attempt, definitionRevisionId: revision.id, text: 'open result',
+    }) as WorkspaceState, state.workspaceId)).toThrow(/open task.*result/)
+    expect(() => assertWorkspaceInvariants(withRawEvent(accepted, {
+      type: 'task/delivery-accepted', taskId: task.id, taskDeliveryAttemptId: attempt, messageId: 'wrong-message',
+    }) as WorkspaceState, state.workspaceId)).toThrow(/message/i)
   })
 
   test('rejects a task result attributed to another definition', () => {

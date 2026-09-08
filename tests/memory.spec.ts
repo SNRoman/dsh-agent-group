@@ -14,6 +14,8 @@ import {
   recallAgentEvents,
 } from '../packages/host/src/memory.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
+import { acceptTaskDelivery, startTaskDelivery, terminalizeTask } from '../packages/host/src/task-delivery.ts'
+import { assignHumanTask } from '../packages/host/src/tasks.ts'
 import type { WorkspaceState } from '../packages/host/src/types.ts'
 
 const javaEngineer = {
@@ -47,6 +49,25 @@ function memoryEventIds(state: WorkspaceState, agentId: AgentId): readonly Works
 }
 
 describe('unified event memory', () => {
+  test('recalls a terminal task result acquired by the assigned agent', () => {
+    const workspace = createWorkspace()
+    const assigned = assignHumanTask(workspace.state, {
+      humanId: HumanId('owner'), assigneeAgentId: workspace.aliceId, title: 'Remember this task result',
+    })
+    const started = startTaskDelivery(assigned.state, { taskId: assigned.taskId })
+    const accepted = acceptTaskDelivery(started.state, { taskId: assigned.taskId, attemptId: started.attemptId, messageId: started.message.id })
+    const terminal = terminalizeTask(accepted.state, {
+      actorAgentId: workspace.aliceId, taskId: assigned.taskId, attemptId: started.attemptId,
+      result: 'The persisted task result is ready.', definitionRevisionId: Object.values(assigned.state.definitionRevisions)[0]!.id,
+    })
+    const room = mutateWorkspace(terminal.state, { type: 'room/create', kind: 'direct' })
+    const recalled = recallAgentEvents(room.state, {
+      agentId: workspace.aliceId, roomId: room.roomId, query: 'persisted', characterBudget: 1_000,
+    })
+
+    expect(recalled.entries.some(entry => entry.provenance === 'task' && entry.rendered.includes('task/result'))).toBe(true)
+  })
+
   test('records one room event for every current member but wakes only explicit mentions', () => {
     const workspace = createWorkspace()
     const room = mutateWorkspace(workspace.state, { type: 'room/create', kind: 'group', name: 'Engineering' })
