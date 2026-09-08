@@ -132,15 +132,23 @@ describe('durable task delivery attempts', () => {
       result: 'A duplicate raced result.', definitionRevisionId: accepted.definitionRevisionId,
     })).toThrow(/not accepted/i)
 
-    const interruptedTask = assignedTask()
-    const started = startTaskDelivery(interruptedTask.state, { taskId: interruptedTask.taskId })
-    expect(() => failTaskDelivery(started.state, {
-      taskId: interruptedTask.taskId,
-      attemptId: started.attemptId,
-      messageId: started.message.id,
+    const interrupted = acceptedTask()
+    const failed = failTaskDelivery(interrupted.state, {
+      taskId: interrupted.taskId,
+      attemptId: interrupted.attemptId,
+      messageId: interrupted.messageId,
       failureCode: 'interrupted',
       failureSummary: 'A partial assistant response must not become a task result.',
-    })).not.toThrow()
-    expect(started.state.events.some(event => event.type === 'task/result' || event.type === 'task/result-after-cancel')).toBe(false)
+    })
+    expect(failed.state.events.some(event => event.type === 'task/result' || event.type === 'task/result-after-cancel')).toBe(false)
+    expect(() => terminalizeTask(failed.state, {
+      actorAgentId: interrupted.agentId, taskId: interrupted.taskId, attemptId: interrupted.attemptId,
+      result: 'Interrupted partial output.', definitionRevisionId: interrupted.definitionRevisionId,
+    })).toThrow(/not accepted/i)
+    const interruptedCancelled = cancelTask(failed.state, { humanId: HumanId('owner'), taskId: interrupted.taskId })
+    expect(() => recordTaskResultAfterCancel(interruptedCancelled.state, {
+      actorAgentId: interrupted.agentId, taskId: interrupted.taskId, attemptId: interrupted.attemptId,
+      result: 'Interrupted partial output.', definitionRevisionId: interrupted.definitionRevisionId,
+    })).toThrow(/not accepted/i)
   })
 })

@@ -292,6 +292,29 @@ describe('assertWorkspaceInvariants', () => {
     }) as WorkspaceState, state.workspaceId)).toThrow(/message/i)
   })
 
+  test('rejects an attempt started while an earlier attempt is still pending even when the later attempt fails', () => {
+    const initial = buildState()
+    const state = { ...initial, nextId: initial.nextId + 2 }
+    const task = Object.values(state.tasks)[0]!
+    const firstAttempt = `task-delivery-attempt-${initial.nextId}`
+    const secondAttempt = `task-delivery-attempt-${initial.nextId + 1}`
+    const first = withRawEvent(state, {
+      type: 'task/delivery-started', taskId: task.id, taskDeliveryAttemptId: firstAttempt,
+      messageId: `agent-workspace-task:${state.workspaceId}:${firstAttempt}`,
+    }) as WorkspaceState
+    const second = withRawEvent(first, {
+      type: 'task/delivery-started', taskId: task.id, taskDeliveryAttemptId: secondAttempt,
+      messageId: `agent-workspace-task:${state.workspaceId}:${secondAttempt}`,
+    }) as WorkspaceState
+    const failed = withRawEvent(second, {
+      type: 'task/delivery-failed', taskId: task.id, taskDeliveryAttemptId: secondAttempt,
+      messageId: `agent-workspace-task:${state.workspaceId}:${secondAttempt}`,
+      failureCode: 'interrupted', failureSummary: 'The later delivery did not finish.',
+    }) as WorkspaceState
+
+    expect(() => assertWorkspaceInvariants(failed, state.workspaceId)).toThrow(/pending delivery attempt/)
+  })
+
   test('rejects a task result attributed to another definition', () => {
     const state = buildState()
     const task = Object.values(state.tasks)[0]!

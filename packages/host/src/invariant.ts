@@ -302,6 +302,7 @@ function assertTaskDeliveryLifecycles(state: WorkspaceState): void {
     terminal?: WorkspaceEvent | undefined
   }
   const attempts = new Map<string, Attempt>()
+  const pendingAttemptIdsByTask = new Map<string, Set<string>>()
   for (const event of state.events) {
     if (!('taskDeliveryAttemptId' in event)) continue
     const attemptId = event.taskDeliveryAttemptId
@@ -321,10 +322,16 @@ function assertTaskDeliveryLifecycles(state: WorkspaceState): void {
     }
     switch (event.type) {
       case 'task/delivery-started':
+        const pending = pendingAttemptIdsByTask.get(taskId) ?? new Set<string>()
+        if (pending.size !== 0) {
+          throw new Error(`task '${taskId}' has more than one pending delivery attempt`)
+        }
         if (attempt.started !== undefined || attempt.terminal !== undefined) {
           throw new Error(`task delivery attempt '${attemptId}' has an invalid start`)
         }
         attempt.started = event
+        pending.add(attemptId)
+        pendingAttemptIdsByTask.set(taskId, pending)
         break
       case 'task/delivery-accepted':
         if (attempt.started === undefined || attempt.accepted !== undefined || attempt.terminal !== undefined) {
@@ -337,6 +344,7 @@ function assertTaskDeliveryLifecycles(state: WorkspaceState): void {
           throw new Error(`task delivery attempt '${attemptId}' has an invalid failure terminal`)
         }
         attempt.terminal = event
+        pendingAttemptIdsByTask.get(taskId)?.delete(attemptId)
         break
       case 'task/result':
       case 'task/result-after-cancel':
@@ -344,6 +352,7 @@ function assertTaskDeliveryLifecycles(state: WorkspaceState): void {
           throw new Error(`task delivery attempt '${attemptId}' has an invalid result terminal`)
         }
         attempt.terminal = event
+        pendingAttemptIdsByTask.get(taskId)?.delete(attemptId)
         assertTaskResultTerminal(state, event)
         break
       default:
