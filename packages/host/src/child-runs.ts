@@ -4,6 +4,9 @@ import { appendMemoryEntries, appendWorkspaceEvent, beginWorkspaceMutation } fro
 import type { ChildRunId } from './ids.ts'
 import type { ChildRun, WorkspaceEvent, WorkspaceState } from './types.ts'
 
+/** Stable terminal reason used when Host startup finds an orphaned live child. */
+export const CHILD_RUN_RESTART_REASON = 'Host restarted before the child run settled.'
+
 export interface FinishChildRunRequest {
   readonly childRunId: ChildRunId
   readonly status: Exclude<ChildRun['status'], 'running'>
@@ -37,4 +40,22 @@ export function finishChildRun(state: WorkspaceState, request: FinishChildRunReq
   }
   changed = appendMemoryEntries(changed, [{ agentId: childRun.parentAgentId, eventId: event.id, acquiredBy: 'child-result' }])
   return { state: changed }
+}
+
+/**
+ * Cancel every durable running child left without a process-local controller after restart.
+ * @param state - Valid persisted Workspace state loaded during Host startup.
+ * @returns The unchanged state or a state containing one cancellation per orphan.
+ */
+export function repairOrphanedChildRuns(state: WorkspaceState): WorkspaceState {
+  let repaired = state
+  for (const childRun of Object.values(state.childRuns)) {
+    if (childRun.status !== 'running') continue
+    repaired = finishChildRun(repaired, {
+      childRunId: childRun.id,
+      status: 'cancelled',
+      result: CHILD_RUN_RESTART_REASON,
+    }).state
+  }
+  return repaired
 }

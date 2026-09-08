@@ -15,6 +15,7 @@ import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { WorkspaceBusinessError } from './errors.ts'
 import { AgentId, HumanId, RoomId, TaskId, WorkspaceId } from './ids.ts'
+import type { ChildRunId } from './ids.ts'
 import { WorkspaceDispatcher } from './dispatcher.ts'
 import type { DispatcherLimits, SubagentRuntimeLike } from './dispatcher.ts'
 import { assertWorkspaceInvariants } from './invariant.ts'
@@ -28,11 +29,18 @@ import { agentWorkspaceSpec, workspaceStateSchema } from './spec.ts'
 import { createInitialState, mutateWorkspace } from './state.ts'
 import { WorkspaceActivityStream } from './activity-stream.ts'
 import type { WorkspaceActivityDurableFailure, WorkspaceActivityIdentity, WorkspaceActivitySnapshot, WorkspaceActivitySource } from './activity-stream.ts'
+import { WorkspaceActivityController } from './activity-controller.ts'
+import type { WorkspaceStopResult } from './activity-controller.ts'
 import { WorkspaceTurnTracker } from './turn-tracker.ts'
 import type { WorkspaceTurnOutcome } from './turn-tracker.ts'
+import { finishChildRun, repairOrphanedChildRuns } from './child-runs.ts'
+import { ChildControllerRegistry } from './child-controller.ts'
+import { cancelTask as cancelWorkspaceTask } from './tasks.ts'
+import type { CancelTaskResult } from './tasks.ts'
+import { inspectTaskDelivery } from './task-delivery.ts'
 import { TaskDeliveryCoordinator } from './task-delivery-coordinator.ts'
 import type { WorkspaceDeliveryHooks } from './task-delivery-coordinator.ts'
-import type { WorkspaceCommand, WorkspaceState } from './types.ts'
+import type { TaskDeliveryProgressEvent, WorkspaceCommand, WorkspaceState } from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -106,6 +114,12 @@ export class AgentWorkspaceDomainService extends Service {
   private readonly trackers = new Map<AgentId, WorkspaceTurnTracker>()
   private readonly roomRuntime = new Map<RoomId, MutableRoomRuntimeStatus>()
   private readonly activityStream = new WorkspaceActivityStream()
+  private readonly activityController = new WorkspaceActivityController(this.activityStream, {
+    handleFor: agentId => this.pool?.handleFor(agentId),
+  })
+  private readonly childControllers = new ChildControllerRegistry(async request => {
+    await this.apply(current => finishChildRun(current, request).state)
+  })
 
   constructor(ctx: Context) {
     super(ctx, 'agentWorkspace')
@@ -123,7 +137,9 @@ export class AgentWorkspaceDomainService extends Service {
       this.syncActivityProjection(initial)
     } else {
       const validated = validateWorkspaceState(stored, LOCAL_WORKSPACE_ID)
-      this.syncActivityProjection(validated)
+      const repaired = repairOrphanedChildRuns(validated)
+      if (repaired !== validated) await this.table.put(LOCAL_WORKSPACE_ID, repaired)
+      this.syncActivityProjection(repaired)
     }
 
     // Browser transport is an optional child capability. Headless deployments
@@ -164,6 +180,7 @@ export class AgentWorkspaceDomainService extends Service {
         'spawn-in-process',
         DISPATCHER_LIMITS,
         taskDelivery,
+        this.childControllers,
       )
       this.pool = pool
       this.dispatcher = dispatcher
@@ -174,6 +191,7 @@ export class AgentWorkspaceDomainService extends Service {
         if (this.taskDelivery === taskDelivery) this.taskDelivery = undefined
         for (const agentId of this.trackers.keys()) this.trackers.delete(agentId)
         this.roomRuntime.clear()
+        await this.childControllers.stopAll()
         await pool.disposeAll()
       }, 'agentWorkspace.employeeRuntime')
     })
@@ -215,6 +233,72 @@ export class AgentWorkspaceDomainService extends Service {
   /** Clear one process-local agent failure after the Browser acknowledges it. */
   acknowledgeAgentFailure(agentId: AgentId): void {
     this.activityStream.acknowledgeAgentFailure(agentId)
+  }
+
+  /**
+   * Stop one exact claimed Workspace turn.
+   * @param identity - Complete activity, employee, message, Session, and turn identity.
+   * @returns Whether this call started stopping, repeated it, or found no exact activity.
+   */
+  stopActivity(identity: WorkspaceActivityIdentity): WorkspaceStopResult {
+    return this.activityController.stopActivity(identity)
+  }
+
+  /**
+   * Stop one exact process-local child run and persist its cancellation.
+   * @param childRunId - Durable child identity to stop.
+   * @returns Whether this call started stopping, repeated it, or found no live controller.
+   */
+  async stopChildRun(childRunId: ChildRunId): Promise<WorkspaceStopResult> {
+    return await this.childControllers.stopChildRun(childRunId)
+  }
+
+  /**
+   * Cancel a task durably, then clean up only work named by that mutation.
+   * @param humanId - Human requesting the cancellation.
+   * @param taskId - Root or derived task to cancel.
+   * @returns The state after exact queued, active, and child cleanup converges.
+   */
+  async cancelTask(humanId: HumanId, taskId: TaskId): Promise<WorkspaceState> {
+    let cancellation: CancelTaskResult | undefined
+    const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => {
+      const changed = cancelWorkspaceTask(current, { humanId, taskId })
+      cancellation = changed
+      return validateWorkspaceState(changed.state, LOCAL_WORKSPACE_ID)
+    })
+    this.syncActivityProjection(next)
+    if (cancellation === undefined) throw new Error(`task '${taskId}' cancellation did not publish its affected work`)
+
+    const cancelledTaskIds = new Set(cancellation.cancelledTaskIds)
+    const active = this.activityStream.snapshot().activities.flatMap(activity => {
+      if (activity.source.kind !== 'task'
+        || !cancelledTaskIds.has(activity.source.taskId)
+        || (activity.status !== 'responding' && activity.status !== 'stopping')
+        || activity.claimed === undefined) return []
+      return [{
+        activityId: activity.activityId,
+        agentId: activity.agentId,
+        messageId: activity.messageId,
+        sessionId: activity.claimed.sessionId,
+        turn: activity.claimed.turn,
+      }]
+    })
+
+    for (const cancelledTaskId of cancellation.cancelledTaskIds) {
+      const inspection = inspectTaskDelivery(next, cancelledTaskId)
+      if (inspection.attemptId === undefined || (inspection.phase !== 'started' && inspection.phase !== 'accepted')) continue
+      const started = next.events.findLast((event): event is TaskDeliveryProgressEvent => (
+        event.type === 'task/delivery-started'
+        && event.taskId === cancelledTaskId
+        && event.taskDeliveryAttemptId === inspection.attemptId
+      ))
+      const assignment = Object.values(next.taskAssignments).find(candidate => candidate.taskId === cancelledTaskId)
+      if (started === undefined || assignment === undefined) continue
+      this.pool?.handleFor(assignment.assigneeAgentId)?.agent.inbox.remove(started.messageId)
+    }
+    for (const identity of active) this.stopActivity(identity)
+    for (const childRunId of cancellation.runningChildRunIds) await this.stopChildRun(childRunId)
+    return this.snapshot()
   }
 
   /** Open the stable direct room for one employed agent, creating it atomically when absent. */

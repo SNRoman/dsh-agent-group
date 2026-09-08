@@ -11,7 +11,7 @@ import { agentWorkspaceSpec } from '../packages/host/src/spec.ts'
 import { AgentId, HumanId, TaskId } from '../packages/host/src/ids.ts'
 import type { TaskId as WorkspaceTaskId } from '../packages/host/src/ids.ts'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
-import { assignHumanTask } from '../packages/host/src/tasks.ts'
+import { assignHumanTask, recordChildRunStarted } from '../packages/host/src/tasks.ts'
 import { TaskDeliveryCoordinator } from '../packages/host/src/task-delivery-coordinator.ts'
 import type { TaskDeliveryCoordinatorHost } from '../packages/host/src/task-delivery-coordinator.ts'
 
@@ -191,5 +191,40 @@ describe('agent workspace persistence', () => {
     await expect(booted.service.retryTaskDelivery(TaskId('missing'))).rejects.toThrow(/coordinator is not available/)
 
     await booted.dispose()
+  })
+
+  test('repairs a durable running child before the restarted Host accepts work', async () => {
+    const root = await freshRoot()
+    const first = await boot(root)
+    await first.service.execute({ type: 'definition/create', name: 'Worker', description: 'work', instructions: 'reply' })
+    let snapshot = first.service.snapshot()
+    const definition = Object.values(snapshot.definitions)[0]!
+    await first.service.execute({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+    snapshot = first.service.snapshot()
+    const agent = Object.values(snapshot.agents)[0]!
+    let childRunId: ReturnType<typeof recordChildRunStarted>['childRunId'] | undefined
+    await first.service.apply(current => {
+      const assigned = assignHumanTask(current, {
+        humanId: HumanId('owner'), assigneeAgentId: agent.id, title: 'orphan me',
+      })
+      const started = recordChildRunStarted(assigned.state, {
+        parentAgentId: agent.id, taskId: assigned.taskId,
+      })
+      childRunId = started.childRunId
+      return started.state
+    })
+    if (childRunId === undefined) throw new Error('child run start did not publish an id')
+    expect(first.service.snapshot().childRuns[childRunId]?.status).toBe('running')
+    await first.dispose()
+
+    const second = await boot(root)
+    expect(second.service.snapshot().childRuns[childRunId]).toMatchObject({
+      status: 'cancelled',
+      result: 'Host restarted before the child run settled.',
+    })
+    expect(second.service.snapshot().events.filter(event => (
+      event.type === 'child/run-finished' && event.subjectId === childRunId
+    ))).toHaveLength(1)
+    await second.dispose()
   })
 })

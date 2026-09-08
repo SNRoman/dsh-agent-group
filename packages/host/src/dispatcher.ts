@@ -11,6 +11,7 @@ import type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import { AgentId, HumanId, RoomId, TaskId } from './ids.ts'
 import type { AgentDefinitionId, ChildRunId as ChildId, WorkspaceEventId } from './ids.ts'
 import { finishChildRun } from './child-runs.ts'
+import { ChildControllerRegistry } from './child-controller.ts'
 import { recallAgentEvents } from './memory.ts'
 import { assertRoomMessageAuthorized } from './room-policy.ts'
 import { recordChildRunStarted } from './tasks.ts'
@@ -95,13 +96,20 @@ type SubagentRuntimeSource = SubagentRuntimeLike | (() => SubagentRuntimeLike | 
  * serialized by the workspace domain boundary.
  */
 export class WorkspaceDispatcher {
+  private readonly childControllers: ChildControllerRegistry
+
   constructor(
     private readonly host: WorkspaceDispatcherHost,
     private readonly subagents: SubagentRuntimeSource,
     private readonly provider: string,
     private readonly limits: DispatcherLimits,
     private readonly taskDelivery?: TaskDeliveryRuntimeLike,
-  ) {}
+    childControllers?: ChildControllerRegistry,
+  ) {
+    this.childControllers = childControllers ?? new ChildControllerRegistry(async request => {
+      await this.host.apply(current => finishChildRun(current, request).state)
+    })
+  }
 
   /**
    * Durably record a human message, then expose the collaboration chain as a
@@ -156,6 +164,17 @@ export class WorkspaceDispatcher {
     if (publishedChildRunId === undefined) throw new Error('child run start did not publish an id')
     const childRunId: ChildId = publishedChildRunId
 
+    const controller = new AbortController()
+    const abort = (): void => controller.abort()
+    if (signal.aborted) abort()
+    else signal.addEventListener('abort', abort, { once: true })
+    const settlement = this.childControllers.register({
+      childRunId,
+      parentAgentId,
+      taskId,
+      abort,
+    })
+
     let run: OneShotSubagentRun | undefined
     let result: { readonly output: ContentBlock[]; readonly stopReason: string } | undefined
     let failure: unknown
@@ -163,7 +182,7 @@ export class WorkspaceDispatcher {
       run = await subagents.start(this.provider, {
         parent: handle.agent,
         prompt: [{ type: 'text', text: prompt }],
-        signal,
+        signal: controller.signal,
         label: `workspace-child:${taskId}`,
       })
       result = await run.result
@@ -177,15 +196,12 @@ export class WorkspaceDispatcher {
           if (failure === undefined) failure = error
         }
       }
+      signal.removeEventListener('abort', abort)
     }
 
     if (failure !== undefined) {
-      const status = signal.aborted ? 'cancelled' : 'failed'
-      await this.host.apply(current => finishChildRun(current, {
-        childRunId,
-        status,
-        result: status === 'cancelled' ? 'Child run cancelled.' : 'Child run failed.',
-      }).state)
+      const status = controller.signal.aborted ? 'cancelled' : 'failed'
+      await settlement.settle(status, status === 'cancelled' ? 'Child run cancelled.' : 'Child run failed.')
       throw failure
     }
     if (result === undefined) throw new Error('child run settled without a result')
@@ -193,11 +209,8 @@ export class WorkspaceDispatcher {
     const output = textOf(result.output)
     const status = childStatus(result.stopReason)
     const terminalText = output.trim() === '' ? fallbackChildResult(status) : output
-    await this.host.apply(current => finishChildRun(current, {
-      childRunId,
-      status,
-      result: terminalText,
-    }).state)
+    const won = await settlement.settle(status, terminalText)
+    if (!won) throw new Error(`child run '${childRunId}' was stopped before its result settled`)
     return output
   }
 

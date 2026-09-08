@@ -11,6 +11,8 @@ import type { WorkspaceDispatcherHost, SubagentRuntimeLike } from '../packages/h
 import type { TaskDeliveryRuntimeLike } from '../packages/host/src/dispatcher.ts'
 import { WorkspaceTurnTracker } from '../packages/host/src/turn-tracker.ts'
 import { WorkspaceActivityStream } from '../packages/host/src/activity-stream.ts'
+import { ChildControllerRegistry } from '../packages/host/src/child-controller.ts'
+import { finishChildRun } from '../packages/host/src/child-runs.ts'
 import type { WorkspaceState } from '../packages/host/src/types.ts'
 
 function buildRoom(agentNames: string[]): { state: WorkspaceState; roomId: ReturnType<typeof RoomId>; agentIds: ReturnType<typeof AgentId>[] } {
@@ -117,6 +119,12 @@ function fakeHost(initial: WorkspaceState, replies: Map<AgentId, string>): FakeH
 }
 
 const limits = { maxAgentHops: 3, maxRepliesPerRoot: 8, recallCharacterBudget: 4000 }
+
+function childControllers(host: FakeHost): ChildControllerRegistry {
+  return new ChildControllerRegistry(async request => {
+    await host.apply(current => finishChildRun(current, request).state)
+  })
+}
 
 function trackerEvents(): {
   readonly context: Context
@@ -353,6 +361,182 @@ describe('WorkspaceDispatcher', () => {
     // The child is a task-scoped worker, not a top-level colleague or room member.
     expect(Object.keys(snap.agents).length).toBe(1)
     expect(Object.keys(snap.memberships).length).toBe(1)
+  })
+
+  test('publishes the child controller before start and lets stop win before start resolves', async () => {
+    const { state, agentIds } = buildRoom(['alice'])
+    const alice = agentIds[0]!
+    const assigned = assignHumanTask(state, { humanId: HumanId('owner'), assigneeAgentId: alice, title: 'do work' })
+    const host = fakeHost(assigned.state, new Map())
+    const controllers = childControllers(host)
+    const releaseStart = Promise.withResolvers<void>()
+    const observed = Promise.withResolvers<{ readonly stop: Awaited<ReturnType<ChildControllerRegistry['stopChildRun']>>; readonly aborted: boolean }>()
+    const dispose = vi.fn(async () => {})
+    const subagents = {
+      start: vi.fn(async (_name, request) => {
+        const childRunId = Object.values(host.snapshot().childRuns)[0]!.id
+        const stop = await controllers.stopChildRun(childRunId)
+        observed.resolve({ stop, aborted: request.signal.aborted })
+        await releaseStart.promise
+        return { result: Promise.reject(new Error('child aborted')), dispose }
+      }),
+    }
+    const dispatcher = new WorkspaceDispatcher(
+      host, subagents as unknown as SubagentRuntimeLike, 'spawn', limits, undefined, controllers,
+    )
+
+    const pending = dispatcher.runChild(alice, assigned.taskId, 'do work')
+    const beforeStartResolved = await observed.promise
+    releaseStart.resolve()
+    await expect(pending).rejects.toThrow('child aborted')
+
+    expect(beforeStartResolved).toEqual({ stop: { status: 'stopping' }, aborted: true })
+    expect(dispose).toHaveBeenCalledOnce()
+    const childRun = Object.values(host.snapshot().childRuns)[0]!
+    expect(childRun).toMatchObject({ status: 'cancelled', result: 'Child run cancelled.' })
+    expect(host.snapshot().events.filter(event => event.type === 'child/run-finished')).toHaveLength(1)
+  })
+
+  test('a result that owns settlement makes a racing stop report not-active', async () => {
+    const { state, agentIds } = buildRoom(['alice'])
+    const alice = agentIds[0]!
+    const assigned = assignHumanTask(state, { humanId: HumanId('owner'), assigneeAgentId: alice, title: 'do work' })
+    const host = fakeHost(assigned.state, new Map())
+    const finishEntered = Promise.withResolvers<void>()
+    const releaseFinish = Promise.withResolvers<void>()
+    const controllers = new ChildControllerRegistry(async request => {
+      finishEntered.resolve()
+      await releaseFinish.promise
+      await host.apply(current => finishChildRun(current, request).state)
+    })
+    const startEntered = Promise.withResolvers<void>()
+    const result = Promise.withResolvers<{ output: Array<{ type: 'text'; text: string }>; stopReason: string }>()
+    const subagents = {
+      start: vi.fn(async () => {
+        startEntered.resolve()
+        return { result: result.promise, dispose: async () => {} }
+      }),
+    }
+    const dispatcher = new WorkspaceDispatcher(
+      host, subagents as unknown as SubagentRuntimeLike, 'spawn', limits, undefined, controllers,
+    )
+
+    const pending = dispatcher.runChild(alice, assigned.taskId, 'do work')
+    await startEntered.promise
+    const childRunId = Object.values(host.snapshot().childRuns)[0]!.id
+    result.resolve({ output: [{ type: 'text', text: 'winner' }], stopReason: 'completed' })
+    const owner = await Promise.race([
+      finishEntered.promise.then(() => 'controller' as const),
+      pending.then(() => 'dispatcher' as const),
+    ])
+    expect(owner).toBe('controller')
+    await expect(controllers.stopChildRun(childRunId)).resolves.toEqual({ status: 'not-active' })
+    releaseFinish.resolve()
+
+    await expect(pending).resolves.toBe('winner')
+    expect(host.snapshot().events.filter(event => event.type === 'child/run-finished')).toHaveLength(1)
+  })
+
+  test('a startup failure that owns settlement makes a racing stop report not-active', async () => {
+    const { state, agentIds } = buildRoom(['alice'])
+    const alice = agentIds[0]!
+    const assigned = assignHumanTask(state, { humanId: HumanId('owner'), assigneeAgentId: alice, title: 'do work' })
+    const host = fakeHost(assigned.state, new Map())
+    const finishEntered = Promise.withResolvers<void>()
+    const releaseFinish = Promise.withResolvers<void>()
+    const controllers = new ChildControllerRegistry(async request => {
+      finishEntered.resolve()
+      await releaseFinish.promise
+      await host.apply(current => finishChildRun(current, request).state)
+    })
+    const startEntered = Promise.withResolvers<void>()
+    const start = Promise.withResolvers<never>()
+    const dispatcher = new WorkspaceDispatcher(
+      host,
+      { start: vi.fn(async () => {
+        startEntered.resolve()
+        return await start.promise
+      }) } as unknown as SubagentRuntimeLike,
+      'spawn', limits, undefined, controllers,
+    )
+
+    const pending = dispatcher.runChild(alice, assigned.taskId, 'do work')
+    await startEntered.promise
+    const childRunId = Object.values(host.snapshot().childRuns)[0]!.id
+    start.reject(new Error('start failed'))
+    const owner = await Promise.race([
+      finishEntered.promise.then(() => 'controller' as const),
+      pending.then(() => 'dispatcher' as const, () => 'dispatcher' as const),
+    ])
+    expect(owner).toBe('controller')
+    await expect(controllers.stopChildRun(childRunId)).resolves.toEqual({ status: 'not-active' })
+    releaseFinish.resolve()
+
+    await expect(pending).rejects.toThrow('start failed')
+    expect(Object.values(host.snapshot().childRuns)[0]).toMatchObject({ status: 'failed', result: 'Child run failed.' })
+    expect(host.snapshot().events.filter(event => event.type === 'child/run-finished')).toHaveLength(1)
+  })
+
+  test('runtime disposal can own settlement before a racing result', async () => {
+    const { state, agentIds } = buildRoom(['alice'])
+    const alice = agentIds[0]!
+    const assigned = assignHumanTask(state, { humanId: HumanId('owner'), assigneeAgentId: alice, title: 'do work' })
+    const host = fakeHost(assigned.state, new Map())
+    const controllers = childControllers(host)
+    const startEntered = Promise.withResolvers<void>()
+    const result = Promise.withResolvers<{ output: Array<{ type: 'text'; text: string }>; stopReason: string }>()
+    const dispose = vi.fn(async () => {})
+    const dispatcher = new WorkspaceDispatcher(
+      host,
+      { start: vi.fn(async () => {
+        startEntered.resolve()
+        return { result: result.promise, dispose }
+      }) } as unknown as SubagentRuntimeLike,
+      'spawn', limits, undefined, controllers,
+    )
+
+    const pending = dispatcher.runChild(alice, assigned.taskId, 'do work')
+    await startEntered.promise
+    await controllers.stopAll()
+    result.resolve({ output: [{ type: 'text', text: 'too late' }], stopReason: 'completed' })
+
+    await expect(pending).rejects.toThrow(/stopped/i)
+    expect(dispose).toHaveBeenCalledOnce()
+    expect(Object.values(host.snapshot().childRuns)[0]).toMatchObject({ status: 'cancelled' })
+    expect(host.snapshot().events.filter(event => event.type === 'child/run-finished')).toHaveLength(1)
+  })
+
+  test('does not commit a completed result before run disposal succeeds', async () => {
+    const { state, agentIds } = buildRoom(['alice'])
+    const alice = agentIds[0]!
+    const assigned = assignHumanTask(state, { humanId: HumanId('owner'), assigneeAgentId: alice, title: 'do work' })
+    const host = fakeHost(assigned.state, new Map())
+    const controllers = childControllers(host)
+    const releaseDispose = Promise.withResolvers<void>()
+    const disposeEntered = Promise.withResolvers<void>()
+    const dispatcher = new WorkspaceDispatcher(
+      host,
+      {
+        start: vi.fn(async () => ({
+          result: Promise.resolve({ output: [{ type: 'text', text: 'candidate' }], stopReason: 'completed' }),
+          dispose: async () => {
+            disposeEntered.resolve()
+            await releaseDispose.promise
+            throw new Error('dispose failed')
+          },
+        })),
+      } as unknown as SubagentRuntimeLike,
+      'spawn', limits, undefined, controllers,
+    )
+
+    const pending = dispatcher.runChild(alice, assigned.taskId, 'do work')
+    await disposeEntered.promise
+    expect(Object.values(host.snapshot().childRuns)[0]).toMatchObject({ status: 'running' })
+    releaseDispose.resolve()
+
+    await expect(pending).rejects.toThrow('dispose failed')
+    expect(Object.values(host.snapshot().childRuns)[0]).toMatchObject({ status: 'failed', result: 'Child run failed.' })
+    expect(host.snapshot().events.filter(event => event.type === 'child/run-finished')).toHaveLength(1)
   })
 
   test('runChild reports a clear capability error when the optional subagent runtime is absent', async () => {
