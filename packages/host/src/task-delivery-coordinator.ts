@@ -56,9 +56,14 @@ export interface TaskDeliveryRecoveryOutcome {
   readonly status: 'pending' | 'completed' | 'interrupted'
 }
 
+interface TaskFlight {
+  readonly owner: object
+  readonly promise: Promise<string>
+}
+
 /** Coordinates one durable inbox delivery attempt per task. */
 export class TaskDeliveryCoordinator {
-  private readonly taskFlights = new Map<TaskId, Promise<string>>()
+  private readonly taskFlights = new Map<TaskId, TaskFlight>()
   private readonly recoveryFlights = new Map<AgentId, Promise<readonly TaskDeliveryRecoveryOutcome[]>>()
 
   constructor(private readonly host: TaskDeliveryCoordinatorHost) {}
@@ -101,22 +106,26 @@ export class TaskDeliveryCoordinator {
 
   private async singleFlight(taskId: TaskId): Promise<string> {
     const existing = this.taskFlights.get(taskId)
-    if (existing !== undefined) return await existing
-    const flight = this.run(taskId)
+    if (existing !== undefined) return await existing.promise
+    const owner = {}
+    const promise = Promise.resolve().then(() => this.run(taskId, owner))
+    const flight = { owner, promise }
     this.taskFlights.set(taskId, flight)
     try {
-      return await flight
+      return await promise
     } finally {
       if (this.taskFlights.get(taskId) === flight) this.taskFlights.delete(taskId)
     }
   }
 
-  private async run(taskId: TaskId): Promise<string> {
+  private async run(taskId: TaskId, owner: object): Promise<string> {
     const before = this.host.snapshot()
     const assignment = assignmentFor(before, taskId)
     const agent = before.agents[assignment.assigneeAgentId]
     if (agent === undefined) throw new Error(`task '${taskId}' assignee does not exist`)
     await this.host.ensureEmployee(agent.id)
+    const recovered = this.taskFlights.get(taskId)
+    if (recovered !== undefined && recovered.owner !== owner) return await recovered.promise
 
     let attempt: {
       readonly attemptId: TaskDeliveryAttemptId
@@ -184,7 +193,6 @@ export class TaskDeliveryCoordinator {
       const evidence = inspectAgentDelivery(handle, started.messageId)
 
       if (evidence.status === 'pending') {
-        await this.acceptIfStarted(identity)
         const recoverDelivery = this.host.recoverDelivery
         if (recoverDelivery === undefined) {
           await this.failIfOpen(identity, 'interrupted', 'Delivery was interrupted before a terminal result.')
@@ -199,6 +207,7 @@ export class TaskDeliveryCoordinator {
             handle,
             evidence.message,
             { kind: 'task', taskId: assignment.taskId, attemptId: inspection.attemptId },
+            { onClaim: async () => await this.acceptIfStarted(identity) },
           ),
         )
         this.publishRecoveredFlight(assignment.taskId, completion)
@@ -219,11 +228,27 @@ export class TaskDeliveryCoordinator {
     return outcomes
   }
 
-  private publishRecoveredFlight(taskId: TaskId, flight: Promise<string>): void {
-    this.taskFlights.set(taskId, flight)
-    void flight.finally(() => {
-      if (this.taskFlights.get(taskId) === flight) this.taskFlights.delete(taskId)
-    }).catch(() => {})
+  private publishRecoveredFlight(taskId: TaskId, promise: Promise<string>): void {
+    const displaced = this.taskFlights.get(taskId)
+    const recovered = { owner: {}, promise }
+    this.taskFlights.set(taskId, recovered)
+    void this.releaseRecoveredFlight(taskId, recovered, displaced)
+  }
+
+  private async releaseRecoveredFlight(taskId: TaskId, recovered: TaskFlight, displaced: TaskFlight | undefined): Promise<void> {
+    try {
+      await recovered.promise
+    } catch (_error) {
+      // finishRecovered already persists the failure; cleanup only waits for convergence.
+    }
+    if (displaced !== undefined) {
+      try {
+        await displaced.promise
+      } catch (_error) {
+        // The displaced caller observes the same recovered failure before cleanup.
+      }
+    }
+    if (this.taskFlights.get(taskId) === recovered) this.taskFlights.delete(taskId)
   }
 
   private async finishRecovered(

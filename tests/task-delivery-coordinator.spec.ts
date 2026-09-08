@@ -7,7 +7,7 @@ import type { SessionEvent, TurnEndReason } from '@deepseek-ai/dsh-session'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { AgentId, HumanId, TaskId, WorkspaceId } from '../packages/host/src/ids.ts'
 import { TaskDeliveryCoordinator } from '../packages/host/src/task-delivery-coordinator.ts'
-import type { TaskDeliveryCoordinatorHost } from '../packages/host/src/task-delivery-coordinator.ts'
+import type { TaskDeliveryCoordinatorHost, WorkspaceDeliveryHooks } from '../packages/host/src/task-delivery-coordinator.ts'
 import { mutateWorkspace, createInitialState } from '../packages/host/src/state.ts'
 import { assignHumanTask, cancelTask } from '../packages/host/src/tasks.ts'
 import type { WorkspaceState } from '../packages/host/src/types.ts'
@@ -261,6 +261,45 @@ describe('TaskDeliveryCoordinator', () => {
     expect(state.events.filter(event => event.type === 'task/result')).toHaveLength(1)
   })
 
+  test.each(['deliver', 'retryTaskDelivery'] as const)(
+    'the first %s call that resumes a pending attempt shares its recovered completion',
+    async method => {
+      const built = startedTask()
+      let state = built.state
+      const recoveryFinished = deferred()
+      const releaseEnsure = deferred()
+      const tracked = deferred<WorkspaceTurnOutcome>()
+      const resumed = recoveredHandle([built.message], [])
+      let coordinator: TaskDeliveryCoordinator
+      const host: TaskDeliveryCoordinatorHost = {
+        snapshot: () => structuredClone(state),
+        apply: async mutation => { state = mutation(state); return structuredClone(state) },
+        ensureEmployee: async agentId => {
+          await coordinator.recoverAgent(agentId, resumed)
+          recoveryFinished.resolve()
+          await releaseEnsure.promise
+          return resumed
+        },
+        deliver: async () => { throw new Error('must not insert a second delivery') },
+        recoverDelivery: async (_agentId, _handle, _delivery, _source, hooks) => {
+          const result = await tracked.promise
+          await hooks?.onClaim?.()
+          return result
+        },
+      }
+      coordinator = new TaskDeliveryCoordinator(host)
+
+      const pending = coordinator[method](built.taskId)
+      await recoveryFinished.promise
+      releaseEnsure.resolve()
+      tracked.resolve(outcome('recovered result'))
+
+      await expect(pending).resolves.toBe('recovered result')
+      expect(state.events.filter(event => event.type === 'task/delivery-started')).toHaveLength(1)
+      expect(state.events.filter(event => event.type === 'task/result')).toHaveLength(1)
+    },
+  )
+
   test.each([
     ['aborted', { kind: 'aborted', reason: { kind: 'user' } }],
     ['failed', { kind: 'error', error: { code: 'UNKNOWN', message: 'boom' } }],
@@ -337,23 +376,25 @@ describe('TaskDeliveryCoordinator', () => {
     ])
   })
 
-  test('recovery accepts an inserted message and reconstructs its pending task activity', async () => {
+  test('recovery accepts an inserted message only when its pending tracker observes claim', async () => {
     const built = startedTask()
     let state = built.state
     const tracked = deferred<WorkspaceTurnOutcome>()
     const recovered = deferred()
+    let claimHooks: WorkspaceDeliveryHooks | undefined
     const host: TaskDeliveryCoordinatorHost = {
       snapshot: () => structuredClone(state),
       apply: async mutation => { state = mutation(state); return structuredClone(state) },
       ensureEmployee: async () => handle(),
       deliver: async () => outcome('unused'),
-      recoverDelivery: async (_agentId, _handle, delivery, source) => {
+      recoverDelivery: async (_agentId, _handle, delivery, source, hooks) => {
         expect(delivery).toEqual(built.message)
         expect(source).toEqual({
           kind: 'task',
           taskId: built.taskId,
           attemptId: expect.any(String),
         })
+        claimHooks = hooks
         recovered.resolve()
         return await tracked.promise
       },
@@ -364,6 +405,10 @@ describe('TaskDeliveryCoordinator', () => {
       { taskId: built.taskId, status: 'pending' },
     ])
     await recovered.promise
+    expect(state.events.filter(event => event.type === 'task/delivery-accepted')).toHaveLength(0)
+    if (claimHooks === undefined) throw new Error('recovered tracker did not receive claim hooks')
+    await claimHooks.onClaim?.()
+    await claimHooks.onClaim?.()
     expect(state.events.filter(event => event.type === 'task/delivery-accepted')).toHaveLength(1)
   })
 
@@ -400,18 +445,25 @@ describe('TaskDeliveryCoordinator', () => {
     const built = acceptedTask()
     let state = built.state
     const tracked = deferred<WorkspaceTurnOutcome>()
+    let claimHooks: WorkspaceDeliveryHooks | undefined
     const host: TaskDeliveryCoordinatorHost = {
       snapshot: () => structuredClone(state),
       apply: async mutation => { state = mutation(state); return structuredClone(state) },
       ensureEmployee: async () => handle(),
       deliver: async () => outcome('unused'),
-      recoverDelivery: async () => await tracked.promise,
+      recoverDelivery: async (_agentId, _handle, _delivery, _source, hooks) => {
+        claimHooks = hooks
+        return await tracked.promise
+      },
     }
     const coordinator = new TaskDeliveryCoordinator(host)
 
     await expect(coordinator.recoverAgent(built.agentId, recoveredHandle([built.message], []))).resolves.toEqual([
       { taskId: built.taskId, status: 'pending' },
     ])
+    if (claimHooks === undefined) throw new Error('recovered tracker did not receive claim hooks')
+    await claimHooks.onClaim?.()
+    await claimHooks.onClaim?.()
     expect(state.events.filter(event => event.type === 'task/delivery-accepted')).toHaveLength(1)
   })
 
