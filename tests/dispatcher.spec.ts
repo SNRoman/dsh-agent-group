@@ -8,6 +8,7 @@ import { createInitialState, mutateWorkspace } from '../packages/host/src/state.
 import { assignHumanTask } from '../packages/host/src/tasks.ts'
 import { WorkspaceDispatcher } from '../packages/host/src/dispatcher.ts'
 import type { WorkspaceDispatcherHost, SubagentRuntimeLike } from '../packages/host/src/dispatcher.ts'
+import type { TaskDeliveryRuntimeLike } from '../packages/host/src/dispatcher.ts'
 import { WorkspaceTurnTracker } from '../packages/host/src/turn-tracker.ts'
 import { WorkspaceActivityStream } from '../packages/host/src/activity-stream.ts'
 import type { WorkspaceState } from '../packages/host/src/types.ts'
@@ -361,5 +362,24 @@ describe('WorkspaceDispatcher', () => {
     const host = fakeHost(taskState.state, new Map())
     const dispatcher = new WorkspaceDispatcher(host, undefined, 'spawn', limits)
     await expect(dispatcher.runChild(alice, taskState.taskId, 'do work')).rejects.toThrow(/subagent runtime is not available/i)
+  })
+
+  test('formal task dispatch delegates the assigned task to the durable coordinator', async () => {
+    const { state, agentIds } = buildRoom(['alice'])
+    const alice = agentIds[0]!
+    const assigned = assignHumanTask(state, { humanId: HumanId('owner'), assigneeAgentId: alice, title: 'do work' })
+    const host = fakeHost(assigned.state, new Map())
+    const taskDelivery = { deliver: vi.fn(async () => 'durable result') }
+    const dispatcher = new WorkspaceDispatcher(
+      host,
+      undefined,
+      'spawn',
+      limits,
+      taskDelivery as TaskDeliveryRuntimeLike,
+    )
+
+    await expect(dispatcher.runAssignedTask(alice, assigned.taskId)).resolves.toBe('durable result')
+    expect(taskDelivery.deliver).toHaveBeenCalledWith(assigned.taskId)
+    expect(host.delivered).toEqual([])
   })
 })

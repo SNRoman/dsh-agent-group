@@ -12,6 +12,7 @@ import type { ContentBlock, MessageId, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, SessionId, TurnEndReason } from '@deepseek-ai/dsh-session'
 import type { AgentId, WorkspaceActivityId } from './ids.ts'
 import type { WorkspaceActivityIdentity, WorkspaceActivitySource, WorkspaceActivityStream } from './activity-stream.ts'
+import type { WorkspaceDeliveryHooks } from './task-delivery-coordinator.ts'
 
 /** The terminal Workspace reply captured for one delivery. */
 export interface WorkspaceTurnOutcome {
@@ -26,6 +27,8 @@ export interface WorkspaceTurnOutcome {
 }
 
 interface PendingDelivery {
+  readonly promise: Promise<WorkspaceTurnOutcome>
+  readonly hooks: WorkspaceDeliveryHooks | undefined
   readonly messageId: MessageId
   readonly recall: UserMessage | undefined
   readonly source: WorkspaceActivitySource | undefined
@@ -34,6 +37,8 @@ interface PendingDelivery {
   turn: number | undefined
   output: ContentBlock[]
   interrupted: boolean
+  claim: Promise<void> | undefined
+  settling: boolean
   settled: boolean
   resolve: (outcome: WorkspaceTurnOutcome) => void
   reject: (reason: unknown) => void
@@ -76,6 +81,14 @@ export class WorkspaceTurnTracker {
       if (pending === undefined) return
       pending.turn = payload.turn
       this.byTurn.set(payload.turn, pending)
+      if (pending.claim === undefined) {
+        pending.claim = Promise.resolve().then(async () => await pending.hooks?.onClaim?.())
+        void pending.claim.catch(error => this.settleRejected(
+          pending,
+          error,
+          { code: 'delivery-acceptance-failed', summary: 'Agent delivery acceptance could not be saved.' },
+        ))
+      }
       if (pending.activityId !== undefined && this.options !== undefined) {
         const identity: WorkspaceActivityIdentity = {
           activityId: pending.activityId,
@@ -150,7 +163,7 @@ export class WorkspaceTurnTracker {
       }
 
       if (event.type === 'turn/end') {
-        this.settleResolved(pending, {
+        void this.settleResolved(pending, {
           output: pending.output,
           stopReason: event.data.reason,
           interrupted: pending.interrupted,
@@ -169,40 +182,97 @@ export class WorkspaceTurnTracker {
    * @param delivery - the waking user message.
    * @param recall - optional model-visible context injected after the delivery.
    * @param source - Workspace room or durable task-attempt source; absent for children.
+   * @param hooks - Optional durable callbacks that must settle before the outcome is published.
    * @returns the terminal reply outcome.
    */
-  deliver(agent: Agent, delivery: UserMessage, recall?: UserMessage, source?: WorkspaceActivitySource): Promise<WorkspaceTurnOutcome> {
-    return new Promise<WorkspaceTurnOutcome>((resolve, reject) => {
-      const activityId = source === undefined || this.options === undefined
-        ? undefined
-        : this.options.stream.queue({ agentId: this.options.agentId, messageId: delivery.id, source })
-      const pending: PendingDelivery = {
-        messageId: delivery.id,
-        recall,
-        source,
-        activityId,
-        activity: undefined,
-        turn: undefined,
-        output: [],
-        interrupted: false,
-        settled: false,
-        resolve,
-        reject,
-      }
-      this.byMessage.set(delivery.id, pending)
-      try {
-        agent.followup(delivery)
-      } catch (error) {
-        this.settleRejected(
-          pending,
-          error,
-          { code: 'followup-failed', summary: 'Agent delivery could not be queued.' },
-        )
-      }
-    })
+  deliver(
+    agent: Agent,
+    delivery: UserMessage,
+    recall?: UserMessage,
+    source?: WorkspaceActivitySource,
+    hooks?: WorkspaceDeliveryHooks,
+  ): Promise<WorkspaceTurnOutcome> {
+    const pending = this.register(delivery, recall, source, hooks)
+    try {
+      agent.followup(delivery)
+    } catch (error) {
+      this.settleRejected(
+        pending,
+        error,
+        { code: 'followup-failed', summary: 'Agent delivery could not be queued.' },
+      )
+    }
+    return pending.promise
   }
 
-  private settleResolved(pending: PendingDelivery, outcome: WorkspaceTurnOutcome): void {
+  /**
+   * Reconstruct tracking for a message already present in the durable inbox.
+   * @param agent - Live resumed agent that owns the message.
+   * @param delivery - Exact frozen message restored by the inbox.
+   * @param source - Durable task-attempt source for activity projection.
+   * @param hooks - Optional durable callbacks for a later claim.
+   * @returns The terminal reply outcome without appending the message again.
+   */
+  recover(
+    _agent: Agent,
+    delivery: UserMessage,
+    source: WorkspaceActivitySource,
+    hooks?: WorkspaceDeliveryHooks,
+  ): Promise<WorkspaceTurnOutcome> {
+    return this.register(delivery, undefined, source, hooks).promise
+  }
+
+  private register(
+    delivery: UserMessage,
+    recall: UserMessage | undefined,
+    source: WorkspaceActivitySource | undefined,
+    hooks: WorkspaceDeliveryHooks | undefined,
+  ): PendingDelivery {
+    const existing = this.byMessage.get(delivery.id)
+    if (existing !== undefined) return existing
+    let resolve!: (outcome: WorkspaceTurnOutcome) => void
+    let reject!: (reason: unknown) => void
+    const promise = new Promise<WorkspaceTurnOutcome>((onResolve, onReject) => {
+      resolve = onResolve
+      reject = onReject
+    })
+    const activityId = source === undefined || this.options === undefined
+      ? undefined
+      : this.options.stream.queue({ agentId: this.options.agentId, messageId: delivery.id, source })
+    const pending: PendingDelivery = {
+      promise,
+      hooks,
+      messageId: delivery.id,
+      recall,
+      source,
+      activityId,
+      activity: undefined,
+      turn: undefined,
+      output: [],
+      interrupted: false,
+      claim: undefined,
+      settling: false,
+      settled: false,
+      resolve,
+      reject,
+    }
+    this.byMessage.set(delivery.id, pending)
+    return pending
+  }
+
+  private async settleResolved(pending: PendingDelivery, outcome: WorkspaceTurnOutcome): Promise<void> {
+    if (pending.settled || pending.settling) return
+    pending.settling = true
+    try {
+      await pending.claim
+    } catch (error) {
+      this.settleRejected(
+        pending,
+        error,
+        { code: 'delivery-acceptance-failed', summary: 'Agent delivery acceptance could not be saved.' },
+      )
+      return
+    }
     if (pending.settled) return
     pending.settled = true
     this.removePending(pending)

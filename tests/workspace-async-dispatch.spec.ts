@@ -1,12 +1,18 @@
 import { describe, expect, test } from 'vitest'
+import type { Context } from '@deepseek-ai/cordis'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import { AgentId, HumanId, RoomId, WorkspaceId } from '../packages/host/src/ids.ts'
 import { WorkspaceDispatcher } from '../packages/host/src/dispatcher.ts'
 import type { WorkspaceDispatcherHost } from '../packages/host/src/dispatcher.ts'
 import { createWorkspaceRpcHandler } from '../packages/host/src/rpc.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import type { WorkspaceCommand, WorkspaceState } from '../packages/host/src/types.ts'
+import { assignHumanTask } from '../packages/host/src/tasks.ts'
+import { EmployeeAgentPool } from '../packages/host/src/runtime.ts'
+import { TaskDeliveryCoordinator } from '../packages/host/src/task-delivery-coordinator.ts'
+import type { TaskDeliveryCoordinatorHost } from '../packages/host/src/task-delivery-coordinator.ts'
 
 function oneAgentRoom(): {
   state: WorkspaceState
@@ -115,5 +121,63 @@ describe('non-blocking browser workspace dispatch', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.value).toEqual({ rooms: { 'room-1': { pending: 1 } } })
+  })
+
+  test('a resumed employee finishes recovery before accepting a new task delivery', async () => {
+    const built = oneAgentRoom()
+    const assigned = assignHumanTask(built.state, {
+      humanId: HumanId('owner'),
+      assigneeAgentId: built.agentId,
+      title: 'after restart',
+    })
+    let state = assigned.state
+    const recoveryEntered = deferred()
+    const releaseRecovery = deferred()
+    const delivered = deferred()
+    const handle = { agent: { id: SessionId('persisted-session') } as never, dispose: async () => {} } as AgentHandle
+    let resumePublished = false
+    const pool = new EmployeeAgentPool(
+      {
+        create: async () => handle,
+        resume: async options => {
+          await options.setup?.({ agent: handle.agent } as Context)
+          resumePublished = true
+          return handle
+        },
+      },
+      {
+        sessionIdFor: () => SessionId('persisted-session'),
+        recordSessionId: async () => {},
+      },
+      undefined,
+      async () => {
+        recoveryEntered.resolve()
+        expect(resumePublished).toBe(false)
+        await releaseRecovery.promise
+      },
+    )
+    const host: TaskDeliveryCoordinatorHost = {
+      snapshot: () => structuredClone(state),
+      apply: async mutation => { state = mutation(state); return structuredClone(state) },
+      ensureEmployee: async agentId => await pool.ensure(agentId),
+      deliver: async (_agentId, _message, _recall, _source, hooks) => {
+        delivered.resolve()
+        await hooks?.onClaim?.()
+        return { output: [{ type: 'text', text: 'done' }], stopReason: { kind: 'completed' }, interrupted: false }
+      },
+    }
+    const coordinator = new TaskDeliveryCoordinator(host)
+
+    const pending = coordinator.deliver(assigned.taskId)
+    await recoveryEntered.promise
+    expect(state.events.filter(event => event.type === 'task/delivery-started')).toHaveLength(0)
+    let woke = false
+    void delivered.promise.then(() => { woke = true })
+    await Promise.resolve()
+    expect(woke).toBe(false)
+
+    releaseRecovery.resolve()
+    await expect(pending).resolves.toBe('done')
+    expect(state.events.filter(event => event.type === 'task/result')).toHaveLength(1)
   })
 })

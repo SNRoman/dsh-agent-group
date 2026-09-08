@@ -6,7 +6,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { AgentHandle, AgentOptions, AgentSetup, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentHandle, AgentOptions, AgentSetup, AgentSetupCommit, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { AgentId } from './ids.ts'
 
@@ -48,6 +48,14 @@ export type EmployeeMaterializationOptionsFactory = (
 ) => EmployeeMaterializationOptions | Promise<EmployeeMaterializationOptions>
 
 /**
+ * Reconcile one resumed agent during unpublished setup.
+ * @param agentId - Workspace employee whose persisted Session is resuming.
+ * @param agent - Unpublished DSH agent with its restored inbox and Session.
+ * @returns Fulfillment after durable delivery recovery completes.
+ */
+export type EmployeeRecovery = (agentId: AgentId, agent: Agent) => Promise<void>
+
+/**
  * Owns the live DSH handles for employed workspace agents. `ensure()` admits
  * one handle per agent (single-flight across concurrent calls), resuming a
  * compatible materialized session or explicitly rotating a binding classified
@@ -64,6 +72,7 @@ export class EmployeeAgentPool {
     private readonly agents: AgentLifecycle,
     private readonly source: EmployeeSessionSource,
     private readonly optionsFactory?: EmployeeMaterializationOptionsFactory,
+    private readonly recover?: EmployeeRecovery,
   ) {}
 
   /** The live handle for an agent, or `undefined` when not materialized. */
@@ -150,10 +159,11 @@ export class EmployeeAgentPool {
         const options = await this.optionsFactory?.(agentId, 'resume')
         // A compatible materialized session never falls back to create: a
         // resume failure remains a real persistence/runtime fault.
+        const setup = this.resumeSetup(agentId, options?.setup)
         return await this.agents.resume({
           resumeSessionId: bound,
           ...(options?.agentOptions === undefined ? {} : { agentOptions: options.agentOptions }),
-          ...(options?.setup === undefined ? {} : { setup: options.setup }),
+          ...(setup === undefined ? {} : { setup }),
         })
       }
       // Replacement is intentional only after the source positively identifies
@@ -162,6 +172,17 @@ export class EmployeeAgentPool {
       await this.source.hideSession?.(bound)
     }
     return await this.createFresh(agentId)
+  }
+
+  private resumeSetup(agentId: AgentId, setup: AgentSetup | undefined): AgentSetup | undefined {
+    if (this.recover === undefined) return setup
+    return async (agentCtx): Promise<AgentSetupCommit | void> => {
+      const commit = await setup?.(agentCtx)
+      const agent = agentCtx.agent
+      if (agent === undefined) throw new Error(`agent '${agentId}' resume setup has no scoped DSH agent`)
+      await this.recover?.(agentId, agent)
+      return commit
+    }
   }
 
   private async createFresh(agentId: AgentId): Promise<AgentHandle> {

@@ -30,6 +30,8 @@ import { WorkspaceActivityStream } from './activity-stream.ts'
 import type { WorkspaceActivityDurableFailure, WorkspaceActivityIdentity, WorkspaceActivitySnapshot, WorkspaceActivitySource } from './activity-stream.ts'
 import { WorkspaceTurnTracker } from './turn-tracker.ts'
 import type { WorkspaceTurnOutcome } from './turn-tracker.ts'
+import { TaskDeliveryCoordinator } from './task-delivery-coordinator.ts'
+import type { WorkspaceDeliveryHooks } from './task-delivery-coordinator.ts'
 import type { WorkspaceCommand, WorkspaceState } from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -100,6 +102,7 @@ export class AgentWorkspaceDomainService extends Service {
   private table?: KvTable<WorkspaceId, WorkspaceState>
   private pool: EmployeeAgentPool | undefined
   private dispatcher: WorkspaceDispatcher | undefined
+  private taskDelivery: TaskDeliveryCoordinator | undefined
   private readonly trackers = new Map<AgentId, WorkspaceTurnTracker>()
   private readonly roomRuntime = new Map<RoomId, MutableRoomRuntimeStatus>()
   private readonly activityStream = new WorkspaceActivityStream()
@@ -146,22 +149,29 @@ export class AgentWorkspaceDomainService extends Service {
     this.ctx.inject(['agents'], (runtimeCtx) => {
       const agents = runtimeCtx.get('agents') as AgentLifecycle | undefined
       if (agents === undefined) return
+      const taskDelivery = new TaskDeliveryCoordinator(this)
       const pool = new EmployeeAgentPool(
         agents,
         this,
         (agentId, mode) => this.employeeMaterializationOptions(agentId, mode),
+        async (agentId, agent) => {
+          await taskDelivery.recoverAgent(agentId, { agent })
+        },
       )
       const dispatcher = new WorkspaceDispatcher(
         this,
         () => this.ctx.get('subagents') as SubagentRuntimeLike | undefined,
         'spawn-in-process',
         DISPATCHER_LIMITS,
+        taskDelivery,
       )
       this.pool = pool
       this.dispatcher = dispatcher
+      this.taskDelivery = taskDelivery
       runtimeCtx.effect(() => async () => {
         if (this.pool === pool) this.pool = undefined
         if (this.dispatcher === dispatcher) this.dispatcher = undefined
+        if (this.taskDelivery === taskDelivery) this.taskDelivery = undefined
         for (const agentId of this.trackers.keys()) this.trackers.delete(agentId)
         this.roomRuntime.clear()
         await pool.disposeAll()
@@ -330,7 +340,13 @@ export class AgentWorkspaceDomainService extends Service {
    * optional recall is injected into the same durable turn, immediately after
    * the delivery.
    */
-  async deliver(agentId: AgentId, delivery: UserMessage, recall?: UserMessage, source?: WorkspaceActivitySource): Promise<WorkspaceTurnOutcome> {
+  async deliver(
+    agentId: AgentId,
+    delivery: UserMessage,
+    recall?: UserMessage,
+    source?: WorkspaceActivitySource,
+    hooks?: WorkspaceDeliveryHooks,
+  ): Promise<WorkspaceTurnOutcome> {
     let handle: AgentHandle
     try {
       handle = await this.ensureEmployee(agentId)
@@ -343,10 +359,38 @@ export class AgentWorkspaceDomainService extends Service {
     }
     const tracker = this.trackers.get(agentId)
     if (tracker === undefined) throw new Error(`agent '${agentId}' has no turn tracker`)
-    const outcome = await tracker.deliver(handle.agent, delivery, recall, source)
+    const outcome = await tracker.deliver(handle.agent, delivery, recall, source, hooks)
+    await this.flushEmployeeSession(agentId, handle.agent.session)
+    return outcome
+  }
+
+  /**
+   * Reconstruct tracking for one message already accepted by a resumed inbox.
+   * @param agentId - Workspace employee that owns the delivery.
+   * @param handle - Unpublished resumed agent carrying the restored inbox.
+   * @param delivery - Exact frozen inbox message.
+   * @param source - Durable task-attempt activity source.
+   * @param hooks - Optional callbacks for a later inbox claim.
+   * @returns The terminal reply after the restored turn settles and flushes.
+   */
+  async recoverDelivery(
+    agentId: AgentId,
+    handle: Pick<AgentHandle, 'agent'>,
+    delivery: UserMessage,
+    source: WorkspaceActivitySource,
+    hooks?: WorkspaceDeliveryHooks,
+  ): Promise<WorkspaceTurnOutcome> {
+    const tracker = this.trackers.get(agentId)
+    if (tracker === undefined) throw new Error(`agent '${agentId}' has no turn tracker`)
+    const outcome = await tracker.recover(handle.agent, delivery, source, hooks)
+    await this.flushEmployeeSession(agentId, handle.agent.session)
+    return outcome
+  }
+
+  private async flushEmployeeSession(agentId: AgentId, session: Session): Promise<void> {
     const sessions = this.ctx.get('sessions') as { flush(session: Session): Promise<boolean> } | undefined
     try {
-      await sessions?.flush(handle.agent.session)
+      await sessions?.flush(session)
     } catch (error) {
       this.activityStream.recordAgentFailureIfAbsent(agentId, {
         code: 'agent-session-flush-failed',
@@ -354,7 +398,6 @@ export class AgentWorkspaceDomainService extends Service {
       })
       throw error
     }
-    return outcome
   }
 
   private requireTable(): KvTable<WorkspaceId, WorkspaceState> {
@@ -370,6 +413,11 @@ export class AgentWorkspaceDomainService extends Service {
   private requireDispatcher(): WorkspaceDispatcher {
     if (this.dispatcher === undefined) throw new Error('agent workspace dispatcher is not available without the agent service')
     return this.dispatcher
+  }
+
+  private requireTaskDelivery(): TaskDeliveryCoordinator {
+    if (this.taskDelivery === undefined) throw new Error('durable task delivery coordinator is not available without the agent service')
+    return this.taskDelivery
   }
 
   /**
@@ -394,6 +442,15 @@ export class AgentWorkspaceDomainService extends Service {
   /** Run one one-shot child for a parent agent and record its terminal result. */
   async runChild(parentAgentId: AgentId, taskId: TaskId, prompt: string, signal?: AbortSignal): Promise<string> {
     return await this.requireDispatcher().runChild(parentAgentId, taskId, prompt, signal)
+  }
+
+  /**
+   * Retry one failed or interrupted delivery without creating another task.
+   * @param taskId - Existing open task whose latest attempt is terminal.
+   * @returns The complete terminal task text.
+   */
+  async retryTaskDelivery(taskId: TaskId): Promise<string> {
+    return await this.requireTaskDelivery().retryTaskDelivery(taskId)
   }
 
   /**

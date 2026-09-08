@@ -17,6 +17,7 @@ import type { EmployeeSessionSource } from '../packages/host/src/runtime.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import { assignHumanTask } from '../packages/host/src/tasks.ts'
 import type { WorkspaceState } from '../packages/host/src/types.ts'
+import { TaskDeliveryCoordinator } from '../packages/host/src/task-delivery-coordinator.ts'
 
 const limits = { maxAgentHops: 3, maxRepliesPerRoot: 8, recallCharacterBudget: 4000 }
 
@@ -75,10 +76,15 @@ function fakeHost(initial: WorkspaceState, replies = new Map<AgentId, string>())
       host.state = result.state
       return result.result
     },
-    deliver: async (agentId, delivery) => {
+    deliver: async (agentId, delivery, _recall, _source, hooks) => {
       host.delivered.push(agentId)
       host.deliveryMessages.push(delivery)
-      return { output: [{ type: 'text', text: replies.get(agentId) ?? '' }], stopReason: 'completed' }
+      await hooks?.onClaim?.()
+      return {
+        output: [{ type: 'text', text: replies.get(agentId) ?? '' }],
+        stopReason: { kind: 'completed' },
+        interrupted: false,
+      }
     },
     ensureEmployee: async () => handle(),
   }
@@ -135,8 +141,15 @@ describe('dispatcher consistency', () => {
     const { state, agentIds } = buildWorkspace(['alice'])
     const alice = agentIds[0]!
     const assigned = assignHumanTask(state, { humanId: HumanId('owner'), assigneeAgentId: alice, title: 'formal task' })
-    const host = fakeHost(assigned.state)
-    const dispatcher = new WorkspaceDispatcher(host, { start: vi.fn() } as unknown as SubagentRuntimeLike, 'spawn', limits)
+    const host = fakeHost(assigned.state, new Map([[alice, 'done']]))
+    const coordinator = new TaskDeliveryCoordinator(host)
+    const dispatcher = new WorkspaceDispatcher(
+      host,
+      { start: vi.fn() } as unknown as SubagentRuntimeLike,
+      'spawn',
+      limits,
+      coordinator,
+    )
 
     await dispatcher.runAssignedTask(alice, assigned.taskId)
 
@@ -147,6 +160,7 @@ describe('dispatcher consistency', () => {
       workspaceId: 'local',
       source: { kind: 'task', taskId: assigned.taskId },
       sourceEventId: assignmentEvent.id,
+      taskDeliveryAttemptId: expect.any(String),
     })
   })
 

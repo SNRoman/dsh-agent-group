@@ -13,7 +13,7 @@ import type { AgentDefinitionId, ChildRunId as ChildId, WorkspaceEventId } from 
 import { finishChildRun } from './child-runs.ts'
 import { recallAgentEvents } from './memory.ts'
 import { assertRoomMessageAuthorized } from './room-policy.ts'
-import { completeTask, recordChildRunStarted } from './tasks.ts'
+import { recordChildRunStarted } from './tasks.ts'
 import { assertAssignedTaskRunnable } from './task-policy.ts'
 import type { WorkspaceTurnOutcome } from './turn-tracker.ts'
 import type { WorkspaceActivityIdentity, WorkspaceActivitySource } from './activity-stream.ts'
@@ -27,6 +27,12 @@ export interface WorkspaceDispatcherHost {
   deliver(agentId: AgentId, delivery: UserMessage, recall?: UserMessage, source?: WorkspaceActivitySource): Promise<WorkspaceTurnOutcome>
   ensureEmployee(agentId: AgentId): Promise<AgentHandle>
   retireWorkspaceActivity?(activity: WorkspaceActivityIdentity, workspaceRevision: number): void
+}
+
+/** Durable formal-task delivery surface used by the dispatcher. */
+export interface TaskDeliveryRuntimeLike {
+  /** Deliver one already-authorized formal task through its durable attempt. */
+  deliver(taskId: TaskId): Promise<string>
 }
 
 /** A durable root post plus the separately awaitable collaboration chain it started. */
@@ -68,7 +74,7 @@ interface PendingWake {
   readonly depth: number
 }
 
-type DeliverySource = { readonly kind: 'room'; readonly roomId: RoomId } | { readonly kind: 'task'; readonly taskId: TaskId }
+type DeliverySource = { readonly kind: 'room'; readonly roomId: RoomId }
 
 interface ActiveRoomMember {
   readonly id: AgentId
@@ -94,6 +100,7 @@ export class WorkspaceDispatcher {
     private readonly subagents: SubagentRuntimeSource,
     private readonly provider: string,
     private readonly limits: DispatcherLimits,
+    private readonly taskDelivery?: TaskDeliveryRuntimeLike,
   ) {}
 
   /**
@@ -117,13 +124,17 @@ export class WorkspaceDispatcher {
     await started.completion
   }
 
-  /** Deliver one formal task to its assigned agent and complete it. */
+  /**
+   * Authorize and deliver one formal task through the durable coordinator.
+   * @param agentId - Agent claiming the assignment.
+   * @param taskId - Assigned task to deliver.
+   * @returns The complete terminal task text.
+   */
   async runAssignedTask(agentId: AgentId, taskId: TaskId): Promise<string> {
     const state = this.host.snapshot()
-    const task = assertAssignedTaskRunnable(state, agentId, taskId)
-    const reply = await this.wake(agentId, { kind: 'task', taskId }, taskSourceEventId(state, taskId), task.title)
-    await this.host.apply(current => completeTask(current, { actorAgentId: agentId, taskId }).state)
-    return reply
+    assertAssignedTaskRunnable(state, agentId, taskId)
+    if (this.taskDelivery === undefined) throw new Error('durable task delivery coordinator is not available')
+    return await this.taskDelivery.deliver(taskId)
   }
 
   /**
@@ -238,18 +249,11 @@ export class WorkspaceDispatcher {
     }
   }
 
-  private async wake(agentId: AgentId, source: DeliverySource, sourceEventId: WorkspaceEventId, query: string): Promise<string> {
-    const outcome = await this.wakeOutcome(agentId, source, sourceEventId, query)
-    return textOf(outcome.output)
-  }
-
   private async wakeOutcome(agentId: AgentId, source: DeliverySource, sourceEventId: WorkspaceEventId, query: string): Promise<WorkspaceTurnOutcome> {
     const state = this.host.snapshot()
-    const roomId = source.kind === 'room' ? source.roomId : undefined
-    const recall = roomId === undefined
-      ? { rendered: '' }
-      : recallAgentEvents(state, { agentId, roomId, query, characterBudget: this.limits.recallCharacterBudget })
-    const collaboration = roomId === undefined ? '' : renderCollaborationContext(state, roomId)
+    const roomId = source.roomId
+    const recall = recallAgentEvents(state, { agentId, roomId, query, characterBudget: this.limits.recallCharacterBudget })
+    const collaboration = renderCollaborationContext(state, roomId)
     const delivery = createUserMessage({
       content: [{ type: 'text', text: query }],
       source: { kind: 'agent-workspace-delivery', workspaceId: state.workspaceId, source, sourceEventId },
@@ -261,10 +265,7 @@ export class WorkspaceDispatcher {
         content: [{ type: 'text', text: supplemental }],
         source: { kind: 'agent-workspace-recall' },
       })
-    // Task 5's delivery coordinator supplies the durable attempt identity.
-    // The legacy task path remains untracked instead of inventing an attempt.
-    const activitySource = source.kind === 'room' ? source : undefined
-    return await this.host.deliver(agentId, delivery, recallMessage, activitySource)
+    return await this.host.deliver(agentId, delivery, recallMessage, source)
   }
 
   private isEmployed(state: WorkspaceState, agentId: AgentId): boolean {
@@ -289,17 +290,6 @@ function requireLatestRoomMessageId(state: WorkspaceState, roomId: RoomId): Work
   if (event?.type !== 'room/message' || event.subjectId !== roomId) {
     throw new Error(`room '${roomId}' mutation did not append its message event`)
   }
-  return event.id
-}
-
-function taskSourceEventId(state: WorkspaceState, taskId: TaskId): WorkspaceEventId {
-  const assignment = Object.values(state.taskAssignments).find(candidate => candidate.taskId === taskId)
-  if (assignment === undefined) throw new Error(`task '${taskId}' has no assignment`)
-  const event = state.events.find(candidate =>
-    (candidate.type === 'task/assigned' || candidate.type === 'task/delegated')
-    && candidate.subjectId === assignment.id,
-  )
-  if (event === undefined) throw new Error(`task '${taskId}' has no assignment event`)
   return event.id
 }
 

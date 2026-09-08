@@ -8,7 +8,12 @@ import { apply as domainApply, Config as DomainConfig, inject as domainInject } 
 import { apply as jsonApply, Config as JsonConfig, inject as jsonInject } from '@deepseek-ai/dsh-storage-json'
 import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
 import { agentWorkspaceSpec } from '../packages/host/src/spec.ts'
-import { AgentId, HumanId } from '../packages/host/src/ids.ts'
+import { AgentId, HumanId, TaskId } from '../packages/host/src/ids.ts'
+import type { TaskId as WorkspaceTaskId } from '../packages/host/src/ids.ts'
+import type { AgentHandle } from '@deepseek-ai/dsh-agent'
+import { assignHumanTask } from '../packages/host/src/tasks.ts'
+import { TaskDeliveryCoordinator } from '../packages/host/src/task-delivery-coordinator.ts'
+import type { TaskDeliveryCoordinatorHost } from '../packages/host/src/task-delivery-coordinator.ts'
 
 interface Booted {
   ctx: Context
@@ -126,6 +131,65 @@ describe('agent workspace persistence', () => {
     const after = booted.service.snapshot()
     expect(after.revision).toBe(before.revision)
     expect(after.events).toEqual(before.events)
+    await booted.dispose()
+  })
+
+  test('restarts after a failed wake and retries the same durable task', async () => {
+    const root = await freshRoot()
+    const first = await boot(root)
+    await first.service.execute({ type: 'definition/create', name: 'Worker', description: 'work', instructions: 'reply' })
+    let snapshot = first.service.snapshot()
+    const definition = Object.values(snapshot.definitions)[0]!
+    await first.service.execute({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+    snapshot = first.service.snapshot()
+    const agent = Object.values(snapshot.agents)[0]!
+    let taskId: WorkspaceTaskId | undefined
+    await first.service.apply(current => {
+      const assigned = assignHumanTask(current, {
+        humanId: HumanId('owner'),
+        assigneeAgentId: agent.id,
+        title: 'persist me',
+      })
+      taskId = assigned.taskId
+      return assigned.state
+    })
+    if (taskId === undefined) throw new Error('task assignment did not publish an id')
+    const fakeHandle = { agent: { id: 'session' } as never, dispose: async () => {} } as AgentHandle
+    const failedHost: TaskDeliveryCoordinatorHost = {
+      snapshot: () => first.service.snapshot(),
+      apply: async mutation => await first.service.apply(mutation),
+      ensureEmployee: async () => fakeHandle,
+      deliver: async () => { throw new Error('wake failed') },
+    }
+    await expect(new TaskDeliveryCoordinator(failedHost).deliver(taskId)).rejects.toThrow('wake failed')
+    const beforeRestart = first.service.snapshot()
+    await first.dispose()
+
+    const second = await boot(root)
+    expect(second.service.snapshot()).toEqual(beforeRestart)
+    const resumedHost: TaskDeliveryCoordinatorHost = {
+      snapshot: () => second.service.snapshot(),
+      apply: async mutation => await second.service.apply(mutation),
+      ensureEmployee: async () => fakeHandle,
+      deliver: async (_agentId, _message, _recall, _source, hooks) => {
+        await hooks?.onClaim?.()
+        return { output: [{ type: 'text', text: 'finished after restart' }], stopReason: { kind: 'completed' }, interrupted: false }
+      },
+    }
+    await expect(new TaskDeliveryCoordinator(resumedHost).retryTaskDelivery(taskId)).resolves.toBe('finished after restart')
+    const afterRetry = second.service.snapshot()
+    expect(Object.keys(afterRetry.tasks)).toEqual([taskId])
+    expect(afterRetry.events.filter(event => event.type === 'task/delivery-started')).toHaveLength(2)
+    expect(afterRetry.events.filter(event => event.type === 'task/result')).toHaveLength(1)
+    await second.dispose()
+  })
+
+  test('the Host exposes durable task retry through its service boundary', async () => {
+    const root = await freshRoot()
+    const booted = await boot(root)
+
+    await expect(booted.service.retryTaskDelivery(TaskId('missing'))).rejects.toThrow(/coordinator is not available/)
+
     await booted.dispose()
   })
 })
