@@ -26,8 +26,8 @@ import { EmployeeAgentPool } from './runtime.ts'
 import type { AgentLifecycle, EmployeeBoundSessionDisposition, EmployeeMaterializationOptions } from './runtime.ts'
 import { agentWorkspaceSpec, workspaceStateSchema } from './spec.ts'
 import { createInitialState, mutateWorkspace } from './state.ts'
-import { WorkspaceTurnStream } from './turn-stream.ts'
-import type { WorkspaceTurnIdentity, WorkspaceTurnStreamSnapshot } from './turn-stream.ts'
+import { WorkspaceActivityStream } from './activity-stream.ts'
+import type { WorkspaceActivityDurableFailure, WorkspaceActivityIdentity, WorkspaceActivitySnapshot, WorkspaceActivitySource } from './activity-stream.ts'
 import { WorkspaceTurnTracker } from './turn-tracker.ts'
 import type { WorkspaceTurnOutcome } from './turn-tracker.ts'
 import type { WorkspaceCommand, WorkspaceState } from './types.ts'
@@ -102,7 +102,7 @@ export class AgentWorkspaceDomainService extends Service {
   private dispatcher: WorkspaceDispatcher | undefined
   private readonly trackers = new Map<AgentId, WorkspaceTurnTracker>()
   private readonly roomRuntime = new Map<RoomId, MutableRoomRuntimeStatus>()
-  private readonly turnStream = new WorkspaceTurnStream()
+  private readonly activityStream = new WorkspaceActivityStream()
 
   constructor(ctx: Context) {
     super(ctx, 'agentWorkspace')
@@ -117,10 +117,10 @@ export class AgentWorkspaceDomainService extends Service {
     if (stored === undefined) {
       const initial = validateWorkspaceState(createInitialState(LOCAL_WORKSPACE_ID), LOCAL_WORKSPACE_ID)
       await this.table.put(LOCAL_WORKSPACE_ID, initial)
-      this.turnStream.setWorkspaceRevision(initial.revision)
+      this.syncActivityProjection(initial)
     } else {
       const validated = validateWorkspaceState(stored, LOCAL_WORKSPACE_ID)
-      this.turnStream.setWorkspaceRevision(validated.revision)
+      this.syncActivityProjection(validated)
     }
 
     // Browser transport is an optional child capability. Headless deployments
@@ -187,19 +187,24 @@ export class AgentWorkspaceDomainService extends Service {
     return { rooms }
   }
 
-  /** Current detached live-turn projection for Browser subscribers. */
-  turnStreamSnapshot(): WorkspaceTurnStreamSnapshot {
-    return this.turnStream.snapshot()
+  /** Current detached activity projection for Browser subscribers. */
+  activitySnapshot(): WorkspaceActivitySnapshot {
+    return this.activityStream.snapshot()
   }
 
-  /** Wait until the live-turn projection advances beyond a version. */
-  async waitForTurnStream(afterVersion: number, signal: AbortSignal): Promise<WorkspaceTurnStreamSnapshot> {
-    return await this.turnStream.wait(afterVersion, signal)
+  /** Wait until the activity projection advances beyond a version. */
+  async waitForActivity(afterVersion: number, signal: AbortSignal): Promise<WorkspaceActivitySnapshot> {
+    return await this.activityStream.wait(afterVersion, signal)
   }
 
-  /** Retire one transient turn after its durable room projection has converged. */
-  retireWorkspaceTurn(turn: WorkspaceTurnIdentity, workspaceRevision: number): void {
-    this.turnStream.retire(turn, workspaceRevision)
+  /** Retire one transient activity after its durable projection has converged. */
+  retireWorkspaceActivity(activity: WorkspaceActivityIdentity, workspaceRevision: number): void {
+    this.activityStream.retire(activity, workspaceRevision)
+  }
+
+  /** Clear one process-local agent failure after the Browser acknowledges it. */
+  acknowledgeAgentFailure(agentId: AgentId): void {
+    this.activityStream.acknowledgeAgentFailure(agentId)
   }
 
   /** Open the stable direct room for one employed agent, creating it atomically when absent. */
@@ -242,12 +247,12 @@ export class AgentWorkspaceDomainService extends Service {
       return validateWorkspaceState(joined, LOCAL_WORKSPACE_ID)
     })
     if (resolvedRoomId === undefined) throw new Error(`failed to resolve direct room for agent '${agentId}'`)
-    this.turnStream.setWorkspaceRevision(next.revision)
+    this.syncActivityProjection(next)
     return { state: structuredClone(next), roomId: resolvedRoomId }
   }
 
   /** Apply one command durably and return the detached committed aggregate. */
-  async execute(command: WorkspaceCommand, settledTurn?: WorkspaceTurnIdentity): Promise<WorkspaceState> {
+  async execute(command: WorkspaceCommand, settledActivity?: WorkspaceActivityIdentity): Promise<WorkspaceState> {
     const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => {
       if (command.type === 'room/message') {
         assertRoomMessageAuthorized(current, command.roomId, command.actor, command.mentions)
@@ -258,8 +263,8 @@ export class AgentWorkspaceDomainService extends Service {
       return validateWorkspaceState(changed, LOCAL_WORKSPACE_ID)
     })
 
-    if (settledTurn === undefined) this.turnStream.setWorkspaceRevision(next.revision)
-    else this.turnStream.retire(settledTurn, next.revision)
+    this.syncActivityProjection(next)
+    if (settledActivity !== undefined) this.activityStream.retire(settledActivity, next.revision)
     if (command.type === 'agent/depart') {
       await this.pool?.dispose(command.agentId)
     }
@@ -272,7 +277,7 @@ export class AgentWorkspaceDomainService extends Service {
       const changed = mutation(current)
       return validateWorkspaceState(changed, LOCAL_WORKSPACE_ID)
     })
-    this.turnStream.setWorkspaceRevision(next.revision)
+    this.syncActivityProjection(next)
     return structuredClone(next)
   }
 
@@ -325,11 +330,11 @@ export class AgentWorkspaceDomainService extends Service {
    * optional recall is injected into the same durable turn, immediately after
    * the delivery.
    */
-  async deliver(agentId: AgentId, delivery: UserMessage, recall?: UserMessage, roomId?: RoomId): Promise<WorkspaceTurnOutcome> {
+  async deliver(agentId: AgentId, delivery: UserMessage, recall?: UserMessage, source?: WorkspaceActivitySource): Promise<WorkspaceTurnOutcome> {
     const handle = await this.ensureEmployee(agentId)
     const tracker = this.trackers.get(agentId)
     if (tracker === undefined) throw new Error(`agent '${agentId}' has no turn tracker`)
-    const outcome = await tracker.deliver(handle.agent, delivery, recall, roomId)
+    const outcome = await tracker.deliver(handle.agent, delivery, recall, source)
     const sessions = this.ctx.get('sessions') as { flush(session: Session): Promise<boolean> } | undefined
     await sessions?.flush(handle.agent.session)
     return outcome
@@ -429,7 +434,7 @@ export class AgentWorkspaceDomainService extends Service {
         const tracker = new WorkspaceTurnTracker({
           agentId,
           sessionId: scopedAgent.session.header.id,
-          stream: this.turnStream,
+          stream: this.activityStream,
         })
         tracker.install(agentCtx)
         this.trackers.set(agentId, tracker)
@@ -462,6 +467,14 @@ export class AgentWorkspaceDomainService extends Service {
     systemPrompt.section({ name: 'agent-workspace:role', order: 10, text })
   }
 
+  private syncActivityProjection(state: WorkspaceState): void {
+    this.activityStream.setWorkspaceProjection(
+      state.revision,
+      Object.keys(state.agents).map(AgentId),
+      taskDeliveryFailures(state),
+    )
+  }
+
   private beginRoomDispatch(roomId: RoomId): void {
     const current = this.roomRuntime.get(roomId)
     this.roomRuntime.set(roomId, { pending: (current?.pending ?? 0) + 1 })
@@ -477,6 +490,44 @@ export class AgentWorkspaceDomainService extends Service {
     }
     this.roomRuntime.set(roomId, message === undefined ? { pending } : { pending, error: message })
   }
+}
+
+function taskDeliveryFailures(state: WorkspaceState): WorkspaceActivityDurableFailure[] {
+  const failuresByTask = new Map<TaskId, { readonly sequence: number; readonly code: string; readonly summary: string }>()
+  for (const event of state.events) {
+    if (!('taskId' in event)) continue
+    switch (event.type) {
+      case 'task/delivery-failed':
+        failuresByTask.set(event.taskId, {
+          sequence: event.sequence,
+          code: event.failureCode,
+          summary: event.failureSummary,
+        })
+        break
+      case 'task/delivery-started':
+      case 'task/delivery-accepted':
+      case 'task/result':
+      case 'task/result-after-cancel':
+        failuresByTask.delete(event.taskId)
+        break
+      default:
+        break
+    }
+  }
+
+  const latestByAgent = new Map<AgentId, { readonly sequence: number; readonly code: string; readonly summary: string }>()
+  for (const [taskId, failure] of failuresByTask) {
+    const assignment = Object.values(state.taskAssignments).find(candidate => candidate.taskId === taskId)
+    if (assignment === undefined) continue
+    const current = latestByAgent.get(assignment.assigneeAgentId)
+    if (current === undefined || current.sequence < failure.sequence) {
+      latestByAgent.set(assignment.assigneeAgentId, failure)
+    }
+  }
+  return [...latestByAgent].map(([agentId, failure]) => ({
+    agentId,
+    error: { code: failure.code, summary: failure.summary },
+  }))
 }
 
 function errorMessage(error: unknown): string {

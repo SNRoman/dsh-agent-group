@@ -16,17 +16,17 @@ import { assertRoomMessageAuthorized } from './room-policy.ts'
 import { completeTask, recordChildRunStarted } from './tasks.ts'
 import { assertAssignedTaskRunnable } from './task-policy.ts'
 import type { WorkspaceTurnOutcome } from './turn-tracker.ts'
-import type { WorkspaceTurnIdentity } from './turn-stream.ts'
+import type { WorkspaceActivityIdentity, WorkspaceActivitySource } from './activity-stream.ts'
 import type { WorkspaceActor, WorkspaceCommand, WorkspaceState } from './types.ts'
 
 /** The host surface the dispatcher drives. */
 export interface WorkspaceDispatcherHost {
   snapshot(): WorkspaceState
-  execute(command: WorkspaceCommand, settledTurn?: WorkspaceTurnIdentity): Promise<WorkspaceState>
+  execute(command: WorkspaceCommand, settledActivity?: WorkspaceActivityIdentity): Promise<WorkspaceState>
   apply(mutation: (state: WorkspaceState) => WorkspaceState): Promise<WorkspaceState>
-  deliver(agentId: AgentId, delivery: UserMessage, recall?: UserMessage, roomId?: RoomId): Promise<WorkspaceTurnOutcome>
+  deliver(agentId: AgentId, delivery: UserMessage, recall?: UserMessage, source?: WorkspaceActivitySource): Promise<WorkspaceTurnOutcome>
   ensureEmployee(agentId: AgentId): Promise<AgentHandle>
-  retireWorkspaceTurn?(turn: WorkspaceTurnIdentity, workspaceRevision: number): void
+  retireWorkspaceActivity?(activity: WorkspaceActivityIdentity, workspaceRevision: number): void
 }
 
 /** A durable root post plus the separately awaitable collaboration chain it started. */
@@ -223,17 +223,17 @@ export class WorkspaceDispatcher {
         assertRoomMessageAuthorized(this.host.snapshot(), roomId, actor, next)
         const committed = await this.host.execute(
           { type: 'room/message', roomId, actor, text: reply, mentions: next },
-          outcome.workspaceTurn,
+          outcome.workspaceActivity,
         )
         const replyEventId = requireLatestRoomMessageId(committed, roomId)
         for (const nextAgentId of next) {
           queue.push({ agentId: nextAgentId, triggeredBy: reply, sourceEventId: replyEventId, depth: item.depth + 1 })
         }
-      } else if (outcome.workspaceTurn !== undefined) {
+      } else if (outcome.workspaceActivity !== undefined) {
         // A tool-only/empty-text reply has no Workspace room message to commit,
         // and only DSH's completed/max-tokens reasons prove a successful step.
         // Retire every uncommitted transient against the current durable revision.
-        this.host.retireWorkspaceTurn?.(outcome.workspaceTurn, this.host.snapshot().revision)
+        this.host.retireWorkspaceActivity?.(outcome.workspaceActivity, this.host.snapshot().revision)
       }
     }
   }
@@ -261,7 +261,10 @@ export class WorkspaceDispatcher {
         content: [{ type: 'text', text: supplemental }],
         source: { kind: 'agent-workspace-recall' },
       })
-    return await this.host.deliver(agentId, delivery, recallMessage, roomId)
+    // Task 5's delivery coordinator supplies the durable attempt identity.
+    // The legacy task path remains untracked instead of inventing an attempt.
+    const activitySource = source.kind === 'room' ? source : undefined
+    return await this.host.deliver(agentId, delivery, recallMessage, activitySource)
   }
 
   private isEmployed(state: WorkspaceState, agentId: AgentId): boolean {

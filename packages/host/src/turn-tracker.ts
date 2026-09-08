@@ -10,8 +10,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock, MessageId, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, SessionId, TurnEndReason } from '@deepseek-ai/dsh-session'
-import type { AgentId, RoomId } from './ids.ts'
-import type { WorkspaceTurnIdentity, WorkspaceTurnStream } from './turn-stream.ts'
+import type { AgentId, WorkspaceActivityId } from './ids.ts'
+import type { WorkspaceActivityIdentity, WorkspaceActivitySource, WorkspaceActivityStream } from './activity-stream.ts'
 
 /** The terminal Workspace reply captured for one delivery. */
 export interface WorkspaceTurnOutcome {
@@ -21,14 +21,16 @@ export interface WorkspaceTurnOutcome {
   readonly stopReason: TurnEndReason
   /** Whether the captured output is the prefix of an interrupted assistant message. */
   readonly interrupted: boolean
-  /** Exact transient Workspace turn, present only for room-backed deliveries. */
-  readonly workspaceTurn?: WorkspaceTurnIdentity
+  /** Exact transient Workspace activity, present for room and task deliveries. */
+  readonly workspaceActivity?: WorkspaceActivityIdentity
 }
 
 interface PendingDelivery {
   readonly messageId: MessageId
   readonly recall: UserMessage | undefined
-  readonly roomId: RoomId | undefined
+  readonly source: WorkspaceActivitySource | undefined
+  readonly activityId: WorkspaceActivityId | undefined
+  activity: WorkspaceActivityIdentity | undefined
   turn: number | undefined
   output: ContentBlock[]
   interrupted: boolean
@@ -41,7 +43,7 @@ interface PendingDelivery {
 export interface WorkspaceTurnTrackerOptions {
   readonly agentId: AgentId
   readonly sessionId: SessionId
-  readonly stream: WorkspaceTurnStream
+  readonly stream: WorkspaceActivityStream
 }
 
 /** A permissive event-source view used only to register scoped listeners. */
@@ -74,25 +76,28 @@ export class WorkspaceTurnTracker {
       if (pending === undefined) return
       pending.turn = payload.turn
       this.byTurn.set(payload.turn, pending)
-      if (pending.roomId !== undefined && this.options !== undefined) {
-        this.options.stream.begin({
-          roomId: pending.roomId,
+      if (pending.activityId !== undefined && this.options !== undefined) {
+        const identity: WorkspaceActivityIdentity = {
+          activityId: pending.activityId,
           agentId: this.options.agentId,
+          messageId: pending.messageId,
           sessionId: this.options.sessionId,
           turn: payload.turn,
-        })
+        }
+        this.options.stream.claim(identity)
+        pending.activity = identity
       }
     }) as never)
 
     events.on('agent/inbox/discarded', ((payload: { message: UserMessage }) => {
       const pending = this.byMessage.get(payload.message.id)
       if (pending === undefined) return
-      this.settleRejected(pending, new Error('delivery discarded before its turn was claimed'))
+      this.settleRejected(pending, new Error('delivery discarded before its turn was claimed'), 'delivery-discarded')
     }) as never)
 
     events.on('agent/disposed', (() => {
       for (const pending of [...this.byMessage.values()]) {
-        this.settleRejected(pending, new Error('agent disposed before the delivery settled'))
+        this.settleRejected(pending, new Error('agent disposed before the delivery settled'), 'agent-disposed')
       }
     }) as never)
 
@@ -129,29 +134,19 @@ export class WorkspaceTurnTracker {
         }
       }
 
-      if (pending.roomId !== undefined && this.options !== undefined) {
+      if (pending.activity !== undefined && this.options !== undefined) {
         this.options.stream.acceptSessionEvent({
-          roomId: pending.roomId,
-          agentId: this.options.agentId,
-          sessionId: this.options.sessionId,
+          ...pending.activity,
           event,
         })
       }
 
       if (event.type === 'turn/end') {
-        const workspaceTurn = pending.roomId !== undefined && this.options !== undefined
-          ? {
-              roomId: pending.roomId,
-              agentId: this.options.agentId,
-              sessionId: this.options.sessionId,
-              turn,
-            }
-          : undefined
         this.settleResolved(pending, {
           output: pending.output,
           stopReason: event.data.reason,
           interrupted: pending.interrupted,
-          ...(workspaceTurn === undefined ? {} : { workspaceTurn }),
+          ...(pending.activity === undefined ? {} : { workspaceActivity: pending.activity }),
         })
       }
     }) as never)
@@ -165,15 +160,20 @@ export class WorkspaceTurnTracker {
    * @param agent - the live agent receiving the delivery.
    * @param delivery - the waking user message.
    * @param recall - optional model-visible context injected after the delivery.
-   * @param roomId - owning Workspace room; absent for non-room tasks/children.
+   * @param source - Workspace room or durable task-attempt source; absent for children.
    * @returns the terminal reply outcome.
    */
-  deliver(agent: Agent, delivery: UserMessage, recall?: UserMessage, roomId?: RoomId): Promise<WorkspaceTurnOutcome> {
+  deliver(agent: Agent, delivery: UserMessage, recall?: UserMessage, source?: WorkspaceActivitySource): Promise<WorkspaceTurnOutcome> {
     return new Promise<WorkspaceTurnOutcome>((resolve, reject) => {
+      const activityId = source === undefined || this.options === undefined
+        ? undefined
+        : this.options.stream.queue({ agentId: this.options.agentId, messageId: delivery.id, source })
       const pending: PendingDelivery = {
         messageId: delivery.id,
         recall,
-        roomId,
+        source,
+        activityId,
+        activity: undefined,
         turn: undefined,
         output: [],
         interrupted: false,
@@ -185,7 +185,7 @@ export class WorkspaceTurnTracker {
       try {
         agent.followup(delivery)
       } catch (error) {
-        this.settleRejected(pending, error)
+        this.settleRejected(pending, error, 'followup-failed')
       }
     })
   }
@@ -197,10 +197,13 @@ export class WorkspaceTurnTracker {
     pending.resolve(outcome)
   }
 
-  private settleRejected(pending: PendingDelivery, reason: unknown): void {
+  private settleRejected(pending: PendingDelivery, reason: unknown, fallbackCode: string): void {
     if (pending.settled) return
     pending.settled = true
     this.removePending(pending)
+    if (pending.activityId !== undefined && this.options !== undefined) {
+      this.options.stream.discard(pending.activityId, reason, fallbackCode)
+    }
     pending.reject(reason)
   }
 

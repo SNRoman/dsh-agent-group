@@ -4,11 +4,11 @@ import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
-import { AgentId, RoomId } from '../packages/host/src/ids.ts'
+import { AgentId, RoomId, TaskDeliveryAttemptId, TaskId } from '../packages/host/src/ids.ts'
 import { EmployeeAgentPool } from '../packages/host/src/runtime.ts'
 import type { EmployeeSessionSource } from '../packages/host/src/runtime.ts'
 import { WorkspaceTurnTracker } from '../packages/host/src/turn-tracker.ts'
-import { WorkspaceTurnStream } from '../packages/host/src/turn-stream.ts'
+import { WorkspaceActivityStream } from '../packages/host/src/activity-stream.ts'
 
 function handle(dispose = vi.fn(async () => {})): AgentHandle {
   return { agent: { id: SessionId('agent') } as Agent, dispose }
@@ -196,6 +196,44 @@ describe('EmployeeAgentPool', () => {
 })
 
 describe('WorkspaceTurnTracker', () => {
+  test('publishes task delivery while queued and binds its claim without changing activity identity', async () => {
+    const events = fakeEvents()
+    const stream = new WorkspaceActivityStream()
+    const tracker = new WorkspaceTurnTracker({
+      agentId: AgentId('alice'),
+      sessionId: SessionId('alice-session'),
+      stream,
+    })
+    tracker.install(events as unknown as Context)
+    const agent = { followup: vi.fn() } as unknown as Agent
+    const delivery = text('deliver task')
+    const outcome = tracker.deliver(agent, delivery, undefined, {
+      kind: 'task',
+      taskId: TaskId('task-1'),
+      attemptId: TaskDeliveryAttemptId('attempt-1'),
+    })
+
+    const queued = stream.snapshot().activities[0]
+    expect(queued).toMatchObject({
+      agentId: AgentId('alice'),
+      messageId: delivery.id,
+      source: { kind: 'task', taskId: TaskId('task-1'), attemptId: TaskDeliveryAttemptId('attempt-1') },
+      status: 'queued',
+    })
+    events.emit('agent/inbox/claimed', { message: delivery, turn: 8 })
+    expect(stream.snapshot().activities[0]).toMatchObject({
+      activityId: queued?.activityId,
+      messageId: delivery.id,
+      status: 'responding',
+      claimed: { sessionId: SessionId('alice-session'), turn: 8 },
+    })
+
+    events.emit('session/event', {}, {
+      type: 'turn/end', data: { turn: 8, reason: { kind: 'completed' } },
+    })
+    await expect(outcome).resolves.toMatchObject({ stopReason: { kind: 'completed' } })
+  })
+
   test('correlates a delivery with its turn and captures the reply', async () => {
     const events = fakeEvents()
     const tracker = new WorkspaceTurnTracker()
@@ -266,7 +304,7 @@ describe('WorkspaceTurnTracker', () => {
 
   test('settles one claimed delivery only once when its terminal event is repeated', async () => {
     const events = fakeEvents()
-    const stream = new WorkspaceTurnStream()
+    const stream = new WorkspaceActivityStream()
     const tracker = new WorkspaceTurnTracker({
       agentId: AgentId('alice'),
       sessionId: SessionId('alice-session'),
@@ -275,7 +313,7 @@ describe('WorkspaceTurnTracker', () => {
     tracker.install(events as unknown as Context)
     const agent = { followup: vi.fn() } as unknown as Agent
     const delivery = text('deliver')
-    const outcome = tracker.deliver(agent, delivery, undefined, RoomId('room-1'))
+    const outcome = tracker.deliver(agent, delivery, undefined, { kind: 'room', roomId: RoomId('room-1') })
 
     events.emit('agent/inbox/claimed', { message: delivery, turn: 5 })
     events.emit('session/event', {}, {
@@ -297,12 +335,12 @@ describe('WorkspaceTurnTracker', () => {
       interrupted: false,
     })
     expect(stream.snapshot().version).toBe(terminalVersion)
-    expect(stream.snapshot().turns).toHaveLength(1)
+    expect(stream.snapshot().activities).toHaveLength(1)
   })
 
   test('long-poll cancellation leaves the tracked agent outcome untouched', async () => {
     const events = fakeEvents()
-    const stream = new WorkspaceTurnStream()
+    const stream = new WorkspaceActivityStream()
     const tracker = new WorkspaceTurnTracker({
       agentId: AgentId('alice'),
       sessionId: SessionId('alice-session'),
@@ -311,7 +349,7 @@ describe('WorkspaceTurnTracker', () => {
     tracker.install(events as unknown as Context)
     const agent = { followup: vi.fn() } as unknown as Agent
     const delivery = text('deliver')
-    const outcome = tracker.deliver(agent, delivery, undefined, RoomId('room-1'))
+    const outcome = tracker.deliver(agent, delivery, undefined, { kind: 'room', roomId: RoomId('room-1') })
     events.emit('agent/inbox/claimed', { message: delivery, turn: 6 })
 
     let outcomeSettled = false

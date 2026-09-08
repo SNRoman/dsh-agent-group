@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import { MessageId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { WorkspaceBusinessError } from '../packages/host/src/errors.ts'
 import { AgentId, HumanId, RoomId, WorkspaceId } from '../packages/host/src/ids.ts'
 import { createInitialState } from '../packages/host/src/state.ts'
 import { createWorkspaceRpcHandler } from '../packages/host/src/rpc.ts'
-import { WorkspaceTurnStream } from '../packages/host/src/turn-stream.ts'
+import { WorkspaceActivityStream } from '../packages/host/src/activity-stream.ts'
 import type { WorkspaceCommand, WorkspaceState } from '../packages/host/src/types.ts'
 
 function serviceFixture() {
@@ -12,7 +13,7 @@ function serviceFixture() {
   const commands: WorkspaceCommand[] = []
   const posts: Array<{ roomId: string; humanId: string; text: string; mentions: readonly string[] }> = []
   const directOpens: string[] = []
-  const stream = new WorkspaceTurnStream()
+  const stream = new WorkspaceActivityStream()
   return {
     commands,
     posts,
@@ -21,8 +22,8 @@ function serviceFixture() {
     service: {
       snapshot: (): WorkspaceState => structuredClone(state),
       runtimeStatus: () => ({ rooms: {} }),
-      turnStreamSnapshot: () => stream.snapshot(),
-      waitForTurnStream: (afterVersion: number, signal: AbortSignal) => stream.wait(afterVersion, signal),
+      activitySnapshot: () => stream.snapshot(),
+      waitForActivity: (afterVersion: number, signal: AbortSignal) => stream.wait(afterVersion, signal),
       execute: async (command: WorkspaceCommand): Promise<WorkspaceState> => {
         commands.push(command)
         state = { ...state, revision: state.revision + 1 }
@@ -62,11 +63,18 @@ describe('workspace rpc handler', () => {
     expect(result.value).toEqual({ rooms: { 'room-1': { pending: 2 } } })
   })
 
-  it('returns the current versioned live turn projection', async () => {
+  it('returns the current versioned activity projection', async () => {
     const fixture = serviceFixture()
-    fixture.stream.begin({
-      roomId: RoomId('room-1'),
+    const messageId = MessageId('message-1')
+    const activityId = fixture.stream.queue({
       agentId: AgentId('agent-1'),
+      messageId,
+      source: { kind: 'room', roomId: RoomId('room-1') },
+    })
+    fixture.stream.claim({
+      activityId,
+      agentId: AgentId('agent-1'),
+      messageId,
       sessionId: SessionId('session-1'),
       turn: 3,
     })
@@ -75,21 +83,22 @@ describe('workspace rpc handler', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.value).toEqual(expect.objectContaining({
-      version: 1,
-      turns: [expect.objectContaining({ roomId: 'room-1', agentId: 'agent-1', turn: 3, status: 'running' })],
+      version: 2,
+      activities: [expect.objectContaining({
+        source: { kind: 'room', roomId: 'room-1' }, agentId: 'agent-1', claimed: { sessionId: 'session-1', turn: 3 }, status: 'responding',
+      })],
     }))
   })
 
-  it('long-polls until the live turn projection advances', async () => {
+  it('long-polls until the activity projection advances', async () => {
     const fixture = serviceFixture()
     const handler = createWorkspaceRpcHandler(fixture.service)
     const controller = new AbortController()
     const waiting = handler('stream/wait', { afterVersion: 0 }, controller.signal)
-    fixture.stream.begin({
-      roomId: RoomId('room-2'),
+    fixture.stream.queue({
       agentId: AgentId('agent-2'),
-      sessionId: SessionId('session-2'),
-      turn: 8,
+      messageId: MessageId('message-2'),
+      source: { kind: 'room', roomId: RoomId('room-2') },
     })
     const result = await waiting
     expect(result.ok).toBe(true)

@@ -3,13 +3,13 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { AgentId, HumanId, RoomId, WorkspaceId } from '../packages/host/src/ids.ts'
+import { AgentId, HumanId, RoomId, WorkspaceActivityId, WorkspaceId } from '../packages/host/src/ids.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import { assignHumanTask } from '../packages/host/src/tasks.ts'
 import { WorkspaceDispatcher } from '../packages/host/src/dispatcher.ts'
 import type { WorkspaceDispatcherHost, SubagentRuntimeLike } from '../packages/host/src/dispatcher.ts'
 import { WorkspaceTurnTracker } from '../packages/host/src/turn-tracker.ts'
-import { WorkspaceTurnStream } from '../packages/host/src/turn-stream.ts'
+import { WorkspaceActivityStream } from '../packages/host/src/activity-stream.ts'
 import type { WorkspaceState } from '../packages/host/src/types.ts'
 
 function buildRoom(agentNames: string[]): { state: WorkspaceState; roomId: ReturnType<typeof RoomId>; agentIds: ReturnType<typeof AgentId>[] } {
@@ -55,9 +55,10 @@ function buildRoleRoom(): { state: WorkspaceState; roomId: ReturnType<typeof Roo
   return { state, roomId: room.roomId, productId: product.agentId, architectId: architect.agentId }
 }
 
-interface RetiredTurn {
-  readonly roomId: ReturnType<typeof RoomId>
+interface RetiredActivity {
+  readonly activityId: ReturnType<typeof WorkspaceActivityId>
   readonly agentId: ReturnType<typeof AgentId>
+  readonly messageId: UserMessage['id']
   readonly sessionId: string
   readonly turn: number
   readonly workspaceRevision: number
@@ -67,8 +68,8 @@ interface FakeHost extends WorkspaceDispatcherHost {
   delivered: AgentId[]
   replies: Map<AgentId, string>
   state: WorkspaceState
-  retired: RetiredTurn[]
-  retireWorkspaceTurn(input: Omit<RetiredTurn, 'workspaceRevision'>, workspaceRevision: number): void
+  retired: RetiredActivity[]
+  retireWorkspaceActivity(input: Omit<RetiredActivity, 'workspaceRevision'>, workspaceRevision: number): void
 }
 
 function fakeHost(initial: WorkspaceState, replies: Map<AgentId, string>): FakeHost {
@@ -78,34 +79,35 @@ function fakeHost(initial: WorkspaceState, replies: Map<AgentId, string>): FakeH
     replies,
     retired: [],
     snapshot: () => structuredClone(host.state),
-    execute: async (command, settledTurn) => {
+    execute: async (command, settledActivity) => {
       host.state = mutateWorkspace(host.state, command).state
-      if (settledTurn !== undefined) host.retireWorkspaceTurn(settledTurn, host.state.revision)
+      if (settledActivity !== undefined) host.retireWorkspaceActivity(settledActivity, host.state.revision)
       return structuredClone(host.state)
     },
     apply: async (mutation) => {
       host.state = mutation(host.state)
       return structuredClone(host.state)
     },
-    deliver: async (agentId, _delivery, _recall, roomId) => {
+    deliver: async (agentId, delivery, _recall, source) => {
       host.delivered.push(agentId)
       return {
         output: [{ type: 'text', text: host.replies.get(agentId) ?? '' }],
         stopReason: { kind: 'completed' },
         interrupted: false,
-        ...(roomId === undefined
+        ...(source === undefined
           ? {}
           : {
-              workspaceTurn: {
-                roomId,
+              workspaceActivity: {
+                activityId: WorkspaceActivityId(`activity-${delivery.id}`),
                 agentId,
+                messageId: delivery.id,
                 sessionId: `session-${agentId}` as never,
                 turn: host.delivered.length,
               },
             }),
       }
     },
-    retireWorkspaceTurn: (input, workspaceRevision) => {
+    retireWorkspaceActivity: (input, workspaceRevision) => {
       host.retired.push({ ...input, sessionId: String(input.sessionId), workspaceRevision })
     },
     ensureEmployee: async () => ({ agent: { id: 's' } as never, dispose: async () => {} }) as AgentHandle,
@@ -162,7 +164,6 @@ describe('WorkspaceDispatcher', () => {
     expect(messages.at(-1)?.actor).toEqual({ type: 'agent', id: alice })
     expect(messages.at(-1)?.text).toBe('**done**')
     expect(host.retired).toEqual([expect.objectContaining({
-      roomId,
       agentId: alice,
       sessionId: `session-${alice}`,
       turn: 1,
@@ -175,7 +176,7 @@ describe('WorkspaceDispatcher', () => {
     const alice = agentIds[0]!
     const host = fakeHost(state, new Map())
     const events = trackerEvents()
-    const stream = new WorkspaceTurnStream()
+    const stream = new WorkspaceActivityStream()
     const tracker = new WorkspaceTurnTracker({
       agentId: alice,
       sessionId: SessionId('alice-session'),
@@ -186,8 +187,8 @@ describe('WorkspaceDispatcher', () => {
     const agent = {
       followup: (delivery: UserMessage) => claimed.resolve(delivery),
     } as unknown as Agent
-    host.deliver = async (_agentId, delivery, recall, deliveredRoomId) => (
-      await tracker.deliver(agent, delivery, recall, deliveredRoomId)
+    host.deliver = async (_agentId, delivery, recall, source) => (
+      await tracker.deliver(agent, delivery, recall, source)
     )
     const dispatcher = new WorkspaceDispatcher(host, undefined, 'spawn', limits)
 
@@ -207,7 +208,6 @@ describe('WorkspaceDispatcher', () => {
     expect(agentReplies).toHaveLength(1)
     expect(agentReplies[0]?.text).toBe('done')
     expect(host.retired).toEqual([expect.objectContaining({
-      roomId,
       agentId: alice,
       sessionId: 'alice-session',
       turn: 8,
@@ -219,15 +219,16 @@ describe('WorkspaceDispatcher', () => {
     const alice = agentIds[0]!
     const bob = agentIds[1]!
     const host = fakeHost(state, new Map())
-    host.deliver = async (agentId, _delivery, _recall, deliveredRoomId) => {
+    host.deliver = async (agentId, delivery) => {
       host.delivered.push(agentId)
       return {
         output: [{ type: 'text', text: `partial <@${bob}>` }],
         stopReason: { kind: 'aborted', reason: { kind: 'user' } },
         interrupted: true,
-        workspaceTurn: {
-          roomId: deliveredRoomId,
+        workspaceActivity: {
+          activityId: WorkspaceActivityId(`activity-${delivery.id}`),
           agentId,
+          messageId: delivery.id,
           sessionId: `session-${agentId}`,
           turn: 7,
         },
@@ -242,7 +243,6 @@ describe('WorkspaceDispatcher', () => {
     expect(messages[0]?.actor).toEqual({ type: 'human', id: HumanId('owner') })
     expect(host.delivered).toEqual([alice])
     expect(host.retired).toEqual([expect.objectContaining({
-      roomId,
       agentId: alice,
       sessionId: `session-${alice}`,
       turn: 7,
@@ -254,15 +254,16 @@ describe('WorkspaceDispatcher', () => {
     const { state, roomId, agentIds } = buildRoom(['alice'])
     const alice = agentIds[0]!
     const host = fakeHost(state, new Map())
-    host.deliver = async (agentId, _delivery, _recall, deliveredRoomId) => {
+    host.deliver = async (agentId, delivery) => {
       host.delivered.push(agentId)
       return {
         output: [{ type: 'text', text: 'usable capped reply' }],
         stopReason: { kind: 'max-tokens' },
         interrupted: false,
-        workspaceTurn: {
-          roomId: deliveredRoomId,
+        workspaceActivity: {
+          activityId: WorkspaceActivityId(`activity-${delivery.id}`),
           agentId,
+          messageId: delivery.id,
           sessionId: `session-${agentId}`,
           turn: 9,
         },

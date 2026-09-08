@@ -11,7 +11,7 @@ import {
   MembershipId,
   RoomId,
 } from './ids.ts'
-import type { WorkspaceTurnStreamSnapshot } from './turn-stream.ts'
+import type { WorkspaceActivitySnapshot } from './activity-stream.ts'
 import type { WorkspaceCommand, WorkspaceState } from './types.ts'
 
 /** Logical Connection channel owned exclusively by this plugin. */
@@ -40,14 +40,14 @@ export interface WorkspaceDirectRoomResult {
 export interface WorkspaceRpcService {
   snapshot(): WorkspaceState
   runtimeStatus(): WorkspaceRuntimeStatus
-  turnStreamSnapshot(): WorkspaceTurnStreamSnapshot
-  waitForTurnStream(afterVersion: number, signal: AbortSignal): Promise<WorkspaceTurnStreamSnapshot>
+  activitySnapshot(): WorkspaceActivitySnapshot
+  waitForActivity(afterVersion: number, signal: AbortSignal): Promise<WorkspaceActivitySnapshot>
   execute(command: WorkspaceCommand): Promise<WorkspaceState>
   openDirectRoom(agentId: AgentId): Promise<WorkspaceDirectRoomResult>
   postHumanMessage(roomId: RoomId, humanId: HumanId, text: string, mentions: readonly AgentId[]): Promise<WorkspaceState>
 }
 
-export type WorkspaceRpcValue = WorkspaceState | WorkspaceRuntimeStatus | WorkspaceDirectRoomResult | WorkspaceTurnStreamSnapshot
+export type WorkspaceRpcValue = WorkspaceState | WorkspaceRuntimeStatus | WorkspaceDirectRoomResult | WorkspaceActivitySnapshot
 
 type WorkspaceRpcBusinessErrorFor<Code extends WorkspaceBusinessErrorCode> = {
   readonly kind: 'business'
@@ -159,13 +159,13 @@ export function createWorkspaceRpcHandler(service: WorkspaceRpcService): Workspa
         case 'stream/snapshot': {
           const parsed = emptyPayload.safeParse(payload)
           if (!parsed.success) return invalid(parsed.error.issues)
-          return success(service.turnStreamSnapshot())
+          return success(service.activitySnapshot())
         }
         case 'stream/wait': {
           const parsed = streamWaitPayload.safeParse(payload)
           if (!parsed.success) return invalid(parsed.error.issues)
           signal.throwIfAborted()
-          return success(await service.waitForTurnStream(parsed.data.afterVersion, signal))
+          return success(await service.waitForActivity(parsed.data.afterVersion, signal))
         }
         case 'definition/create': {
           const parsed = createDefinitionPayload.safeParse(payload)
