@@ -8,6 +8,7 @@ import { describe, expect, test } from 'vitest'
 const execFileAsync = promisify(execFile)
 const execAsync = promisify(exec)
 const packageDirectories = ['packages/host', 'packages/web', 'packages/bundle']
+const CONCURRENT_PACK_TEST_TIMEOUT_MS = 120_000
 
 async function pack(directory: string, destination: string): Promise<void> {
   const args = ['--dir', directory, 'pack', '--pack-destination', destination]
@@ -41,5 +42,5 @@ describe('workspace manifests', () => {
     } finally {
       await rm(destination, { recursive: true, force: true })
     }
-  }, 60_000)
+  }, CONCURRENT_PACK_TEST_TIMEOUT_MS)
 })

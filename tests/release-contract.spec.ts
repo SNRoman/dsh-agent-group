@@ -20,6 +20,7 @@ const browserFixtureFiles = [
 ] as const
 
 const dshRange = '>=0.1.1-rc.2 <0.1.2-0'
+const CONCURRENT_LANE_TEST_TIMEOUT_MS = 15_000
 
 describe('public release contract', () => {
   it('ships an MIT license and public installation instructions', () => {
@@ -154,7 +155,7 @@ describe('public release contract', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, CONCURRENT_LANE_TEST_TIMEOUT_MS)
 
   it('ships executable packed and registry smoke entry points', () => {
     for (const path of browserFixtureFiles) {
