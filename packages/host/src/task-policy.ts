@@ -16,14 +16,16 @@ export function assertAssignedTaskRunnable(state: WorkspaceState, agentId: Agent
 
   const task = state.tasks[taskId]
   if (task === undefined) throw new Error(`task '${taskId}' does not exist`)
-  if (task.status !== 'open') throw new Error(`task '${taskId}' is ${task.status}`)
+  if (task.status !== 'open') {
+    throw new WorkspaceBusinessError('task-not-open', { taskId, status: task.status }, `task '${taskId}' is ${task.status}`)
+  }
 
   const assigned = Object.values(state.taskAssignments).some(assignment => (
     assignment.taskId === taskId && assignment.assigneeAgentId === agentId
   ))
   if (!assigned) {
     throw new WorkspaceBusinessError(
-      'invalid-task-authority',
+      'task-not-assigned',
       { taskId, agentId },
       `agent '${agentId}' is not assigned task '${taskId}'`,
     )

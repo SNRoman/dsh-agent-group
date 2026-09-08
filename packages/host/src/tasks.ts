@@ -9,6 +9,8 @@ import {
 } from './ids.ts'
 import {
   appendMemoryEntries,
+  appendTaskCancelledEvent,
+  appendTaskDelegationRevokedEvent,
   appendWorkspaceEvent,
   beginWorkspaceMutation,
   mintWorkspaceId,
@@ -49,6 +51,26 @@ export interface GrantTaskDelegationRequest {
 export interface GrantTaskDelegationResult {
   readonly state: WorkspaceState
   readonly delegationGrantId: GrantId
+}
+
+/** Fields required for a human to revoke one delegation grant. */
+export interface RevokeTaskDelegationRequest {
+  readonly humanId: HumanId
+  readonly delegationGrantId: GrantId
+}
+
+/** Fields required for a human to cancel one root or derived task. */
+export interface CancelTaskRequest {
+  readonly humanId: HumanId
+  readonly taskId: WorkspaceTaskId
+}
+
+/** Durable changes and live child runs affected by one cancellation. */
+export interface CancelTaskResult {
+  readonly state: WorkspaceState
+  readonly cancelledTaskIds: readonly WorkspaceTaskId[]
+  readonly expiredGrantIds: readonly GrantId[]
+  readonly runningChildRunIds: readonly ChildId[]
 }
 
 /** Fields required for a granted agent to assign a peer subtask. */
@@ -131,6 +153,13 @@ export function grantTaskDelegation(state: WorkspaceState, request: GrantTaskDel
   const rootTask = requireRootTask(state, request.rootTaskId)
   requireOpenTask(rootTask)
   requireEmployedAgent(state, request.granteeAgentId)
+  requireAssignmentFor(state, rootTask.id, request.granteeAgentId)
+  const existing = Object.values(state.delegationGrants).find(grant => (
+    grant.rootTaskId === rootTask.id
+    && grant.granteeAgentId === request.granteeAgentId
+    && grant.status === 'active'
+  ))
+  if (existing !== undefined) return { state, delegationGrantId: existing.id }
   let changed = beginWorkspaceMutation(state)
   let delegationGrantId: GrantId
   ;[changed, delegationGrantId] = mintWorkspaceId(changed, 'delegation-grant', DelegationGrantId)
@@ -157,15 +186,22 @@ export function assignDelegatedTask(state: WorkspaceState, request: AssignDelega
   requireEmployedAgent(state, request.actorAgentId)
   requireEmployedAgent(state, request.assigneeAgentId)
   const rootTask = requireRootTask(state, request.rootTaskId)
-  const grant = activeGrantFor(state, rootTask.id, request.actorAgentId)
+  requireOpenTask(rootTask)
+  const grant = grantFor(state, rootTask.id, request.actorAgentId)
   if (grant === undefined) {
     throw new WorkspaceBusinessError(
-      'invalid-task-authority',
-      { taskId: rootTask.id, agentId: request.actorAgentId },
-      `agent '${request.actorAgentId}' needs an active human delegation grant for root task '${rootTask.id}'`,
+      'delegation-grant-missing',
+      { lookup: 'root-agent', rootTaskId: rootTask.id, agentId: request.actorAgentId },
+      `agent '${request.actorAgentId}' has no human delegation grant for root task '${rootTask.id}'`,
     )
   }
-  requireOpenTask(rootTask)
+  if (grant.status !== 'active') {
+    throw new WorkspaceBusinessError(
+      'delegation-grant-inactive',
+      { delegationGrantId: grant.id },
+      `delegation grant '${grant.id}' is ${grant.status}`,
+    )
+  }
   let changed = beginWorkspaceMutation(state)
   let taskId: WorkspaceTaskId
   ;[changed, taskId] = mintWorkspaceId(changed, 'task', TaskId)
@@ -219,6 +255,74 @@ export function completeTask(state: WorkspaceState, request: CompleteTaskRequest
 }
 
 /**
+ * Revoke one active human delegation grant.
+ * @param state Immutable workspace state.
+ * @param request Human identity and durable grant id.
+ * @returns The updated workspace state.
+ */
+export function revokeTaskDelegation(state: WorkspaceState, request: RevokeTaskDelegationRequest): { readonly state: WorkspaceState } {
+  const grant = state.delegationGrants[request.delegationGrantId]
+  if (grant === undefined) {
+    throw new WorkspaceBusinessError(
+      'delegation-grant-missing',
+      { lookup: 'id', delegationGrantId: request.delegationGrantId },
+      `delegation grant '${request.delegationGrantId}' does not exist`,
+    )
+  }
+  if (grant.status !== 'active') {
+    throw new WorkspaceBusinessError(
+      'delegation-grant-inactive',
+      { delegationGrantId: grant.id },
+      `delegation grant '${grant.id}' is ${grant.status}`,
+    )
+  }
+  let changed = beginWorkspaceMutation(state)
+  ;[changed] = appendTaskDelegationRevokedEvent(changed, grant.id, request.humanId)
+  return {
+    state: {
+      ...changed,
+      delegationGrants: { ...changed.delegationGrants, [grant.id]: { ...grant, status: 'expired' } },
+    },
+  }
+}
+
+/**
+ * Cancel one derived task or every open task in a selected root tree.
+ * @param state Immutable workspace state.
+ * @param request Human identity and selected task id.
+ * @returns The updated state and exact durable/live identities affected.
+ */
+export function cancelTask(state: WorkspaceState, request: CancelTaskRequest): CancelTaskResult {
+  const selected = requireTask(state, request.taskId)
+  requireOpenTask(selected)
+  const cancelledTaskIds = Object.values(state.tasks)
+    .filter(task => task.status === 'open' && (selected.id === selected.rootTaskId ? task.rootTaskId === selected.id : task.id === selected.id))
+    .map(task => task.id)
+    .sort()
+  const cancelled = new Set(cancelledTaskIds)
+  const expiredGrantIds = selected.id === selected.rootTaskId
+    ? Object.values(state.delegationGrants)
+      .filter(grant => grant.rootTaskId === selected.id && grant.status === 'active')
+      .map(grant => grant.id)
+      .sort()
+    : []
+  const runningChildRunIds = Object.values(state.childRuns)
+    .filter(run => run.status === 'running' && cancelled.has(run.taskId))
+    .map(run => run.id)
+    .sort()
+
+  let changed = beginWorkspaceMutation(state)
+  for (const taskId of cancelledTaskIds) {
+    ;[changed] = appendTaskCancelledEvent(changed, taskId, request.humanId)
+  }
+  const tasks = { ...changed.tasks }
+  for (const taskId of cancelledTaskIds) tasks[taskId] = { ...tasks[taskId]!, status: 'cancelled' }
+  const delegationGrants = { ...changed.delegationGrants }
+  for (const grantId of expiredGrantIds) delegationGrants[grantId] = { ...delegationGrants[grantId]!, status: 'expired' }
+  return { state: { ...changed, tasks, delegationGrants }, cancelledTaskIds, expiredGrantIds, runningChildRunIds }
+}
+
+/**
  * Record an employed agent starting one internal child run for an open task.
  * @param state Immutable workspace state.
  * @param request Child-run start fields.
@@ -227,7 +331,9 @@ export function completeTask(state: WorkspaceState, request: CompleteTaskRequest
  */
 export function recordChildRunStarted(state: WorkspaceState, request: RecordChildRunStartedRequest): RecordChildRunStartedResult {
   requireEmployedAgent(state, request.parentAgentId)
-  requireOpenTask(requireTask(state, request.taskId))
+  const task = requireTask(state, request.taskId)
+  requireOpenTask(task)
+  requireAssignmentFor(state, task.id, request.parentAgentId)
   let changed = beginWorkspaceMutation(state)
   let childRunId: ChildId
   ;[changed, childRunId] = mintWorkspaceId(changed, 'child-run', ChildRunId)
@@ -301,25 +407,33 @@ function requireRootTask(state: WorkspaceState, taskId: WorkspaceTaskId): Worksp
 }
 
 function requireOpenTask(task: WorkspaceTask): void {
-  if (task.status !== 'open') throw new Error(`task '${task.id}' is ${task.status}`)
-}
-
-function requireAssignmentFor(state: WorkspaceState, taskId: WorkspaceTaskId, agentId: AgentId): void {
-  if (!Object.values(state.taskAssignments).some(assignment => assignment.taskId === taskId && assignment.assigneeAgentId === agentId)) {
+  if (task.status !== 'open') {
     throw new WorkspaceBusinessError(
-      'invalid-task-authority',
-      { taskId, agentId },
-      `agent '${agentId}' is not assigned task '${taskId}'`,
+      'task-not-open',
+      { taskId: task.id, status: task.status },
+      `task '${task.id}' is ${task.status}`,
     )
   }
 }
 
-function activeGrantFor(state: WorkspaceState, rootTaskId: WorkspaceTaskId, agentId: AgentId): DelegationGrant | undefined {
-  return Object.values(state.delegationGrants).find(grant => (
+function requireAssignmentFor(state: WorkspaceState, taskId: WorkspaceTaskId, agentId: AgentId): TaskAssignment {
+  const assignment = Object.values(state.taskAssignments).find(candidate => candidate.taskId === taskId && candidate.assigneeAgentId === agentId)
+  if (assignment === undefined) {
+    throw new WorkspaceBusinessError(
+      'task-not-assigned',
+      { taskId, agentId },
+      `agent '${agentId}' is not assigned task '${taskId}'`,
+    )
+  }
+  return assignment
+}
+
+function grantFor(state: WorkspaceState, rootTaskId: WorkspaceTaskId, agentId: AgentId): DelegationGrant | undefined {
+  const matching = Object.values(state.delegationGrants).filter(grant => (
     grant.rootTaskId === rootTaskId
     && grant.granteeAgentId === agentId
-    && grant.status === 'active'
   ))
+  return matching.find(grant => grant.status === 'active') ?? matching.at(-1)
 }
 
 function requireText(subject: string, value: string): void {

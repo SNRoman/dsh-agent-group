@@ -3,6 +3,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import {
   AgentId,
   DefinitionRevisionId,
+  DelegationGrantId,
   HumanId,
   MembershipId,
   RoomId,
@@ -12,7 +13,7 @@ import {
 } from '../packages/host/src/ids.ts'
 import { assertWorkspaceInvariants } from '../packages/host/src/invariant.ts'
 import { workspaceStateSchema } from '../packages/host/src/spec.ts'
-import { appendWorkspaceEvent, createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
+import { appendTaskCancelledEvent, appendTaskDelegationRevokedEvent, appendWorkspaceEvent, createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import {
   assignDelegatedTask,
   assignHumanTask,
@@ -225,12 +226,25 @@ describe('assertWorkspaceInvariants', () => {
       { type: 'task/delivery-failed', ...delivery, failureCode: 'delivery-rejected', failureSummary: 'Inbox rejected the message.' },
       { type: 'task/result', taskId: task.id, taskDeliveryAttemptId: delivery.taskDeliveryAttemptId, definitionRevisionId: revision.id, text: 'done' },
       { type: 'task/result-after-cancel', taskId: task.id, taskDeliveryAttemptId: delivery.taskDeliveryAttemptId, definitionRevisionId: revision.id, text: 'late result' },
-      { type: 'task/delegation-revoked', subjectId: grant.id },
-      { type: 'task/cancelled', subjectId: task.id },
     ]
     for (const event of events) {
       expect(acceptsRawEvent(state, event), event.type).toBe(true)
     }
+    const expiredGrant = {
+      ...state,
+      delegationGrants: { ...state.delegationGrants, [grant.id]: { ...grant, status: 'expired' as const } },
+    }
+    expect(acceptsRawEvent(expiredGrant, {
+      type: 'task/delegation-revoked', subjectId: grant.id, actor: { type: 'human', id: HumanId('owner') },
+    })).toBe(true)
+    const derived = Object.values(state.tasks).find(candidate => candidate.id !== candidate.rootTaskId)!
+    const cancelledTask = {
+      ...state,
+      tasks: { ...state.tasks, [derived.id]: { ...derived, status: 'cancelled' as const } },
+    }
+    expect(acceptsRawEvent(cancelledTask, {
+      type: 'task/cancelled', subjectId: derived.id, actor: { type: 'human', id: HumanId('owner') },
+    })).toBe(true)
   })
 
   test.each([
@@ -274,6 +288,99 @@ describe('assertWorkspaceInvariants', () => {
     })
     const parsed = workspaceStateSchema.parse(raw)
     expect(() => assertWorkspaceInvariants(parsed, state.workspaceId)).toThrow(/does not belong to its task assignee/)
+  })
+
+  test('accepts version-0 grants held by an agent other than the root assignee', () => {
+    const state = buildState()
+    const definition = Object.values(state.definitions)[0]!
+    const bob = mutateWorkspace(state, { type: 'agent/create', definitionId: definition.id, name: 'Bob' })
+    const grant = Object.values(bob.state.delegationGrants)[0]!
+    const delegated = Object.values(bob.state.taskAssignments).find(assignment => assignment.grantId === grant.id)!
+    const delegatedEvent = bob.state.events.find(event => event.type === 'task/delegated' && event.subjectId === delegated.id)!
+    const legacy = {
+      ...bob.state,
+      delegationGrants: { ...bob.state.delegationGrants, [grant.id]: { ...grant, granteeAgentId: bob.agentId } },
+      events: bob.state.events.map(event => event.id === delegatedEvent.id
+        ? { ...event, actor: { type: 'agent' as const, id: bob.agentId } }
+        : event),
+    }
+    expect(() => assertWorkspaceInvariants(legacy, WorkspaceId('local'))).not.toThrow()
+  })
+
+  test('accepts version-0 duplicate active grants for one root assignee', () => {
+    const state = buildState()
+    const grant = Object.values(state.delegationGrants)[0]!
+    const duplicateId = DelegationGrantId(`delegation-grant-${state.nextId}`)
+    const legacy = {
+      ...state,
+      nextId: state.nextId + 1,
+      delegationGrants: { ...state.delegationGrants, [duplicateId]: { ...grant, id: duplicateId } },
+    }
+    expect(() => assertWorkspaceInvariants(legacy, WorkspaceId('local'))).not.toThrow()
+  })
+
+  test('accepts version-0 child runs whose parent is not the task assignee', () => {
+    const state = buildState()
+    const definition = Object.values(state.definitions)[0]!
+    const bob = mutateWorkspace(state, { type: 'agent/create', definitionId: definition.id, name: 'Bob' })
+    const child = Object.values(bob.state.childRuns)[0]!
+    const legacy = {
+      ...bob.state,
+      childRuns: { ...bob.state.childRuns, [child.id]: { ...child, parentAgentId: bob.agentId } },
+    }
+    expect(() => assertWorkspaceInvariants(legacy, WorkspaceId('local'))).not.toThrow()
+  })
+
+  test('accepts version-0 cancelled tasks without cancellation events', () => {
+    const state = buildState()
+    const task = Object.values(state.tasks).find(candidate => candidate.id !== candidate.rootTaskId)!
+    const legacy = {
+      ...state,
+      tasks: { ...state.tasks, [task.id]: { ...task, status: 'cancelled' as const } },
+    }
+    expect(() => assertWorkspaceInvariants(legacy, WorkspaceId('local'))).not.toThrow()
+  })
+
+  test('rejects revocation events with a non-human actor, active record, or duplicate subject', () => {
+    const state = buildState()
+    const grant = Object.values(state.delegationGrants)[0]!
+    const agent = Object.values(state.agents)[0]!
+    const expired = {
+      ...state,
+      delegationGrants: { ...state.delegationGrants, [grant.id]: { ...grant, status: 'expired' as const } },
+    }
+    expect(acceptsRawEvent(expired, {
+      type: 'task/delegation-revoked', subjectId: grant.id, actor: { type: 'agent', id: agent.id },
+    })).toBe(false)
+    expect(acceptsRawEvent(state, {
+      type: 'task/delegation-revoked', subjectId: grant.id, actor: { type: 'human', id: HumanId('owner') },
+    })).toBe(false)
+    let revoked = expired
+    ;[revoked] = appendTaskDelegationRevokedEvent(revoked, grant.id, HumanId('owner'))
+    expect(acceptsRawEvent(revoked, {
+      type: 'task/delegation-revoked', subjectId: grant.id, actor: { type: 'human', id: HumanId('owner') },
+    })).toBe(false)
+  })
+
+  test('rejects cancellation events with a non-human actor, open record, or duplicate subject', () => {
+    const state = buildState()
+    const task = Object.values(state.tasks).find(candidate => candidate.id !== candidate.rootTaskId)!
+    const agent = Object.values(state.agents)[0]!
+    const cancelled = {
+      ...state,
+      tasks: { ...state.tasks, [task.id]: { ...task, status: 'cancelled' as const } },
+    }
+    expect(acceptsRawEvent(cancelled, {
+      type: 'task/cancelled', subjectId: task.id, actor: { type: 'agent', id: agent.id },
+    })).toBe(false)
+    expect(acceptsRawEvent(state, {
+      type: 'task/cancelled', subjectId: task.id, actor: { type: 'human', id: HumanId('owner') },
+    })).toBe(false)
+    let withCancellation = cancelled
+    ;[withCancellation] = appendTaskCancelledEvent(withCancellation, task.id, HumanId('owner'))
+    expect(acceptsRawEvent(withCancellation, {
+      type: 'task/cancelled', subjectId: task.id, actor: { type: 'human', id: HumanId('owner') },
+    })).toBe(false)
   })
 
   test('accepts a valid complete aggregate for its table key', () => {

@@ -3,13 +3,15 @@ import type { MessageSourceMap } from '@deepseek-ai/dsh-llm'
 import {
   DefinitionRevisionId,
   DelegationGrantId,
+  HumanId,
   RoomId,
   TaskDeliveryAttemptId,
   TaskId,
   WorkspaceEventId,
   WorkspaceId,
 } from '../../packages/host/src/ids.ts'
-import type { WorkspaceEvent, WorkspaceEventType } from '../../packages/host/src/types.ts'
+import { appendTaskCancelledEvent, appendTaskDelegationRevokedEvent } from '../../packages/host/src/state.ts'
+import type { WorkspaceEvent, WorkspaceEventType, WorkspaceState } from '../../packages/host/src/types.ts'
 
 const eventId = WorkspaceEventId('event-1')
 
@@ -74,6 +76,16 @@ const deliverySource: MessageSourceMap['agent-workspace-delivery'] = {
   sourceEventId: WorkspaceEventId('event-1'),
   taskDeliveryAttemptId: TaskDeliveryAttemptId('delivery-1'),
 }
+
+declare const workspaceState: WorkspaceState
+appendTaskCancelledEvent(workspaceState, TaskId('task-1'), HumanId('owner'))
+appendTaskDelegationRevokedEvent(workspaceState, DelegationGrantId('grant-1'), HumanId('owner'))
+
+// @ts-expect-error Cancellation helpers reject grant subjects at the typed boundary.
+appendTaskCancelledEvent(workspaceState, DelegationGrantId('grant-1'), HumanId('owner'))
+
+// @ts-expect-error Revocation helpers reject task subjects at the typed boundary.
+appendTaskDelegationRevokedEvent(workspaceState, TaskId('task-1'), HumanId('owner'))
 
 // @ts-expect-error Delivery events require the durable message identity.
 const deliveryWithoutMessage: WorkspaceEvent = {

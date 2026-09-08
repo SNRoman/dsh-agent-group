@@ -33,6 +33,8 @@ import type {
   RoomMembership,
   StopConversationCommand,
   SynchronizeDefinitionCommand,
+  TaskCancelledEvent,
+  TaskDelegationRevokedEvent,
   WorkspaceCommand,
   WorkspaceEvent,
   WorkspaceEventType,
@@ -40,7 +42,7 @@ import type {
   WorkspaceActor,
   WorkspaceSubjectId,
 } from './types.ts'
-import type { AgentDefinitionId as DefinitionId, AgentId as InstanceId, DefinitionRevisionId as RevisionId, MembershipId as RoomMembershipId, RoomId as WorkspaceRoomId, WorkspaceId } from './ids.ts'
+import type { AgentDefinitionId as DefinitionId, AgentId as InstanceId, DefinitionRevisionId as RevisionId, DelegationGrantId, HumanId, MembershipId as RoomMembershipId, RoomId as WorkspaceRoomId, TaskId, WorkspaceId } from './ids.ts'
 
 /** Create an empty aggregate for one local workspace. */
 export function createInitialState(workspaceId: WorkspaceId): WorkspaceState {
@@ -167,6 +169,46 @@ export function appendWorkspaceEvent(
   }
   if (childRunStatus !== undefined) throw new Error(`workspace event '${type}' cannot carry a child-run status`)
   const event: WorkspaceEvent = { ...base, type, ...eventDetails }
+  return [{ ...state, nextSequence: state.nextSequence + 1, events: [...state.events, event] }, event]
+}
+
+/**
+ * Append one human-authored task cancellation event with a statically typed subject.
+ * @param state Immutable workspace state.
+ * @param taskId Cancelled task identity.
+ * @param humanId Human actor identity.
+ * @returns State with the next sequence consumed and the appended event.
+ */
+export function appendTaskCancelledEvent(state: WorkspaceState, taskId: TaskId, humanId: HumanId): readonly [WorkspaceState, TaskCancelledEvent] {
+  const event: TaskCancelledEvent = {
+    id: WorkspaceEventId(`event-${state.nextSequence}`),
+    sequence: state.nextSequence,
+    type: 'task/cancelled',
+    subjectId: taskId,
+    actor: { type: 'human', id: humanId },
+  }
+  return [{ ...state, nextSequence: state.nextSequence + 1, events: [...state.events, event] }, event]
+}
+
+/**
+ * Append one human-authored delegation revocation event with a statically typed subject.
+ * @param state Immutable workspace state.
+ * @param delegationGrantId Revoked grant identity.
+ * @param humanId Human actor identity.
+ * @returns State with the next sequence consumed and the appended event.
+ */
+export function appendTaskDelegationRevokedEvent(
+  state: WorkspaceState,
+  delegationGrantId: DelegationGrantId,
+  humanId: HumanId,
+): readonly [WorkspaceState, TaskDelegationRevokedEvent] {
+  const event: TaskDelegationRevokedEvent = {
+    id: WorkspaceEventId(`event-${state.nextSequence}`),
+    sequence: state.nextSequence,
+    type: 'task/delegation-revoked',
+    subjectId: delegationGrantId,
+    actor: { type: 'human', id: humanId },
+  }
   return [{ ...state, nextSequence: state.nextSequence + 1, events: [...state.events, event] }, event]
 }
 

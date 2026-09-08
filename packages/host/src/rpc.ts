@@ -289,6 +289,14 @@ function business(error: AnyWorkspaceBusinessError): WorkspaceRpcResult {
       return businessFor(error)
     case 'invalid-task-authority':
       return businessFor(error)
+    case 'task-not-open':
+      return businessFor(error)
+    case 'task-not-assigned':
+      return businessFor(error)
+    case 'delegation-grant-missing':
+      return businessFor(error)
+    case 'delegation-grant-inactive':
+      return businessFor(error)
     default:
       return assertNever(error)
   }

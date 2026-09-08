@@ -346,13 +346,27 @@ function assertEventRelationships(state: WorkspaceState, event: WorkspaceEvent):
     case 'task/delegation-granted':
       requireEventSubject(event, state.delegationGrants, 'delegation grant')
       return
-    case 'task/delegation-revoked':
-      requireEventSubject(event, state.delegationGrants, 'delegation grant')
+    case 'task/delegation-revoked': {
+      const grant = requireEventSubject(event, state.delegationGrants, 'delegation grant')
+      if (event.actor?.type !== 'human' || grant.status !== 'expired') {
+        throw new Error(`delegation revocation event '${event.id}' is not a human revocation of an expired grant`)
+      }
+      const count = state.events.filter(candidate => candidate.type === event.type && candidate.subjectId === event.subjectId).length
+      if (count !== 1) throw new Error(`delegation grant '${grant.id}' has duplicate revocation events`)
       return
+    }
     case 'task/completed':
-    case 'task/cancelled':
       requireEventSubject(event, state.tasks, 'task')
       return
+    case 'task/cancelled': {
+      const task = requireEventSubject(event, state.tasks, 'task')
+      if (event.actor?.type !== 'human' || task.status !== 'cancelled') {
+        throw new Error(`task cancellation event '${event.id}' is not a human cancellation of a cancelled task`)
+      }
+      const count = state.events.filter(candidate => candidate.type === event.type && candidate.subjectId === event.subjectId).length
+      if (count !== 1) throw new Error(`task '${task.id}' has duplicate cancellation events`)
+      return
+    }
     case 'task/delivery-started':
     case 'task/delivery-accepted':
     case 'task/delivery-failed':

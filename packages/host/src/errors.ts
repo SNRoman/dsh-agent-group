@@ -13,6 +13,12 @@ export type WorkspaceBusinessErrorDetailsMap = {
   readonly 'duplicate-membership': { readonly roomId: string; readonly agentId: string }
   readonly 'stale-revision': { readonly definitionId: string; readonly revisionId: string }
   readonly 'invalid-task-authority': { readonly taskId: string; readonly agentId: string }
+  readonly 'task-not-open': { readonly taskId: string; readonly status: 'completed' | 'cancelled' }
+  readonly 'task-not-assigned': { readonly taskId: string; readonly agentId: string }
+  readonly 'delegation-grant-missing':
+    | { readonly lookup: 'id'; readonly delegationGrantId: string }
+    | { readonly lookup: 'root-agent'; readonly rootTaskId: string; readonly agentId: string }
+  readonly 'delegation-grant-inactive': { readonly delegationGrantId: string }
 }
 
 /** Stable code accepted by {@link WorkspaceBusinessError}. */

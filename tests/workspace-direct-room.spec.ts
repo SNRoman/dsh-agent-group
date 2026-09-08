@@ -219,7 +219,7 @@ describe('direct workspace rooms', () => {
     }))
   })
 
-  it('identifies invalid delegated-task authority by stable task and agent ids', () => {
+  it('distinguishes missing delegation grants from task assignment failures', () => {
     const fixture = twoAgents()
     const assigned = assignHumanTask(fixture.state, {
       humanId: HumanId('owner'), assigneeAgentId: fixture.aliceId, title: 'root task',
@@ -230,12 +230,12 @@ describe('direct workspace rooms', () => {
       rootTaskId: assigned.taskId,
       title: 'unauthorized child',
     })).toThrowError(expect.objectContaining({
-      code: 'invalid-task-authority',
-      details: { taskId: assigned.taskId, agentId: fixture.bobId },
+      code: 'delegation-grant-missing',
+      details: { lookup: 'root-agent', rootTaskId: assigned.taskId, agentId: fixture.bobId },
     }))
     expect(() => assertAssignedTaskRunnable(assigned.state, fixture.bobId, assigned.taskId))
       .toThrowError(expect.objectContaining({
-        code: 'invalid-task-authority',
+        code: 'task-not-assigned',
         details: { taskId: assigned.taskId, agentId: fixture.bobId },
       }))
   })
