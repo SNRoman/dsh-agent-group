@@ -11,6 +11,7 @@ const taskId = TaskId('task-1')
 const attemptId = TaskDeliveryAttemptId('attempt-1')
 const agentId = AgentId('agent-1')
 const sessionId = SessionId('session-1')
+const secretCanary = 'API_KEY=FAKE_REVIEW_CANARY'
 
 function event(type: string, data: unknown, seq: number): SessionEvent {
   return { type, data, seq, time: seq } as unknown as SessionEvent
@@ -124,14 +125,14 @@ describe('WorkspaceActivityStream', () => {
     expect(stream.snapshot().agents).toContainEqual({ agentId, status: 'idle', usingTool: false })
   })
 
-  it('keeps process failures until acknowledgement without exposing unsafe error fields', () => {
+  it('redacts record summaries from turn failures until acknowledgement', () => {
     const stream = new WorkspaceActivityStream()
     const identity = claimed(stream, MessageId('message-failed'), 4)
     stream.acceptSessionEvent({ ...identity, event: event('turn/end', {
       turn: 4,
       reason: {
         kind: 'error',
-        error: { code: 'MODEL_ERROR', message: 'provider failed', env: { API_KEY: 'secret' }, host: { handle: true } },
+        error: { code: 'MODEL_ERROR', summary: secretCanary, env: { API_KEY: secretCanary }, host: { handle: true } },
       },
     }, 1) })
     stream.retire(identity)
@@ -142,13 +143,41 @@ describe('WorkspaceActivityStream', () => {
       agentId,
       status: 'failed',
       usingTool: false,
-      error: { code: 'MODEL_ERROR', summary: 'provider failed' },
+      error: { code: 'agent-turn-failed', summary: 'Agent turn failed.' },
     })
-    expect(JSON.stringify(failed)).not.toContain('secret')
+    expect(JSON.stringify(failed)).not.toContain(secretCanary)
     expect(JSON.stringify(failed)).not.toContain('handle')
 
     stream.acknowledgeAgentFailure(agentId)
     expect(stream.snapshot().agents).toContainEqual({ agentId, status: 'idle', usingTool: false })
+  })
+
+  it('redacts string tool failures from activity blocks', () => {
+    const stream = new WorkspaceActivityStream()
+    const identity = claimed(stream, MessageId('message-tool-failed'), 5)
+    stream.acceptSessionEvent({ ...identity, event: event('tool/call', {
+      turn: 5, callId: 'call-secret', name: 'read_file', arguments: '{}',
+    }, 1) })
+    stream.acceptSessionEvent({ ...identity, event: event('tool/result', {
+      turn: 5,
+      message: {
+        source: { kind: 'tool', callId: 'call-secret' },
+        content: [{
+          type: 'tool-result',
+          toolCallId: 'call-secret',
+          isError: true,
+          content: [{ type: 'text', text: secretCanary }],
+        }],
+      },
+    }, 2) })
+
+    const snapshot = stream.snapshot()
+    expect(snapshot.activities[0]?.blocks).toContainEqual(expect.objectContaining({
+      kind: 'tool',
+      status: 'failed',
+      error: { code: 'tool-failed', summary: 'Tool call failed.' },
+    }))
+    expect(JSON.stringify(snapshot)).not.toContain(secretCanary)
   })
 
   it('replaces task-delivery failures from each durable workspace projection', () => {

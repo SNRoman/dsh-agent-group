@@ -1,10 +1,11 @@
 import { describe, expect, test, vi } from 'vitest'
-import type { Context } from '@deepseek-ai/cordis'
+import { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { AgentId, RoomId, TaskDeliveryAttemptId, TaskId } from '../packages/host/src/ids.ts'
+import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
 import { EmployeeAgentPool } from '../packages/host/src/runtime.ts'
 import type { EmployeeSessionSource } from '../packages/host/src/runtime.ts'
 import { WorkspaceTurnTracker } from '../packages/host/src/turn-tracker.ts'
@@ -396,5 +397,95 @@ describe('WorkspaceTurnTracker', () => {
       async () => ({ kind: 'enter', messages: [delivery] }),
     )
     expect(decision).toEqual({ kind: 'enter', messages: [delivery, recall] })
+  })
+})
+
+describe('AgentWorkspaceDomainService delivery failures', () => {
+  test('materialization failure remains display-safe until acknowledged', async () => {
+    const service = new AgentWorkspaceDomainService(new Context())
+    const secretCanary = 'API_KEY=FAKE_REVIEW_CANARY'
+    const agentId = AgentId('alice')
+    vi.spyOn(service, 'ensureEmployee').mockRejectedValue(new Error(secretCanary))
+
+    await expect(service.deliver(agentId, text('deliver'))).rejects.toThrow(secretCanary)
+
+    const failed = service.activitySnapshot()
+    expect(failed.agents).toContainEqual({
+      agentId,
+      status: 'failed',
+      usingTool: false,
+      error: { code: 'agent-materialization-failed', summary: 'Agent could not be started.' },
+    })
+    expect(JSON.stringify(failed)).not.toContain(secretCanary)
+    service.acknowledgeAgentFailure(agentId)
+    expect(service.activitySnapshot().agents).toContainEqual({ agentId, status: 'idle', usingTool: false })
+  })
+
+  test('session flush failure remains display-safe until acknowledged', async () => {
+    const service = new AgentWorkspaceDomainService(new Context())
+    const secretCanary = 'API_KEY=FAKE_REVIEW_CANARY'
+    const agentId = AgentId('alice')
+    const session = {} as Agent['session']
+    const agent = { id: SessionId('alice-session'), session } as Agent
+    vi.spyOn(service, 'ensureEmployee').mockResolvedValue({ agent, dispose: vi.fn(async () => {}) })
+    const tracker = new WorkspaceTurnTracker()
+    vi.spyOn(tracker, 'deliver').mockResolvedValue({
+      output: [], stopReason: { kind: 'completed' }, interrupted: false,
+    })
+    const flush = vi.fn(async () => { throw new Error(secretCanary) })
+    const internals = service as unknown as {
+      ctx: { get(name: string): unknown }
+      trackers: Map<AgentId, WorkspaceTurnTracker>
+    }
+    internals.ctx = { get: name => name === 'sessions' ? { flush } : undefined }
+    internals.trackers.set(agentId, tracker)
+
+    await expect(service.deliver(agentId, text('deliver'))).rejects.toThrow(secretCanary)
+
+    const failed = service.activitySnapshot()
+    expect(failed.agents).toContainEqual({
+      agentId,
+      status: 'failed',
+      usingTool: false,
+      error: { code: 'agent-session-flush-failed', summary: 'Agent session could not be saved.' },
+    })
+    expect(JSON.stringify(failed)).not.toContain(secretCanary)
+    service.acknowledgeAgentFailure(agentId)
+    expect(service.activitySnapshot().agents).toContainEqual({ agentId, status: 'idle', usingTool: false })
+  })
+
+  test('flush failure preserves a more specific tracker failure', async () => {
+    const service = new AgentWorkspaceDomainService(new Context())
+    const agentId = AgentId('alice')
+    const session = {} as Agent['session']
+    const agent = { id: SessionId('alice-session'), session } as Agent
+    vi.spyOn(service, 'ensureEmployee').mockResolvedValue({ agent, dispose: vi.fn(async () => {}) })
+    const tracker = new WorkspaceTurnTracker()
+    vi.spyOn(tracker, 'deliver').mockResolvedValue({
+      output: [], stopReason: { kind: 'error', error: { code: 'provider' } }, interrupted: false,
+    })
+    const internals = service as unknown as {
+      activityStream: { recordAgentFailure(agentId: AgentId, error: { code: string; summary: string }): void }
+      ctx: { get(name: string): unknown }
+      trackers: Map<AgentId, WorkspaceTurnTracker>
+    }
+    internals.activityStream.recordAgentFailure(agentId, {
+      code: 'agent-turn-failed', summary: 'Agent turn failed.',
+    })
+    internals.ctx = {
+      get: name => name === 'sessions'
+        ? { flush: async () => { throw new Error('secondary flush failure') } }
+        : undefined,
+    }
+    internals.trackers.set(agentId, tracker)
+
+    await expect(service.deliver(agentId, text('deliver'))).rejects.toThrow(/secondary flush failure/)
+
+    expect(service.activitySnapshot().agents).toContainEqual({
+      agentId,
+      status: 'failed',
+      usingTool: false,
+      error: { code: 'agent-turn-failed', summary: 'Agent turn failed.' },
+    })
   })
 })

@@ -306,25 +306,31 @@ export class WorkspaceActivityStream {
     this.publish()
   }
 
-  /** Remove a queued activity and retain only a display-safe agent failure. */
-  discard(activityId: WorkspaceActivityId, reason: unknown, fallbackCode: string): void {
+  /** Remove a queued activity and retain its explicitly display-safe failure. */
+  discard(activityId: WorkspaceActivityId, error: WorkspaceActivityError): void {
     const activity = this.activities.get(activityId)
     if (activity === undefined) return
     this.activities.delete(activityId)
     this.activityIdByMessage.delete(activity.messageId)
     this.knownAgents.add(activity.agentId)
-    this.failures.set(activity.agentId, safeError(reason, fallbackCode))
+    this.failures.set(activity.agentId, { ...error })
     this.publish()
   }
 
   /** Retain a process-local failure until the browser acknowledges it. */
-  recordAgentFailure(agentId: AgentId, reason: unknown, fallbackCode = 'activity-failed'): void {
-    const next = safeError(reason, fallbackCode)
+  recordAgentFailure(agentId: AgentId, error: WorkspaceActivityError): void {
+    const next = { ...error }
     this.knownAgents.add(agentId)
     const current = this.failures.get(agentId)
     if (current?.code === next.code && current.summary === next.summary) return
     this.failures.set(agentId, next)
     this.publish()
+  }
+
+  /** Retain a fallback failure only when no more specific process failure exists. */
+  recordAgentFailureIfAbsent(agentId: AgentId, error: WorkspaceActivityError): void {
+    if (this.failures.has(agentId)) return
+    this.recordAgentFailure(agentId, error)
   }
 
   /** Clear one process-local failure without changing durable Workspace history. */
@@ -464,15 +470,17 @@ export class WorkspaceActivityStream {
       name: existing?.name ?? '',
       arguments: existing?.arguments ?? '',
       status: isError ? 'failed' : 'completed',
-      ...(resultText === '' ? {} : { resultText }),
-      ...(isError ? { error: safeError(data?.error ?? resultText, 'tool-failed') } : {}),
+      ...(!isError && resultText !== '' ? { resultText } : {}),
+      ...(isError ? { error: { code: 'tool-failed', summary: 'Tool call failed.' } } : {}),
     })
   }
 
   private acceptTurnEnd(activity: MutableActivity, data: Record<string, unknown> | undefined): boolean {
     const reason = recordOf(data?.reason)
     const terminalReason = stringOf(reason?.kind) ?? 'completed'
-    const error = terminalReason === 'error' ? safeError(reason?.error, 'agent-turn-failed') : undefined
+    const error = terminalReason === 'error'
+      ? { code: 'agent-turn-failed', summary: 'Agent turn failed.' }
+      : undefined
     const changed = activity.status !== 'settled'
       || activity.terminalReason !== terminalReason
       || !sameError(activity.error, error)
@@ -559,15 +567,6 @@ function toolResultText(content: readonly unknown[]): string {
   return parts.join('\n')
 }
 
-function safeError(reason: unknown, fallbackCode: string): WorkspaceActivityError {
-  const record = recordOf(reason)
-  const code = nonEmptyString(record?.code) ?? fallbackCode
-  const summary = nonEmptyString(record?.message)
-    ?? nonEmptyString(record?.summary)
-    ?? (typeof reason === 'string' && reason.trim() !== '' ? reason : 'Agent activity failed.')
-  return { code, summary }
-}
-
 function sameError(left: WorkspaceActivityError | undefined, right: WorkspaceActivityError | undefined): boolean {
   return left?.code === right?.code && left?.summary === right?.summary
 }
@@ -609,10 +608,6 @@ function recordOf(value: unknown): Record<string, unknown> | undefined {
 
 function stringOf(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
-}
-
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() !== '' ? value : undefined
 }
 
 function integerOf(value: unknown): number | undefined {

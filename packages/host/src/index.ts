@@ -331,12 +331,29 @@ export class AgentWorkspaceDomainService extends Service {
    * the delivery.
    */
   async deliver(agentId: AgentId, delivery: UserMessage, recall?: UserMessage, source?: WorkspaceActivitySource): Promise<WorkspaceTurnOutcome> {
-    const handle = await this.ensureEmployee(agentId)
+    let handle: AgentHandle
+    try {
+      handle = await this.ensureEmployee(agentId)
+    } catch (error) {
+      this.activityStream.recordAgentFailureIfAbsent(agentId, {
+        code: 'agent-materialization-failed',
+        summary: 'Agent could not be started.',
+      })
+      throw error
+    }
     const tracker = this.trackers.get(agentId)
     if (tracker === undefined) throw new Error(`agent '${agentId}' has no turn tracker`)
     const outcome = await tracker.deliver(handle.agent, delivery, recall, source)
     const sessions = this.ctx.get('sessions') as { flush(session: Session): Promise<boolean> } | undefined
-    await sessions?.flush(handle.agent.session)
+    try {
+      await sessions?.flush(handle.agent.session)
+    } catch (error) {
+      this.activityStream.recordAgentFailureIfAbsent(agentId, {
+        code: 'agent-session-flush-failed',
+        summary: 'Agent session could not be saved.',
+      })
+      throw error
+    }
     return outcome
   }
 

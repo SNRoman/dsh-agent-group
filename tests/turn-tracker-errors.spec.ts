@@ -81,7 +81,7 @@ describe('WorkspaceTurnTracker delivery errors', () => {
     })
   })
 
-  test('a synchronous followup failure remains display-safe until acknowledged', async () => {
+  test('a synchronous followup Error message remains display-safe until acknowledged', async () => {
     const events = fakeEvents()
     const stream = new WorkspaceActivityStream()
     const tracker = new WorkspaceTurnTracker({
@@ -91,9 +91,10 @@ describe('WorkspaceTurnTracker delivery errors', () => {
     })
     tracker.install(events as unknown as Context)
     const delivery = text('deliver')
-    const failure = Object.assign(new Error('provider unavailable'), {
+    const secretCanary = 'API_KEY=FAKE_REVIEW_CANARY'
+    const failure = Object.assign(new Error(secretCanary), {
       code: 'FOLLOWUP_FAILED',
-      env: { API_KEY: 'secret' },
+      env: { API_KEY: secretCanary },
     })
     const agent = { followup: vi.fn(() => { throw failure }) } as unknown as Agent
 
@@ -102,7 +103,7 @@ describe('WorkspaceTurnTracker delivery errors', () => {
       delivery,
       undefined,
       { kind: 'room', roomId: RoomId('room-1') },
-    )).rejects.toThrow(/provider unavailable/)
+    )).rejects.toThrow(secretCanary)
 
     const snapshot = stream.snapshot()
     expect(snapshot.activities).toEqual([])
@@ -110,9 +111,9 @@ describe('WorkspaceTurnTracker delivery errors', () => {
       agentId: AgentId('alice'),
       status: 'failed',
       usingTool: false,
-      error: { code: 'FOLLOWUP_FAILED', summary: 'provider unavailable' },
+      error: { code: 'followup-failed', summary: 'Agent delivery could not be queued.' },
     })
-    expect(JSON.stringify(snapshot)).not.toContain('secret')
+    expect(JSON.stringify(snapshot)).not.toContain(secretCanary)
 
     stream.acknowledgeAgentFailure(AgentId('alice'))
     expect(stream.snapshot().agents).toContainEqual({

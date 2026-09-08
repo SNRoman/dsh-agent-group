@@ -92,12 +92,20 @@ export class WorkspaceTurnTracker {
     events.on('agent/inbox/discarded', ((payload: { message: UserMessage }) => {
       const pending = this.byMessage.get(payload.message.id)
       if (pending === undefined) return
-      this.settleRejected(pending, new Error('delivery discarded before its turn was claimed'), 'delivery-discarded')
+      this.settleRejected(
+        pending,
+        new Error('delivery discarded before its turn was claimed'),
+        { code: 'delivery-discarded', summary: 'Agent delivery was discarded before its turn was claimed.' },
+      )
     }) as never)
 
     events.on('agent/disposed', (() => {
       for (const pending of [...this.byMessage.values()]) {
-        this.settleRejected(pending, new Error('agent disposed before the delivery settled'), 'agent-disposed')
+        this.settleRejected(
+          pending,
+          new Error('agent disposed before the delivery settled'),
+          { code: 'agent-disposed', summary: 'agent disposed before the delivery settled' },
+        )
       }
     }) as never)
 
@@ -185,7 +193,11 @@ export class WorkspaceTurnTracker {
       try {
         agent.followup(delivery)
       } catch (error) {
-        this.settleRejected(pending, error, 'followup-failed')
+        this.settleRejected(
+          pending,
+          error,
+          { code: 'followup-failed', summary: 'Agent delivery could not be queued.' },
+        )
       }
     })
   }
@@ -197,12 +209,16 @@ export class WorkspaceTurnTracker {
     pending.resolve(outcome)
   }
 
-  private settleRejected(pending: PendingDelivery, reason: unknown, fallbackCode: string): void {
+  private settleRejected(
+    pending: PendingDelivery,
+    reason: unknown,
+    displayError: { readonly code: string; readonly summary: string },
+  ): void {
     if (pending.settled) return
     pending.settled = true
     this.removePending(pending)
     if (pending.activityId !== undefined && this.options !== undefined) {
-      this.options.stream.discard(pending.activityId, reason, fallbackCode)
+      this.options.stream.discard(pending.activityId, displayError)
     }
     pending.reject(reason)
   }
