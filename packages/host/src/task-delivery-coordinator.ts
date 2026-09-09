@@ -335,7 +335,7 @@ function completedTaskResult(
   identity: { readonly taskId: TaskId; readonly attemptId: TaskDeliveryAttemptId },
 ): string | undefined {
   return state.events.findLast(event => (
-    event.type === 'task/result'
+    (event.type === 'task/result' || event.type === 'task/result-after-cancel')
     && event.taskId === identity.taskId
     && event.taskDeliveryAttemptId === identity.attemptId
   ))?.text

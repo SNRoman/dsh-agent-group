@@ -1,0 +1,74 @@
+{
+  "schemas": [
+    {
+      "name": "workspace_delegate_task",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "rootTaskId": {
+            "type": "string",
+            "description": "Durable Agent Workspace task id."
+          },
+          "assigneeAgentId": {
+            "type": "string",
+            "description": "Durable id of the employed agent that should receive the peer task."
+          },
+          "title": {
+            "type": "string",
+            "description": "Complete title and instruction for the delegated task."
+          }
+        },
+        "required": ["rootTaskId", "assigneeAgentId", "title"]
+      }
+    },
+    {
+      "name": "workspace_run_child",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "description": "Durable Agent Workspace task id."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Complete prompt for the one-shot child."
+          }
+        },
+        "required": ["taskId", "prompt"]
+      }
+    },
+    {
+      "name": "workspace_complete_task",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "description": "Durable Agent Workspace task id."
+          },
+          "result": {
+            "type": "string",
+            "description": "Complete textual task result to store durably."
+          }
+        },
+        "required": ["taskId", "result"]
+      }
+    }
+  ],
+  "execution": {
+    "isError": false,
+    "content": [
+      {
+        "type": "text",
+        "text": "Completed task task-5."
+      }
+    ],
+    "concludesTurn": true,
+    "value": {
+      "taskId": "task-5",
+      "attemptId": "task-delivery-attempt-8",
+      "status": "completed"
+    }
+  }
+}

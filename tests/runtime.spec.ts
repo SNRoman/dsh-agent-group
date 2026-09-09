@@ -1,19 +1,22 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { readFile, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
+import { CallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import Storage from '@deepseek-ai/dsh-storage'
 import { apply as domainApply, Config as DomainConfig, inject as domainInject } from '@deepseek-ai/dsh-storage-domain'
 import { apply as jsonApply, Config as JsonConfig, inject as jsonInject } from '@deepseek-ai/dsh-storage-json'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
-import { AgentId, RoomId, TaskDeliveryAttemptId, TaskId } from '../packages/host/src/ids.ts'
+import { ToolRuntime } from '@deepseek-ai/dsh-tools'
+import { AgentId, HumanId, RoomId, TaskDeliveryAttemptId, TaskId } from '../packages/host/src/ids.ts'
 import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
 import { EmployeeAgentPool } from '../packages/host/src/runtime.ts'
 import type { EmployeeSessionSource } from '../packages/host/src/runtime.ts'
+import { acceptTaskDelivery, startTaskDelivery } from '../packages/host/src/task-delivery.ts'
+import { assignHumanTask } from '../packages/host/src/tasks.ts'
 import { WorkspaceTurnTracker } from '../packages/host/src/turn-tracker.ts'
 import { WorkspaceActivityStream } from '../packages/host/src/activity-stream.ts'
 
@@ -272,6 +275,73 @@ describe('AgentWorkspaceDomainService task-tool lifecycle', () => {
         'workspace_run_child',
         'workspace_delegate_task',
       ])
+    } finally {
+      for (const fiber of fibers.reverse()) await fiber.dispose()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('exposes the employee completion tool through the loaded DSH registry', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agent-workspace-real-tools-'))
+    const employee = { id: SessionId('employee-tool-session') } as Agent
+    const agents = {
+      create: vi.fn(async () => ({ agent: employee, dispose: vi.fn(async () => {}) })),
+      resume: vi.fn(),
+    }
+    const systemPrompt = {
+      tools: vi.fn(() => () => {}),
+      section: vi.fn(() => () => {}),
+    }
+    const ctx = new Context()
+    const fibers = []
+    try {
+      fibers.push(await ctx.plugin(Storage))
+      fibers.push(await ctx.plugin({ apply: jsonApply, Config: JsonConfig, inject: jsonInject }, { root }))
+      fibers.push(await ctx.plugin({ apply: domainApply, Config: DomainConfig, inject: domainInject }, { backend: 'json' }))
+      fibers.push(await ctx.plugin(promptCtx => promptCtx.provide('systemPrompt', systemPrompt)))
+      fibers.push(await ctx.plugin(modelCtx => modelCtx.provide('agentDefaultModel', {
+        currentSelection: () => ({ provider: 'scripted', model: 'scripted-model' }),
+      })))
+      fibers.push(await ctx.plugin(ToolRuntime))
+      fibers.push(await ctx.plugin(agentCtx => agentCtx.provide('agents', agents)))
+      const host = await ctx.plugin(AgentWorkspaceDomainService)
+      fibers.push(host)
+      const service = ctx.agentWorkspace
+
+      await service.execute({ type: 'definition/create', name: 'Engineer', description: 'Build', instructions: 'Ship' })
+      const definitionId = Object.values(service.snapshot().definitions)[0]?.id
+      if (definitionId === undefined) throw new Error('expected definition')
+      await service.execute({ type: 'agent/create', definitionId, name: 'Alice' })
+      const employeeId = Object.values(service.snapshot().agents)[0]?.id
+      if (employeeId === undefined) throw new Error('expected employee')
+      await service.ensureEmployee(employeeId)
+
+      const assigned = assignHumanTask(service.snapshot(), {
+        humanId: HumanId('owner'), assigneeAgentId: employeeId, title: 'Complete through the real tool runtime',
+      })
+      const started = startTaskDelivery(assigned.state, { taskId: assigned.taskId })
+      const accepted = acceptTaskDelivery(started.state, {
+        taskId: assigned.taskId, attemptId: started.attemptId, messageId: started.message.id,
+      })
+      await service.apply(() => accepted.state)
+
+      const schemas = ctx.tools.schemas(employee)
+      const execution = await ctx.tools.execute({
+        callId: CallId('employee-complete-call'),
+        name: 'workspace_complete_task',
+        arguments: { taskId: assigned.taskId, result: 'REAL_TOOL_RESULT' },
+        agent: employee,
+        signal: new AbortController().signal,
+      })
+      const modelVisible = {
+        schemas: schemas.map(schema => ({ name: schema.name, parameters: schema.parameters })),
+        execution,
+      }
+      const expected = JSON.parse(await readFile(
+        new URL('./fixtures/task-tools/employee-completion.json', import.meta.url),
+        'utf8',
+      ))
+      expect(modelVisible).toEqual(expected)
     } finally {
       for (const fiber of fibers.reverse()) await fiber.dispose()
       await rm(root, { recursive: true, force: true })

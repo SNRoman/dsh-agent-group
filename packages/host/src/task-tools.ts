@@ -6,7 +6,7 @@ import type { ToolDefinition, ToolRunContext, ToolRuntime } from '@deepseek-ai/d
 import { WorkspaceBusinessError } from './errors.ts'
 import { AgentId, TaskId } from './ids.ts'
 import type { AgentId as WorkspaceAgentId, TaskDeliveryAttemptId, TaskId as WorkspaceTaskId } from './ids.ts'
-import { inspectTaskDelivery, terminalizeTask } from './task-delivery.ts'
+import { inspectTaskDelivery, recordTaskResultAfterCancel, terminalizeTask } from './task-delivery.ts'
 import { assignDelegatedTask } from './tasks.ts'
 import type { WorkspaceState } from './types.ts'
 
@@ -34,6 +34,18 @@ const taskIdParameter = {
 }
 
 const textOutput = (text: string) => [{ type: 'text' as const, text }]
+
+class WorkspaceTaskToolError extends Error {
+  override readonly name = 'WorkspaceTaskToolError'
+  readonly code: 'WORKSPACE_TASK_POLICY_DENIED' | 'WORKSPACE_TASK_CALLER_UNAVAILABLE'
+
+  constructor(code: 'WORKSPACE_TASK_POLICY_DENIED' | 'WORKSPACE_TASK_CALLER_UNAVAILABLE') {
+    super(code === 'WORKSPACE_TASK_POLICY_DENIED'
+      ? 'Workspace task request is not permitted.'
+      : 'Workspace task tool caller is not an active employee.')
+    this.code = code
+  }
+}
 
 /** Register all task tools and return one idempotent disposer for their definitions. */
 export function registerWorkspaceTaskTools(registry: WorkspaceToolRegistry, host: WorkspaceTaskToolHost): () => void {
@@ -176,20 +188,23 @@ function createWorkspaceTaskTools(host: WorkspaceTaskToolHost): readonly ToolDef
         await host.apply(current => {
           const inspection = inspectTaskDelivery(current, taskId)
           if (inspection.attemptId === undefined || inspection.phase !== 'accepted') {
-            throw new Error('Task completion requires the current accepted delivery attempt.')
+            throw new WorkspaceTaskToolError('WORKSPACE_TASK_POLICY_DENIED')
           }
           const actor = current.agents[actorAgentId]
           if (actor?.employmentStatus !== 'employed') {
-            throw new Error('Workspace task tool caller is not an active employee.')
+            throw new WorkspaceTaskToolError('WORKSPACE_TASK_CALLER_UNAVAILABLE')
           }
           attemptId = inspection.attemptId
-          return terminalizeTask(current, {
+          const request = {
             actorAgentId,
             taskId,
             attemptId: inspection.attemptId,
             result: args.result,
             definitionRevisionId: actor.definitionRevisionId,
-          }).state
+          }
+          return current.tasks[taskId]?.status === 'cancelled'
+            ? recordTaskResultAfterCancel(current, request).state
+            : terminalizeTask(current, request).state
         })
       })
       if (attemptId === undefined) throw new Error('Workspace task completion did not settle an accepted attempt.')
@@ -202,11 +217,11 @@ function createWorkspaceTaskTools(host: WorkspaceTaskToolHost): readonly ToolDef
 }
 
 function resolveActor(host: WorkspaceTaskToolHost, exec: ToolRunContext): WorkspaceAgentId {
-  if (exec.agent === undefined) throw new Error('Workspace task tools require an employee agent caller.')
+  if (exec.agent === undefined) throw new WorkspaceTaskToolError('WORKSPACE_TASK_CALLER_UNAVAILABLE')
   const agentId = host.agentIdFor(exec.agent)
-  if (agentId === undefined) throw new Error('Workspace task tool caller is not an active employee.')
+  if (agentId === undefined) throw new WorkspaceTaskToolError('WORKSPACE_TASK_CALLER_UNAVAILABLE')
   if (host.snapshot().agents[agentId]?.employmentStatus !== 'employed') {
-    throw new Error('Workspace task tool caller is not an active employee.')
+    throw new WorkspaceTaskToolError('WORKSPACE_TASK_CALLER_UNAVAILABLE')
   }
   return agentId
 }
@@ -219,13 +234,13 @@ async function runAsActiveActor<Result>(agentId: WorkspaceAgentId, operation: ()
   try {
     return await operation()
   } catch (error) {
-    if (
-      error instanceof WorkspaceBusinessError
-      && (error.code === 'agent-missing' || error.code === 'agent-departed')
-      && 'agentId' in error.details
-      && error.details.agentId === agentId
-    ) {
-      throw new Error('Workspace task tool caller is not an active employee.')
+    if (error instanceof WorkspaceBusinessError) {
+      const callerUnavailable = (error.code === 'agent-missing' || error.code === 'agent-departed')
+        && 'agentId' in error.details
+        && error.details.agentId === agentId
+      throw new WorkspaceTaskToolError(callerUnavailable
+        ? 'WORKSPACE_TASK_CALLER_UNAVAILABLE'
+        : 'WORKSPACE_TASK_POLICY_DENIED')
     }
     throw error
   }

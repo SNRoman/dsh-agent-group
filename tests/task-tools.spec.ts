@@ -13,6 +13,7 @@ import { TaskDeliveryCoordinator } from '../packages/host/src/task-delivery-coor
 import type { TaskDeliveryCoordinatorHost } from '../packages/host/src/task-delivery-coordinator.ts'
 import {
   assignHumanTask,
+  cancelTask,
   grantTaskDelegation,
   recordChildRunStarted,
   revokeTaskDelegation,
@@ -133,6 +134,26 @@ function registeredTools(host: WorkspaceTaskToolHost) {
   return { tools, disposed, dispose, get }
 }
 
+function expectOpaquePolicyError(error: unknown, identifiers: readonly string[]): void {
+  expect(error).toMatchObject({
+    name: 'WorkspaceTaskToolError',
+    code: 'WORKSPACE_TASK_POLICY_DENIED',
+    message: 'Workspace task request is not permitted.',
+  })
+  const serialized = JSON.stringify(error)
+  for (const identifier of identifiers) expect(serialized).not.toContain(identifier)
+}
+
+function expectOpaqueCallerError(error: unknown, identifiers: readonly string[]): void {
+  expect(error).toMatchObject({
+    name: 'WorkspaceTaskToolError',
+    code: 'WORKSPACE_TASK_CALLER_UNAVAILABLE',
+    message: 'Workspace task tool caller is not an active employee.',
+  })
+  const serialized = JSON.stringify(error)
+  for (const identifier of identifiers) expect(serialized).not.toContain(identifier)
+}
+
 describe('agent-facing workspace task tools', () => {
   test('registers three actor-free schemas and rejects forged actor properties', async () => {
     const fixture = createWorkspace()
@@ -194,21 +215,21 @@ describe('agent-facing workspace task tools', () => {
       title: 'Implement the API',
     }
 
-    await expect(delegate.execute(args, toolExecution())).rejects.toThrow('Workspace task tools require an employee agent caller.')
+    const missing = await delegate.execute(args, toolExecution()).catch((error: unknown) => error)
+    expectOpaqueCallerError(missing, [fixture.managerId, fixture.rootTaskId, fixture.engineerId])
     const outsider = agent('SECRET_OUTSIDER_SESSION')
-    await expect(delegate.execute(args, toolExecution(outsider))).rejects.toThrow('Workspace task tool caller is not an active employee.')
+    const unowned = await delegate.execute(args, toolExecution(outsider)).catch((error: unknown) => error)
+    expectOpaqueCallerError(unowned, ['SECRET_OUTSIDER_SESSION', fixture.managerId, fixture.rootTaskId, fixture.engineerId])
     built.identities.delete(fixture.manager)
     const stale = await delegate.execute(args, toolExecution(fixture.manager)).catch((error: unknown) => error)
-    expect(stale).toMatchObject({ message: 'Workspace task tool caller is not an active employee.' })
-    expect(JSON.stringify(stale)).not.toContain('SECRET_OUTSIDER_SESSION')
+    expectOpaqueCallerError(stale, ['SECRET_OUTSIDER_SESSION', fixture.managerId, fixture.rootTaskId])
 
     built.identities.set(fixture.manager, fixture.managerId)
     await built.host.apply(state => mutateWorkspace(state, {
       type: 'agent/depart', agentId: fixture.managerId,
     }).state)
     const departed = await delegate.execute(args, toolExecution(fixture.manager)).catch((error: unknown) => error)
-    expect(departed).toMatchObject({ message: 'Workspace task tool caller is not an active employee.' })
-    expect(JSON.stringify(departed)).not.toContain(fixture.managerId)
+    expectOpaqueCallerError(departed, [fixture.managerId, fixture.rootTaskId])
   })
 
   test('does not expose a caller id when departure wins the serialized mutation race', async () => {
@@ -235,8 +256,7 @@ describe('agent-facing workspace task tools', () => {
       title: 'Implement the API',
     }, toolExecution(fixture.manager)).catch((caught: unknown) => caught)
 
-    expect(error).toMatchObject({ message: 'Workspace task tool caller is not an active employee.' })
-    expect(JSON.stringify(error)).not.toContain(fixture.managerId)
+    expectOpaqueCallerError(error, [fixture.managerId, fixture.rootTaskId, fixture.engineerId])
   })
 
   test('delegates through the active human grant and assigned-task coordinator path', async () => {
@@ -249,7 +269,8 @@ describe('agent-facing workspace task tools', () => {
       title: 'Implement the API',
     }
 
-    await expect(delegate.execute(args, toolExecution(fixture.manager))).rejects.toMatchObject({ code: 'delegation-grant-missing' })
+    const missingGrant = await delegate.execute(args, toolExecution(fixture.manager)).catch((error: unknown) => error)
+    expectOpaquePolicyError(missingGrant, [fixture.managerId, fixture.rootTaskId, fixture.engineerId])
     const granted = grantTaskDelegation(built.state(), {
       humanId: HumanId('owner'), granteeAgentId: fixture.managerId, rootTaskId: fixture.rootTaskId,
     })
@@ -258,7 +279,8 @@ describe('agent-facing workspace task tools', () => {
       humanId: HumanId('owner'), delegationGrantId: granted.delegationGrantId,
     })
     await built.host.apply(() => revoked.state)
-    await expect(delegate.execute(args, toolExecution(fixture.manager))).rejects.toMatchObject({ code: 'delegation-grant-inactive' })
+    const inactiveGrant = await delegate.execute(args, toolExecution(fixture.manager)).catch((error: unknown) => error)
+    expectOpaquePolicyError(inactiveGrant, [fixture.managerId, fixture.rootTaskId, fixture.engineerId, granted.delegationGrantId])
 
     const active = grantTaskDelegation(built.state(), {
       humanId: HumanId('owner'), granteeAgentId: fixture.managerId, rootTaskId: fixture.rootTaskId,
@@ -277,9 +299,10 @@ describe('agent-facing workspace task tools', () => {
     const built = harness(fixture)
     const runChild = registeredTools(built.host).get('workspace_run_child')
 
-    await expect(runChild.execute({
+    const unassigned = await runChild.execute({
       taskId: fixture.rootTaskId, prompt: 'Investigate',
-    }, toolExecution(fixture.engineer))).rejects.toMatchObject({ code: 'task-not-assigned' })
+    }, toolExecution(fixture.engineer)).catch((error: unknown) => error)
+    expectOpaquePolicyError(unassigned, [fixture.engineerId, fixture.rootTaskId])
 
     const signal = new AbortController().signal
     await expect(runChild.execute({
@@ -325,23 +348,88 @@ describe('agent-facing workspace task tools', () => {
     ])
   })
 
+  test('records an explicit accepted result after cancellation without reopening the task', async () => {
+    const fixture = createWorkspace()
+    const started = startTaskDelivery(fixture.state, { taskId: fixture.rootTaskId })
+    const accepted = acceptTaskDelivery(started.state, {
+      taskId: fixture.rootTaskId, attemptId: started.attemptId, messageId: started.message.id,
+    })
+    const built = harness(fixture, accepted.state)
+    const complete = registeredTools(built.host).get('workspace_complete_task')
+    const execution = toolExecution(fixture.manager) as unknown as { concludeTurn: ReturnType<typeof vi.fn> }
+    await built.host.apply(state => cancelTask(state, { humanId: HumanId('owner'), taskId: fixture.rootTaskId }).state)
+
+    await expect(complete.execute({
+      taskId: fixture.rootTaskId, result: 'full result after cancellation',
+    }, execution as never)).resolves.toMatchObject({ status: 'completed', attemptId: started.attemptId })
+
+    expect(execution.concludeTurn).toHaveBeenCalledOnce()
+    expect(built.state().tasks[fixture.rootTaskId]?.status).toBe('cancelled')
+    expect(built.state().events.filter(event => event.type === 'task/result')).toHaveLength(0)
+    expect(built.state().events.filter(event => event.type === 'task/result-after-cancel')).toEqual([
+      expect.objectContaining({ taskDeliveryAttemptId: started.attemptId, text: 'full result after cancellation' }),
+    ])
+  })
+
   test('rejects completion by an unassigned employee and without an accepted attempt', async () => {
     const fixture = createWorkspace()
     const built = harness(fixture)
     const complete = registeredTools(built.host).get('workspace_complete_task')
 
-    await expect(complete.execute({
+    const notAccepted = await complete.execute({
       taskId: fixture.rootTaskId, result: 'not accepted',
-    }, toolExecution(fixture.manager))).rejects.toThrow('Task completion requires the current accepted delivery attempt.')
+    }, toolExecution(fixture.manager)).catch((error: unknown) => error)
+    expectOpaquePolicyError(notAccepted, [fixture.managerId, fixture.rootTaskId])
 
     const started = startTaskDelivery(built.state(), { taskId: fixture.rootTaskId })
     const accepted = acceptTaskDelivery(started.state, {
       taskId: fixture.rootTaskId, attemptId: started.attemptId, messageId: started.message.id,
     })
     await built.host.apply(() => accepted.state)
-    await expect(complete.execute({
+    const unassigned = await complete.execute({
       taskId: fixture.rootTaskId, result: 'forged result',
-    }, toolExecution(fixture.engineer))).rejects.toMatchObject({ code: 'task-not-assigned' })
+    }, toolExecution(fixture.engineer)).catch((error: unknown) => error)
+    expectOpaquePolicyError(unassigned, [fixture.engineerId, fixture.rootTaskId, started.attemptId])
+  })
+
+  test('explicit cancellation-first completion converges with the coordinator without another terminal event', async () => {
+    const fixture = createWorkspace()
+    let state = fixture.state
+    const identities = new WeakMap<Agent, ReturnType<typeof AgentId>>([[fixture.manager, fixture.managerId]])
+    const toolHost: WorkspaceTaskToolHost = {
+      agentIdFor: caller => identities.get(caller),
+      snapshot: () => structuredClone(state),
+      apply: async mutation => {
+        state = mutation(state)
+        return structuredClone(state)
+      },
+      runAssignedTask: vi.fn(),
+      runChild: vi.fn(),
+    }
+    const complete = registeredTools(toolHost).get('workspace_complete_task')
+    const coordinatorHost: TaskDeliveryCoordinatorHost = {
+      snapshot: () => structuredClone(state),
+      apply: toolHost.apply,
+      ensureEmployee: async (): Promise<AgentHandle> => ({ agent: fixture.manager, dispose: vi.fn(async () => {}) }),
+      deliver: async (_agentId, _delivery, _recall, _source, hooks) => {
+        await hooks?.onClaim?.()
+        await toolHost.apply(current => cancelTask(current, { humanId: HumanId('owner'), taskId: fixture.rootTaskId }).state)
+        await complete.execute({ taskId: fixture.rootTaskId, result: 'explicit cancellation result' }, toolExecution(fixture.manager))
+        return {
+          output: [{ type: 'text', text: 'automatic output must not persist' }],
+          stopReason: { kind: 'aborted', reason: { kind: 'user' } },
+          interrupted: true,
+        }
+      },
+    }
+
+    await expect(new TaskDeliveryCoordinator(coordinatorHost).deliver(fixture.rootTaskId)).resolves.toBe('explicit cancellation result')
+    expect(state.tasks[fixture.rootTaskId]?.status).toBe('cancelled')
+    expect(state.events.filter(event => event.type === 'task/result')).toHaveLength(0)
+    expect(state.events.filter(event => event.type === 'task/result-after-cancel')).toEqual([
+      expect.objectContaining({ text: 'explicit cancellation result' }),
+    ])
+    expect(JSON.stringify(state.events)).not.toContain('automatic output must not persist')
   })
 
   test.each([
