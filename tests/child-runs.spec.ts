@@ -134,4 +134,47 @@ describe('child run terminalization', () => {
       event.type === 'child/run-finished' && event.subjectId === running.childRunId
     ))).toHaveLength(1)
   })
+
+  test('retains one winning terminal request until its durable retry succeeds', async () => {
+    const fixture = childFixture('retry-settlement')
+    let durable = fixture.state
+    let attempts = 0
+    const retryEntered = Promise.withResolvers<void>()
+    const releaseRetry = Promise.withResolvers<void>()
+    const abort = vi.fn()
+    const registry = new ChildControllerRegistry(async request => {
+      attempts++
+      if (attempts === 1) throw new Error('durable write failed')
+      retryEntered.resolve()
+      await releaseRetry.promise
+      durable = finishChildRun(durable, request).state
+    })
+    const settlement = registry.register({
+      childRunId: fixture.childRunId,
+      parentAgentId: fixture.agentId,
+      taskId: fixture.taskId,
+      abort,
+    })
+
+    await expect(settlement.settle('completed', 'winning result')).rejects.toThrow('durable write failed')
+    expect(durable.childRuns[fixture.childRunId]).toMatchObject({ status: 'running' })
+
+    const retry = registry.stopChildRun(fixture.childRunId)
+    const retryState = await Promise.race([
+      retryEntered.promise.then(() => 'entered-durable-write' as const),
+      retry.then(() => 'returned-before-write' as const),
+    ])
+    expect(retryState).toBe('entered-durable-write')
+    await expect(settlement.settle('failed', 'replacement result')).resolves.toBe(false)
+    expect(abort).not.toHaveBeenCalled()
+    releaseRetry.resolve()
+
+    await expect(retry).resolves.toEqual({ status: 'not-active' })
+    expect(durable.childRuns[fixture.childRunId]).toMatchObject({ status: 'completed', result: 'winning result' })
+    expect(durable.events.filter(event => (
+      event.type === 'child/run-finished' && event.subjectId === fixture.childRunId
+    ))).toHaveLength(1)
+    await expect(settlement.settle('completed', 'winning result')).resolves.toBe(false)
+    expect(attempts).toBe(2)
+  })
 })

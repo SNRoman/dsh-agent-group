@@ -165,6 +165,7 @@ export class AgentWorkspaceDomainService extends Service {
     this.ctx.inject(['agents'], (runtimeCtx) => {
       const agents = runtimeCtx.get('agents') as AgentLifecycle | undefined
       if (agents === undefined) return
+      this.childControllers.openGeneration()
       const taskDelivery = new TaskDeliveryCoordinator(this)
       const pool = new EmployeeAgentPool(
         agents,

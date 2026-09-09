@@ -397,6 +397,55 @@ describe('WorkspaceDispatcher', () => {
     expect(host.snapshot().events.filter(event => event.type === 'child/run-finished')).toHaveLength(1)
   })
 
+  test('teardown owns a child whose durable publication committed before controller registration', async () => {
+    const { state, agentIds } = buildRoom(['alice'])
+    const alice = agentIds[0]!
+    const assigned = assignHumanTask(state, { humanId: HumanId('owner'), assigneeAgentId: alice, title: 'do work' })
+    const host = fakeHost(assigned.state, new Map())
+    const controllers = childControllers(host)
+    const publicationCommitted = Promise.withResolvers<void>()
+    const releasePublication = Promise.withResolvers<void>()
+    const ordinaryApply = host.apply
+    let publicationBlocked = false
+    host.apply = async mutation => {
+      const before = Object.keys(host.state.childRuns).length
+      host.state = mutation(host.state)
+      const published = Object.keys(host.state.childRuns).length > before
+      if (published && !publicationBlocked) {
+        publicationBlocked = true
+        publicationCommitted.resolve()
+        await releasePublication.promise
+      }
+      return structuredClone(host.state)
+    }
+    const start = vi.fn(async () => ({
+      result: Promise.resolve({ output: [{ type: 'text', text: 'too late' }], stopReason: 'completed' }),
+      dispose: async () => {},
+    }))
+    const dispatcher = new WorkspaceDispatcher(
+      host, { start } as unknown as SubagentRuntimeLike, 'spawn', limits, undefined, controllers,
+    )
+
+    const pending = dispatcher.runChild(alice, assigned.taskId, 'do work')
+    await publicationCommitted.promise
+    expect(Object.values(host.snapshot().childRuns)[0]).toMatchObject({ status: 'running' })
+    expect(start).not.toHaveBeenCalled()
+    const teardown = controllers.stopAll()
+    releasePublication.resolve()
+
+    await expect(pending).rejects.toThrow(/runtime is stopping/i)
+    await teardown
+    expect(start).not.toHaveBeenCalled()
+    expect(Object.values(host.snapshot().childRuns)[0]).toMatchObject({
+      status: 'cancelled', result: 'Child run cancelled.',
+    })
+    expect(host.snapshot().events.filter(event => event.type === 'child/run-finished')).toHaveLength(1)
+    await expect(dispatcher.runChild(alice, assigned.taskId, 'late work')).rejects.toThrow(/runtime is stopping/i)
+    expect(start).not.toHaveBeenCalled()
+    expect(Object.values(host.snapshot().childRuns)).toHaveLength(1)
+    host.apply = ordinaryApply
+  })
+
   test('a result that owns settlement makes a racing stop report not-active', async () => {
     const { state, agentIds } = buildRoom(['alice'])
     const alice = agentIds[0]!

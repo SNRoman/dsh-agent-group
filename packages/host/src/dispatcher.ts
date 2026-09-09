@@ -155,63 +155,73 @@ export class WorkspaceDispatcher {
     const subagents = this.resolveSubagents()
     if (subagents === undefined) throw new Error('subagent runtime is not available in this deployment')
     const handle = await this.host.ensureEmployee(parentAgentId)
-    let publishedChildRunId: ChildId | undefined
-    await this.host.apply(current => {
-      const started = recordChildRunStarted(current, { parentAgentId, taskId })
-      publishedChildRunId = started.childRunId
-      return started.state
-    })
-    if (publishedChildRunId === undefined) throw new Error('child run start did not publish an id')
-    const childRunId: ChildId = publishedChildRunId
-
-    const controller = new AbortController()
-    const abort = (): void => controller.abort()
-    if (signal.aborted) abort()
-    else signal.addEventListener('abort', abort, { once: true })
-    const settlement = this.childControllers.register({
-      childRunId,
-      parentAgentId,
-      taskId,
-      abort,
-    })
-
-    let run: OneShotSubagentRun | undefined
-    let result: { readonly output: ContentBlock[]; readonly stopReason: string } | undefined
-    let failure: unknown
+    const reservation = this.childControllers.reserveStart()
     try {
-      run = await subagents.start(this.provider, {
-        parent: handle.agent,
-        prompt: [{ type: 'text', text: prompt }],
-        signal: controller.signal,
-        label: `workspace-child:${taskId}`,
+      let publishedChildRunId: ChildId | undefined
+      await this.host.apply(current => {
+        const started = recordChildRunStarted(current, { parentAgentId, taskId })
+        publishedChildRunId = started.childRunId
+        return started.state
       })
-      result = await run.result
-    } catch (error) {
-      failure = error
-    } finally {
-      if (run !== undefined) {
+      if (publishedChildRunId === undefined) throw new Error('child run start did not publish an id')
+      const childRunId: ChildId = publishedChildRunId
+
+      const controller = new AbortController()
+      const abort = (): void => controller.abort()
+      if (signal.aborted) abort()
+      else signal.addEventListener('abort', abort, { once: true })
+      const registered = reservation.register({ childRunId, parentAgentId, taskId, abort })
+      if (!registered.startAllowed) {
+        abort()
         try {
-          await run.dispose()
-        } catch (error) {
-          if (failure === undefined) failure = error
+          await registered.settlement.settle('cancelled', 'Child run cancelled.')
+        } finally {
+          signal.removeEventListener('abort', abort)
         }
+        throw new Error('Child runtime is stopping.')
       }
-      signal.removeEventListener('abort', abort)
-    }
+      reservation.release()
 
-    if (failure !== undefined) {
-      const status = controller.signal.aborted ? 'cancelled' : 'failed'
-      await settlement.settle(status, status === 'cancelled' ? 'Child run cancelled.' : 'Child run failed.')
-      throw failure
-    }
-    if (result === undefined) throw new Error('child run settled without a result')
+      let run: OneShotSubagentRun | undefined
+      let result: { readonly output: ContentBlock[]; readonly stopReason: string } | undefined
+      let failure: unknown
+      try {
+        run = await subagents.start(this.provider, {
+          parent: handle.agent,
+          prompt: [{ type: 'text', text: prompt }],
+          signal: controller.signal,
+          label: `workspace-child:${taskId}`,
+        })
+        result = await run.result
+      } catch (error) {
+        failure = error
+      } finally {
+        if (run !== undefined) {
+          try {
+            await run.dispose()
+          } catch (error) {
+            if (failure === undefined) failure = error
+          }
+        }
+        signal.removeEventListener('abort', abort)
+      }
 
-    const output = textOf(result.output)
-    const status = childStatus(result.stopReason)
-    const terminalText = output.trim() === '' ? fallbackChildResult(status) : output
-    const won = await settlement.settle(status, terminalText)
-    if (!won) throw new Error(`child run '${childRunId}' was stopped before its result settled`)
-    return output
+      if (failure !== undefined) {
+        const status = controller.signal.aborted ? 'cancelled' : 'failed'
+        await registered.settlement.settle(status, status === 'cancelled' ? 'Child run cancelled.' : 'Child run failed.')
+        throw failure
+      }
+      if (result === undefined) throw new Error('child run settled without a result')
+
+      const output = textOf(result.output)
+      const status = childStatus(result.stopReason)
+      const terminalText = output.trim() === '' ? fallbackChildResult(status) : output
+      const won = await registered.settlement.settle(status, terminalText)
+      if (!won) throw new Error(`child run '${childRunId}' was stopped before its result settled`)
+      return output
+    } finally {
+      reservation.release()
+    }
   }
 
   /** Persist the root room event before any potentially long-running agent wake. */
