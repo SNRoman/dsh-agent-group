@@ -9,7 +9,7 @@
 
 import { Context, Service } from '@deepseek-ai/cordis'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
-import type { AgentHandle, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentHandle, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
@@ -40,6 +40,8 @@ import type { CancelTaskResult } from './tasks.ts'
 import { inspectTaskDelivery } from './task-delivery.ts'
 import { TaskDeliveryCoordinator } from './task-delivery-coordinator.ts'
 import type { WorkspaceDeliveryHooks } from './task-delivery-coordinator.ts'
+import { registerWorkspaceTaskTools } from './task-tools.ts'
+import type { WorkspaceToolRegistry } from './task-tools.ts'
 import type { TaskDeliveryProgressEvent, WorkspaceCommand, WorkspaceState } from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -155,6 +157,15 @@ export class AgentWorkspaceDomainService extends Service {
           { authority: 'trusted-host' },
         ),
         'agentWorkspace.rpc',
+      )
+    })
+
+    this.ctx.inject(['tools'], (toolCtx) => {
+      const tools = toolCtx.get('tools') as WorkspaceToolRegistry | undefined
+      if (tools === undefined) return
+      toolCtx.effect(
+        () => registerWorkspaceTaskTools(tools, this),
+        'agentWorkspace.taskTools',
       )
     })
 
@@ -415,6 +426,11 @@ export class AgentWorkspaceDomainService extends Service {
     return await this.requirePool().ensure(agentId)
   }
 
+  /** Resolve one currently published employee Agent handle to its durable id. */
+  agentIdFor(agent: Agent): AgentId | undefined {
+    return this.pool?.agentIdFor(agent)
+  }
+
   /** Dispose one agent's live handle; its durable session binding stays for later resume. */
   async disposeEmployee(agentId: AgentId): Promise<void> {
     await this.requirePool().dispose(agentId)
@@ -527,6 +543,11 @@ export class AgentWorkspaceDomainService extends Service {
   /** Run one one-shot child for a parent agent and record its terminal result. */
   async runChild(parentAgentId: AgentId, taskId: TaskId, prompt: string, signal?: AbortSignal): Promise<string> {
     return await this.requireDispatcher().runChild(parentAgentId, taskId, prompt, signal)
+  }
+
+  /** Deliver one assigned task through the durable coordinator. */
+  async runAssignedTask(agentId: AgentId, taskId: TaskId): Promise<string> {
+    return await this.requireDispatcher().runAssignedTask(agentId, taskId)
   }
 
   /**

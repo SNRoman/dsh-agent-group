@@ -127,6 +127,9 @@ importers:
       '@deepseek-ai/dsh-storage-domain':
         specifier: '>=0.1.1-rc.2 <0.1.2-0'
         version: 0.1.1-rc.2(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-storage@0.1.1-rc.2(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.2)))
+      '@deepseek-ai/dsh-tools':
+        specifier: '>=0.1.1-rc.2 <0.1.2-0'
+        version: 0.1.1-rc.2(fce27d0fcc1cba3231d79c0a47b47475)
       '@deepseek-ai/dsh-typert-generator':
         specifier: '>=0.1.1-rc.2 <0.1.2-0'
         version: 0.1.1-rc.2(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.2))

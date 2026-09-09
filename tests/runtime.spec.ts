@@ -1,7 +1,13 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import Storage from '@deepseek-ai/dsh-storage'
+import { apply as domainApply, Config as DomainConfig, inject as domainInject } from '@deepseek-ai/dsh-storage-domain'
+import { apply as jsonApply, Config as JsonConfig, inject as jsonInject } from '@deepseek-ai/dsh-storage-json'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { AgentId, RoomId, TaskDeliveryAttemptId, TaskId } from '../packages/host/src/ids.ts'
@@ -65,6 +71,43 @@ describe('EmployeeAgentPool', () => {
     await pool.dispose(AgentId('alice'))
     expect(dispose).toHaveBeenCalledTimes(1)
     expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
+  })
+
+  test('publishes an agent handle identity only while the employee is resident', async () => {
+    const created = handle()
+    const admission = Promise.withResolvers<AgentHandle>()
+    const pool = new EmployeeAgentPool(
+      { create: vi.fn(async () => await admission.promise), resume: vi.fn() },
+      { sessionIdFor: () => undefined, recordSessionId: vi.fn(async () => {}) },
+    )
+
+    const ensuring = pool.ensure(AgentId('alice'))
+    expect(pool.agentIdFor(created.agent)).toBeUndefined()
+    admission.resolve(created)
+    await ensuring
+    expect(pool.agentIdFor(created.agent)).toBe(AgentId('alice'))
+
+    await pool.dispose(AgentId('alice'))
+    expect(pool.agentIdFor(created.agent)).toBeUndefined()
+  })
+
+  test('disposeAll invalidates every published agent handle identity', async () => {
+    const alice = handle()
+    const bob = handle()
+    const created = [alice, bob]
+    const pool = new EmployeeAgentPool(
+      { create: vi.fn(async () => created.shift()!), resume: vi.fn() },
+      { sessionIdFor: () => undefined, recordSessionId: vi.fn(async () => {}) },
+    )
+
+    await pool.ensure(AgentId('alice'))
+    await pool.ensure(AgentId('bob'))
+    expect(pool.agentIdFor(alice.agent)).toBe(AgentId('alice'))
+    expect(pool.agentIdFor(bob.agent)).toBe(AgentId('bob'))
+
+    await pool.disposeAll()
+    expect(pool.agentIdFor(alice.agent)).toBeUndefined()
+    expect(pool.agentIdFor(bob.agent)).toBeUndefined()
   })
 
   test('a materialized session never falls back to create when resume fails', async () => {
@@ -193,6 +236,46 @@ describe('EmployeeAgentPool', () => {
     }))
     expect(configure).toHaveBeenCalledWith(AgentId('alice'), 'create')
     expect(configure).toHaveBeenCalledWith(AgentId('bob'), 'resume')
+  })
+})
+
+describe('AgentWorkspaceDomainService task-tool lifecycle', () => {
+  test('registers all task tools and removes them with the Host fiber', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agent-workspace-task-tools-'))
+    const registered: string[] = []
+    const disposed: string[] = []
+    const tools = {
+      register(definition: { readonly name: string }) {
+        registered.push(definition.name)
+        return () => { disposed.push(definition.name) }
+      },
+    }
+    const ctx = new Context()
+    const fibers = []
+    try {
+      fibers.push(await ctx.plugin(Storage))
+      fibers.push(await ctx.plugin({ apply: jsonApply, Config: JsonConfig, inject: jsonInject }, { root }))
+      fibers.push(await ctx.plugin({ apply: domainApply, Config: DomainConfig, inject: domainInject }, { backend: 'json' }))
+      fibers.push(await ctx.plugin((toolCtx) => toolCtx.provide('tools', tools)))
+      const host = await ctx.plugin(AgentWorkspaceDomainService)
+      fibers.push(host)
+
+      expect(registered).toEqual([
+        'workspace_delegate_task',
+        'workspace_run_child',
+        'workspace_complete_task',
+      ])
+      await host.dispose()
+      fibers.pop()
+      expect(disposed).toEqual([
+        'workspace_complete_task',
+        'workspace_run_child',
+        'workspace_delegate_task',
+      ])
+    } finally {
+      for (const fiber of fibers.reverse()) await fiber.dispose()
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })
 

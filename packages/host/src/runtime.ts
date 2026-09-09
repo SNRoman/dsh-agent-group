@@ -65,6 +65,7 @@ export type EmployeeRecovery = (agentId: AgentId, agent: Agent) => Promise<void>
  */
 export class EmployeeAgentPool {
   private readonly handles = new Map<AgentId, AgentHandle>()
+  private readonly agentIds = new WeakMap<Agent, AgentId>()
   private readonly inFlight = new Map<AgentId, Promise<AgentHandle>>()
   private readonly generations = new Map<AgentId, number>()
 
@@ -78,6 +79,11 @@ export class EmployeeAgentPool {
   /** The live handle for an agent, or `undefined` when not materialized. */
   handleFor(agentId: AgentId): AgentHandle | undefined {
     return this.handles.get(agentId)
+  }
+
+  /** Resolve a currently published employee handle without trusting caller data. */
+  agentIdFor(agent: Agent): AgentId | undefined {
+    return this.agentIds.get(agent)
   }
 
   /** Admit the live handle for one agent, creating or resuming it exactly once. */
@@ -97,6 +103,7 @@ export class EmployeeAgentPool {
         }
       }
       this.handles.set(agentId, handle)
+      this.agentIds.set(handle.agent, agentId)
       return handle
     })
     this.inFlight.set(agentId, promise)
@@ -113,6 +120,7 @@ export class EmployeeAgentPool {
     const handle = this.handles.get(agentId)
     const pending = this.inFlight.get(agentId)
     this.handles.delete(agentId)
+    if (handle !== undefined) this.agentIds.delete(handle.agent)
 
     let disposeError: unknown
     if (handle !== undefined) {
@@ -139,6 +147,7 @@ export class EmployeeAgentPool {
 
     const handles = [...this.handles.values()]
     const pending = [...this.inFlight.values()]
+    for (const handle of handles) this.agentIds.delete(handle.agent)
     this.handles.clear()
     await Promise.allSettled([
       ...handles.map(handle => handle.dispose()),

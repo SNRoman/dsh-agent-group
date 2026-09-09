@@ -166,13 +166,15 @@ export class TaskDeliveryCoordinator {
       throw error
     }
 
+    const toolResult = completedTaskResult(this.host.snapshot(), identity)
+    if (toolResult !== undefined) return toolResult
     const result = completedText(outcome)
     if (result === undefined) {
       await this.failIfOpen(identity, 'interrupted', 'Delivery was interrupted before a terminal result.')
       throw new Error(`task '${taskId}' delivery was interrupted before a terminal result`)
     }
     await this.recordCompletedResult(assignment, identity, result)
-    return result
+    return completedTaskResult(this.host.snapshot(), identity) ?? result
   }
 
   private async recover(agentId: AgentId, handle: Pick<AgentHandle, 'agent'>): Promise<readonly TaskDeliveryRecoveryOutcome[]> {
@@ -263,13 +265,15 @@ export class TaskDeliveryCoordinator {
       await this.failIfOpen(identity, 'interrupted', 'Delivery was interrupted before a terminal result.')
       throw error
     }
+    const toolResult = completedTaskResult(this.host.snapshot(), identity)
+    if (toolResult !== undefined) return toolResult
     const result = completedText(outcome)
     if (result === undefined) {
       await this.failIfOpen(identity, 'interrupted', 'Delivery was interrupted before a terminal result.')
       throw new Error(`task '${identity.taskId}' delivery was interrupted before a terminal result`)
     }
     await this.recordCompletedResult(assignment, identity, result)
-    return result
+    return completedTaskResult(this.host.snapshot(), identity) ?? result
   }
 
   private async acceptIfStarted(
@@ -324,6 +328,17 @@ function completedText(outcome: WorkspaceTurnOutcome): string | undefined {
   if (outcome.stopReason.kind !== 'completed' || outcome.interrupted) return undefined
   const text = textOf(outcome.output)
   return text.trim() === '' ? undefined : text
+}
+
+function completedTaskResult(
+  state: WorkspaceState,
+  identity: { readonly taskId: TaskId; readonly attemptId: TaskDeliveryAttemptId },
+): string | undefined {
+  return state.events.findLast(event => (
+    event.type === 'task/result'
+    && event.taskId === identity.taskId
+    && event.taskDeliveryAttemptId === identity.attemptId
+  ))?.text
 }
 
 function assignmentFor(state: WorkspaceState, taskId: TaskId): TaskAssignment {
