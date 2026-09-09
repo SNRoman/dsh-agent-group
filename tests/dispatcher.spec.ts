@@ -479,9 +479,10 @@ describe('WorkspaceDispatcher', () => {
       pending.then(() => 'dispatcher' as const),
     ])
     expect(owner).toBe('controller')
-    await expect(controllers.stopChildRun(childRunId)).resolves.toEqual({ status: 'not-active' })
+    const racedStop = controllers.stopChildRun(childRunId)
     releaseFinish.resolve()
 
+    await expect(racedStop).resolves.toEqual({ status: 'not-active' })
     await expect(pending).resolves.toBe('winner')
     expect(host.snapshot().events.filter(event => event.type === 'child/run-finished')).toHaveLength(1)
   })
@@ -518,9 +519,10 @@ describe('WorkspaceDispatcher', () => {
       pending.then(() => 'dispatcher' as const, () => 'dispatcher' as const),
     ])
     expect(owner).toBe('controller')
-    await expect(controllers.stopChildRun(childRunId)).resolves.toEqual({ status: 'not-active' })
+    const racedStop = controllers.stopChildRun(childRunId)
     releaseFinish.resolve()
 
+    await expect(racedStop).resolves.toEqual({ status: 'not-active' })
     await expect(pending).rejects.toThrow('start failed')
     expect(Object.values(host.snapshot().childRuns)[0]).toMatchObject({ status: 'failed', result: 'Child run failed.' })
     expect(host.snapshot().events.filter(event => event.type === 'child/run-finished')).toHaveLength(1)

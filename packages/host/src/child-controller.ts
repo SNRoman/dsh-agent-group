@@ -134,7 +134,7 @@ export class ChildControllerRegistry {
       return { status: 'already-stopping' }
     }
     if (record.winner !== undefined) {
-      if (record.phase === 'live') await this.settle(record, record.winner)
+      await this.converge(record)
       return { status: 'not-active' }
     }
     record.stopping = true
@@ -188,7 +188,7 @@ export class ChildControllerRegistry {
       try {
         await record.attempt
       } catch (_error) {
-        // The retained winning request remains retryable after a durable write rejects.
+        // The settlement owner observes this failure; this lifecycle caller retries its retained winner once.
       }
     }
     if (record.phase === 'live') await this.settle(record, record.winner)

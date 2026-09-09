@@ -177,4 +177,63 @@ describe('child run terminalization', () => {
     await expect(settlement.settle('completed', 'winning result')).resolves.toBe(false)
     expect(attempts).toBe(2)
   })
+
+  test('a stop racing a rejected durable settlement retries the retained winner', async () => {
+    const fixture = childFixture('raced-settlement')
+    let durable = fixture.state
+    let attempts = 0
+    const firstEntered = Promise.withResolvers<void>()
+    const rejectFirst = Promise.withResolvers<void>()
+    const retryEntered = Promise.withResolvers<void>()
+    const releaseRetry = Promise.withResolvers<void>()
+    const abort = vi.fn()
+    const registry = new ChildControllerRegistry(async request => {
+      attempts++
+      if (attempts === 1) {
+        firstEntered.resolve()
+        await rejectFirst.promise
+        throw new Error('first durable write failed')
+      }
+      retryEntered.resolve()
+      await releaseRetry.promise
+      durable = finishChildRun(durable, request).state
+    })
+    const settlement = registry.register({
+      childRunId: fixture.childRunId,
+      parentAgentId: fixture.agentId,
+      taskId: fixture.taskId,
+      abort,
+    })
+
+    const winningResult = settlement.settle('completed', 'winning result').then(
+      () => ({ status: 'fulfilled' as const }),
+      (error: unknown) => ({ status: 'rejected' as const, error }),
+    )
+    await firstEntered.promise
+    const racedStop = registry.stopChildRun(fixture.childRunId)
+    rejectFirst.resolve()
+
+    const convergence = await Promise.race([
+      retryEntered.promise.then(() => 'retry-entered' as const),
+      racedStop.then(() => 'stop-returned-before-retry' as const),
+    ])
+    expect(convergence).toBe('retry-entered')
+    expect(durable.childRuns[fixture.childRunId]).toMatchObject({ status: 'running' })
+    await expect(settlement.settle('failed', 'replacement result')).resolves.toBe(false)
+    expect(abort).not.toHaveBeenCalled()
+    releaseRetry.resolve()
+
+    await expect(racedStop).resolves.toEqual({ status: 'not-active' })
+    expect(await winningResult).toMatchObject({
+      status: 'rejected',
+      error: new Error('first durable write failed'),
+    })
+    expect(durable.childRuns[fixture.childRunId]).toMatchObject({ status: 'completed', result: 'winning result' })
+    expect(durable.events.filter(event => (
+      event.type === 'child/run-finished' && event.subjectId === fixture.childRunId
+    ))).toHaveLength(1)
+    await expect(registry.stopChildRun(fixture.childRunId)).resolves.toEqual({ status: 'not-active' })
+    await expect(settlement.settle('completed', 'winning result')).resolves.toBe(false)
+    expect(attempts).toBe(2)
+  })
 })
