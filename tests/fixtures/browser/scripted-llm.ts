@@ -1,10 +1,11 @@
 /** Deterministic LLM adapter for the assembled Agent Workspace release smoke. */
 
-import { existsSync, watch } from 'node:fs'
+import { existsSync, readFileSync, watch, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import {
   LlmAdapter,
+  CallId,
   type GenerateOptions,
   type LlmResolvedModelInfo,
   type StreamChunk,
@@ -12,11 +13,21 @@ import {
 
 const PROVIDER = 'deepseek-official'
 const MODEL = 'deepseek-v4-flash'
+const TASK_TOOLS_REQUEST = 'PROFILE_TASK_TOOLS_REQUEST'
+
+interface TaskToolsFixture {
+  readonly taskId: string
+  readonly deniedAssigneeAgentId: string
+}
 
 function textOf(options: GenerateOptions): string {
   return options.messages.flatMap(message => message.content)
     .flatMap(block => block.type === 'text' ? [block.text] : [])
     .join('\n')
+}
+
+function scriptedReadyPath(fixturePath: string): string {
+  return `${fixturePath}.scripted-llm-ready`
 }
 
 function employeeName(options: GenerateOptions): string {
@@ -66,6 +77,7 @@ async function waitForGate(path: string, signal: AbortSignal | undefined): Promi
 }
 
 class ScriptedWorkspaceAdapter extends LlmAdapter {
+  private readonly taskToolSteps = new Map<string, number>()
   override providerInfo(provider: string) {
     if (provider !== PROVIDER) throw new Error(`unknown scripted provider: ${provider}`)
     return { id: provider, name: 'Agent Workspace scripted release smoke' }
@@ -89,6 +101,10 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
   }
 
   override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    if (textOf(options).includes(TASK_TOOLS_REQUEST)) {
+      yield* this.taskToolResponse(options)
+      return
+    }
     const response = responseFor(options)
     yield { type: 'block-start', index: 0, blockType: 'text' }
     if (textOf(options).includes('HOLD_WAKE')) {
@@ -102,6 +118,40 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
     yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } }
     yield { type: 'finish', reason: { kind: 'stop' } }
   }
+
+  private async * taskToolResponse(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    const fixturePath = process.env['DSH_AGENT_GROUP_TASK_TOOLS_FIXTURE']
+    if (fixturePath === undefined) throw new Error('DSH_AGENT_GROUP_TASK_TOOLS_FIXTURE is required for profile task tools')
+    const fixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as TaskToolsFixture
+    const expected = ['workspace_delegate_task', 'workspace_run_child', 'workspace_complete_task']
+    const published = new Set(options.tools?.map(tool => tool.name))
+    if (!expected.every(name => published.has(name))) {
+      throw new Error('profile task tools were not visible to the scripted model')
+    }
+    const sessionKey = String(options.sessionId)
+    const step = this.taskToolSteps.get(sessionKey) ?? 0
+    this.taskToolSteps.set(sessionKey, step + 1)
+    const tool = step === 0
+      ? {
+          id: CallId('profile-policy-denial'),
+          name: 'workspace_delegate_task',
+          arguments: JSON.stringify({
+            rootTaskId: fixture.taskId,
+            assigneeAgentId: fixture.deniedAssigneeAgentId,
+            title: 'PROFILE_DENIED_DELEGATION',
+          }),
+        }
+      : {
+          id: CallId('profile-complete-task'),
+          name: 'workspace_complete_task',
+          arguments: JSON.stringify({ taskId: fixture.taskId, result: 'PROFILE_TASK_TOOL_RESULT' }),
+        }
+    yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+    yield { type: 'tool-call-delta', index: 0, id: tool.id, name: tool.name, argumentsDelta: tool.arguments }
+    yield { type: 'block-end', index: 0, block: { type: 'tool-call', ...tool } }
+    yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } }
+    yield { type: 'finish', reason: { kind: 'tool-calls' } }
+  }
 }
 
 export const name = 'agent-workspace-scripted-llm'
@@ -110,4 +160,6 @@ export const inject = ['llm']
 /** Register the smoke adapter on the shipped default provider route. */
 export function apply(ctx: Context): void {
   ctx.llm.registerAdapter([PROVIDER], new ScriptedWorkspaceAdapter())
+  const fixturePath = process.env['DSH_AGENT_GROUP_TASK_TOOLS_FIXTURE']
+  if (fixturePath !== undefined) writeFileSync(scriptedReadyPath(fixturePath), 'ready\n', 'utf8')
 }

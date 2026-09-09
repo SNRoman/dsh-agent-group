@@ -15,6 +15,8 @@ const packages = [
 const browserFixtureFiles = [
   'tests/fixtures/browser/cordis.test.yml',
   'tests/fixtures/browser/scripted-llm.ts',
+  'tests/fixtures/browser/task-tools-profile.ts',
+  'tests/fixtures/task-tools/profile-session.expected.json',
   'tests/e2e/workspace-browser.mjs',
   '.github/workflows/registry-smoke.yml',
 ] as const
@@ -165,7 +167,12 @@ describe('public release contract', () => {
     const fixture = readText('tests/fixtures/browser/cordis.test.yml')
     expect(fixture).toContain('agent-workspace-scripted-llm')
     expect(fixture).toContain("name: './scripted-llm.ts'")
+    expect(fixture).toContain('agent-workspace-task-tools-profile')
+    expect(fixture).toContain("name: './task-tools-profile.ts'")
     expect(fixture).toContain('id: directory-picker')
+    expect(fixture).toContain('id: session-persistence-jsonl')
+    expect(fixture).toContain("root: !!js dshHomePath('sessions')")
+    expect(fixture).toContain('compression: none')
     expect(fixture).toContain('id: directory-picker-browse')
     expect(fixture).toContain("name: '@deepseek-ai/dsh-host-directory-picker-browse'")
     expect(fixture).toContain('id: ui-directory-picker-browse')
@@ -174,6 +181,9 @@ describe('public release contract', () => {
     const scripted = readText('tests/fixtures/browser/scripted-llm.ts')
     expect(scripted).toContain('@deepseek-ai/dsh-llm')
     expect(scripted).toContain('scripted')
+    expect(scripted).toContain('workspace_complete_task')
+    expect(readText('tests/fixtures/browser/task-tools-profile.ts')).toContain('runAssignedTask')
+    expect(readText('tests/fixtures/task-tools/profile-session.expected.json')).toContain('workspace_delegate_task')
 
     const smoke = readText('tests/e2e/workspace-browser.mjs')
     expect(smoke).toContain('playwright')
@@ -300,7 +310,9 @@ snapshots:
   name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
 - id: agent-workspace-scripted-llm
   name: file:///scripted-llm.ts
-`, 'file:///scripted-llm.ts')
+- id: agent-workspace-task-tools-profile
+  name: file:///task-tools-profile.ts
+`, 'file:///scripted-llm.ts', 'file:///task-tools-profile.ts')
       assertAssembledConfig(`
 - id: agent-workspace
   name: '@dsh-agent-group/host'
@@ -316,7 +328,9 @@ snapshots:
 - id: agent-workspace-scripted-llm
   name: >-
     file:///scripted-llm.ts
-`, 'file:///scripted-llm.ts')
+- id: agent-workspace-task-tools-profile
+  name: file:///task-tools-profile.ts
+`, 'file:///scripted-llm.ts', 'file:///task-tools-profile.ts')
     }).not.toThrow()
     expect(() => assertPublishedRegistryPackage({ ...registry, integrity: undefined }, version)).toThrow('integrity')
     expect(() => assertPublishedRegistryPackage({ ...registry, tarball: 'https://registry.npmjs.org/@dsh-agent-group/host/-/host-1.2.2.tgz' }, version)).toThrow('tarball')
@@ -346,7 +360,7 @@ packages:
     expect(() => assertAssembledConfig(`
 - id: agent-workspace-scripted-llm
   name: file:///scripted-llm.ts
-`, 'file:///scripted-llm.ts')).toThrow('Host')
+`, 'file:///scripted-llm.ts', 'file:///task-tools-profile.ts')).toThrow('Host')
     expect(() => assertAssembledConfig(`
 - id: agent-workspace
   name: '@dsh-agent-group/host'
@@ -356,7 +370,7 @@ packages:
   name: '@deepseek-ai/dsh-host-directory-picker-auto'
 - id: agent-workspace-scripted-llm
   name: file:///scripted-llm.ts
-`, 'file:///scripted-llm.ts')).toThrow('directory picker')
+`, 'file:///scripted-llm.ts', 'file:///task-tools-profile.ts')).toThrow('directory picker')
     expect(() => assertAssembledConfig(`
 - id: agent-workspace
   name: '@dsh-agent-group/host'
@@ -371,7 +385,7 @@ packages:
   name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
 - id: agent-workspace-scripted-llm
   name: file:///scripted-llm.ts
-`, 'file:///wrong-scripted-llm.ts')).toThrow('scripted')
+`, 'file:///wrong-scripted-llm.ts', 'file:///task-tools-profile.ts')).toThrow('scripted')
     expect(() => assertAssembledConfig(`
 - id: agent-workspace
   config:
@@ -380,7 +394,23 @@ packages:
   name: '@dsh-agent-group/web'
 - id: agent-workspace-scripted-llm
   name: file:///scripted-llm.ts
-`, 'file:///scripted-llm.ts')).toThrow('Host')
+`, 'file:///scripted-llm.ts', 'file:///task-tools-profile.ts')).toThrow('Host')
+
+    expect(() => assertAssembledConfig(`
+- id: agent-workspace
+  name: '@dsh-agent-group/host'
+- id: agent-workspace-web
+  name: '@dsh-agent-group/web'
+- id: directory-picker
+  name: '@deepseek-ai/dsh-host-directory-picker-auto'
+  disabled: true
+- id: directory-picker-browse
+  name: '@deepseek-ai/dsh-host-directory-picker-browse'
+- id: ui-directory-picker-browse
+  name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
+- id: agent-workspace-scripted-llm
+  name: file:///scripted-llm.ts
+`, 'file:///scripted-llm.ts', 'file:///task-tools-profile.ts')).toThrow('task-tools')
   })
 
   it('rejects incomplete durable Browser evidence', async () => {

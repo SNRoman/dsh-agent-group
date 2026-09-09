@@ -7,6 +7,13 @@
   name: '@deepseek-ai/dsh-host-directory-picker-auto'
   disabled: true
 
+# Keep the real JSONL persistence backend, but use its documented test profile
+# encoding so the keyless smoke can assert the recorded model/tool events.
+- id: session-persistence-jsonl
+  config:
+    root: !!js dshHomePath('sessions')
+    compression: none
+
 - insert:
     - id: directory-picker-browse
       name: '@deepseek-ai/dsh-host-directory-picker-browse'
@@ -16,3 +23,9 @@
 
     - id: agent-workspace-scripted-llm
       name: './scripted-llm.ts'
+
+    # This profile-only setup seeds a human task because the Browser product
+    # does not yet expose formal-task creation.  The employee itself invokes
+    # its registered tools through the normal agent loop.
+    - id: agent-workspace-task-tools-profile
+      name: './task-tools-profile.ts'

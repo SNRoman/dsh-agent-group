@@ -156,7 +156,7 @@ export function assertResolvedPackages(resolvedPackages, version) {
 }
 
 /** Reject an assembled profile that omits any exact release-smoke plugin row. */
-export function assertAssembledConfig(config, scriptedAdapter) {
+export function assertAssembledConfig(config, scriptedAdapter, taskToolsProfile) {
   const rows = configRows(config)
   const has = (id, name) => rows.some(row => row.id === id && row.name === name)
   if (!has('agent-workspace', HOST)) throw new Error(`assembled profile omitted Host row id=agent-workspace name=${HOST}`)
@@ -167,6 +167,7 @@ export function assertAssembledConfig(config, scriptedAdapter) {
     throw new Error('assembled profile omitted the deterministic browser directory picker rows')
   }
   if (!has('agent-workspace-scripted-llm', scriptedAdapter)) throw new Error('assembled profile omitted the scripted LLM fixture row')
+  if (!has('agent-workspace-task-tools-profile', taskToolsProfile)) throw new Error('assembled profile omitted the task-tools profile fixture row')
 }
 
 /** Reject a post-uninstall profile that retains a release package or loses the external fixture. */

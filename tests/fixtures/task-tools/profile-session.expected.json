@@ -1,0 +1,9 @@
+{
+  "tools": [
+    "workspace_delegate_task",
+    "workspace_run_child",
+    "workspace_complete_task"
+  ],
+  "result": "PROFILE_TASK_TOOL_RESULT",
+  "policyError": "Workspace task request is not permitted."
+}

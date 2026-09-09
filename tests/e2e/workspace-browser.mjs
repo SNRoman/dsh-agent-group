@@ -1,6 +1,6 @@
 /** Browser-visible release smoke shared by packed and exact-registry installs. */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import { chromium } from 'playwright'
 import { assertBrowserDurableEvidence } from '../../scripts/release-smoke-contract.mjs'
@@ -8,6 +8,7 @@ import { assertBrowserDurableEvidence } from '../../scripts/release-smoke-contra
 const STEP_TIMEOUT_MS = 30_000
 const CORE_SESSION_SENTINEL = 'CORE_SESSION_SENTINEL'
 const CORE_REPLY = 'CORE_REPLY'
+const TASK_TOOL_EXPECTED = new URL('../fixtures/task-tools/profile-session.expected.json', import.meta.url)
 
 function parseArgs(argv) {
   const values = new Map()
@@ -17,7 +18,7 @@ function parseArgs(argv) {
     if (!key?.startsWith('--') || value === undefined) throw new Error(`invalid browser-smoke argument near ${key ?? '<end>'}`)
     values.set(key.slice(2), value)
   }
-  for (const key of ['url', 'dsh-home', 'evidence', 'gate', 'workspace', 'phase']) {
+  for (const key of ['url', 'dsh-home', 'evidence', 'gate', 'workspace', 'phase', 'task-tools-fixture']) {
     if (!values.has(key)) throw new Error(`missing --${key}`)
   }
   const args = Object.fromEntries(values)
@@ -93,6 +94,54 @@ async function waitForDurableMessage(dshHome, text) {
   throw new Error(`durable workspace did not record ${JSON.stringify(text)}`)
 }
 
+async function jsonlFiles(root) {
+  const files = []
+  const visit = async directory => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) await visit(path)
+      else if (entry.isFile() && entry.name === 'session.jsonl') files.push(path)
+    }
+  }
+  await visit(root)
+  return files
+}
+
+async function taskToolSessionRows(dshHome) {
+  const contents = await Promise.all((await jsonlFiles(join(dshHome, 'sessions'))).map(path => readFile(path, 'utf8')))
+  return contents.flatMap(content => content.split(/\r?\n/u).filter(Boolean).map(line => JSON.parse(line)))
+}
+
+async function assertTaskToolEvidence(durable, args) {
+  const expected = JSON.parse(await readFile(TASK_TOOL_EXPECTED, 'utf8'))
+  const fixture = JSON.parse(await readFile(args['task-tools-fixture'], 'utf8'))
+  const completed = durable.events.filter(event => (
+    event.type === 'task/result' && event.text === expected.result
+  ))
+  if (completed.length !== 1) {
+    throw new Error(`expected one durable task-tool result; found ${completed.length}`)
+  }
+  const task = durable.tasks[completed[0].taskId]
+  if (task?.status !== 'completed') throw new Error('task-tool result did not complete its task')
+  const rows = await taskToolSessionRows(args['dsh-home'])
+  const serializedRows = rows.map(row => JSON.stringify(row))
+  for (const name of expected.tools) {
+    if (!serializedRows.some(row => row.includes(name))) throw new Error(`recorded Session omitted model-visible ${name} schema or call`)
+  }
+  if (!serializedRows.some(row => row.includes(expected.result))) throw new Error('recorded Session omitted successful task-tool result')
+  const denied = serializedRows.filter(row => row.includes(expected.policyError))
+  if (denied.length !== 1) throw new Error(`expected one recorded policy denial; found ${denied.length}`)
+  for (const id of [fixture.taskId, fixture.deniedAssigneeAgentId]) {
+    if (denied[0].includes(id)) throw new Error('recorded policy denial leaked a workspace identifier')
+  }
+  await writeFile(join(args.evidence, 'task-tools-recorded-session.json'), `${JSON.stringify({
+    tools: expected.tools,
+    result: expected.result,
+    policyError: expected.policyError,
+    policyResultRows: denied.length,
+  }, null, 2)}\n`, 'utf8')
+}
+
 async function send(dialog, text) {
   const composer = dialog.getByPlaceholder(/Write (?:a message|a direct message)/u)
   await composer.fill(text)
@@ -115,6 +164,7 @@ async function createDefinitionAndAgents(dialog) {
   await dialog.getByPlaceholder('Instructions for the agent role', { exact: true }).fill('Reply with the deterministic marker.')
   await dialog.getByRole('button', { name: 'Create definition', exact: true }).click()
   await dialog.getByText('Release engineer', { exact: true }).first().waitFor({ timeout: STEP_TIMEOUT_MS })
+  await selectReleaseDefinition(dialog)
 
   const agentName = dialog.getByPlaceholder('Instance name, for example: backend-Alice', { exact: true })
   for (const name of ['Alice', 'Bob']) {
@@ -122,6 +172,10 @@ async function createDefinitionAndAgents(dialog) {
     await dialog.getByRole('button', { name: 'Create instance', exact: true }).click()
     await dialog.getByText(name, { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   }
+}
+
+async function selectReleaseDefinition(dialog) {
+  await dialog.getByRole('button', { name: /^Release engineer/u }).click()
 }
 
 async function createGroupAndJoin(dialog, dshHome) {
@@ -275,21 +329,22 @@ async function runInstalledScenario(page, args, state) {
   if (await dialog.getByText(/REPLY Alice|REPLY Bob/u).count() !== 0) throw new Error('an unmentioned agent woke for a group post')
 
   await send(dialog, '@Alice NAMED_WAKE')
-  await dialog.getByText('NAMED_REPLY Alice', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  await dialog.getByText('NAMED_REPLY Alice', { exact: true }).last().waitFor({ timeout: STEP_TIMEOUT_MS })
   await waitForIdle(dialog)
 
   await send(dialog, '@all ALL_WAKE')
-  await dialog.getByText('ALL_REPLY Alice', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
-  await dialog.getByText('ALL_REPLY Bob', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  await dialog.getByText('ALL_REPLY Alice', { exact: true }).last().waitFor({ timeout: STEP_TIMEOUT_MS })
+  await dialog.getByText('ALL_REPLY Bob', { exact: true }).last().waitFor({ timeout: STEP_TIMEOUT_MS })
   await waitForIdle(dialog)
 
   const membersPanel = dialog.getByRole('complementary', { name: 'Group members', exact: true })
   await agentRow(membersPanel, 'Alice').getByRole('button', { name: 'Direct', exact: true }).click()
   await send(dialog, 'DIRECT_WAKE')
-  await dialog.getByText('DIRECT_REPLY Alice', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  await dialog.getByText('DIRECT_REPLY Alice', { exact: true }).last().waitFor({ timeout: STEP_TIMEOUT_MS })
   await waitForDurableMessage(args['dsh-home'], 'DIRECT_REPLY Alice')
 
   await dialog.getByRole('button', { name: 'Agents', exact: true }).click()
+  await selectReleaseDefinition(dialog)
   await agentRow(dialog, 'Alice').getByRole('button', { name: 'Direct', exact: true }).click()
   const reopenedDirect = await readDurableWorkspace(args['dsh-home'])
   if (Object.values(reopenedDirect.rooms).filter(room => room.kind === 'direct').length !== 1) {
@@ -308,7 +363,7 @@ async function runInstalledScenario(page, args, state) {
   await dialog.getByRole('button', { name: 'Alice Direct', exact: true }).click()
   await dialog.getByText('LIVE_PARTIAL', { exact: false }).waitFor({ timeout: STEP_TIMEOUT_MS })
   await writeFile(args.gate, 'release\n', { encoding: 'utf8', flag: 'wx' })
-  await dialog.getByText('HOLD_REPLY Alice', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  await dialog.getByText('HOLD_REPLY Alice', { exact: true }).last().waitFor({ timeout: STEP_TIMEOUT_MS })
   await waitForIdle(dialog)
   if (await dialog.getByText('LIVE_PARTIAL', { exact: false }).count() !== 0) throw new Error('live projection did not converge after reload')
 
@@ -320,6 +375,7 @@ async function runInstalledScenario(page, args, state) {
   if (sessionBeforeDeparture === undefined) throw new Error('Alice had no durable session binding before departure')
 
   await dialog.getByRole('button', { name: 'Agents', exact: true }).click()
+  await selectReleaseDefinition(dialog)
   let alice = agentRow(dialog, 'Alice')
   await alice.getByRole('button', { name: 'Depart', exact: true }).click()
   await alice.getByText('Departed', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
@@ -328,15 +384,19 @@ async function runInstalledScenario(page, args, state) {
   await alice.getByText('Employed', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   await alice.getByRole('button', { name: 'Direct', exact: true }).click()
   await send(dialog, 'CHECK_MEMORY')
-  await dialog.getByText('MEMORY_OK Alice', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  await dialog.getByText('MEMORY_OK Alice', { exact: true }).last().waitFor({ timeout: STEP_TIMEOUT_MS })
   await capture(state, '04-settled', dialog, ['CHECK_MEMORY', 'MEMORY_OK Alice'])
 
   const durable = await readDurableWorkspace(args['dsh-home'])
+  await assertTaskToolEvidence(durable, args)
   const definitions = Object.values(durable.definitions)
   const agents = Object.values(durable.agents)
+  const releaseDefinitions = definitions.filter(definition => definition.name === 'Release engineer')
+  const releaseAgents = agents.filter(agent => agent.name === 'Alice' || agent.name === 'Bob')
+  const taskToolAgents = agents.filter(agent => agent.name === 'Task tools Alice' || agent.name === 'Task tools Bob')
   const groups = Object.values(durable.rooms).filter(room => room.kind === 'group')
   const directs = Object.values(durable.rooms).filter(room => room.kind === 'direct')
-  if (definitions.length !== 1 || agents.length !== 2 || groups.length !== 1 || directs.length !== 2) {
+  if (releaseDefinitions.length !== 1 || releaseAgents.length !== 2 || taskToolAgents.length !== 2 || groups.length !== 1 || directs.length !== 2) {
     throw new Error('durable release scenario has unexpected definition, agent, or room cardinality')
   }
   if (agents.some(agent => agent.employmentStatus !== 'employed')) throw new Error('re-employed agent did not settle as employed')

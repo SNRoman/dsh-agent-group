@@ -25,6 +25,7 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const COMPATIBILITY = JSON.parse(readFileSync(join(REPO_ROOT, 'compatibility.json'), 'utf8'))
 const FIXTURE_PATCH = join(REPO_ROOT, 'tests', 'fixtures', 'browser', 'cordis.test.yml')
 const SCRIPTED_ADAPTER = join(REPO_ROOT, 'tests', 'fixtures', 'browser', 'scripted-llm.ts')
+const TASK_TOOLS_PROFILE = join(REPO_ROOT, 'tests', 'fixtures', 'browser', 'task-tools-profile.ts')
 const BROWSER_DRIVER = join(REPO_ROOT, 'tests', 'e2e', 'workspace-browser.mjs')
 const READY_TIMEOUT_MS = 120_000
 const COMMAND_TIMEOUT_MS = 20 * 60_000
@@ -32,11 +33,12 @@ const REGISTRY_ATTEMPTS = 12
 const REGISTRY_PACKAGES = ['@dsh-agent-group/host', '@dsh-agent-group/web', 'dsh-agent-group']
 
 function parseArgs(argv) {
-  const options = { mode: 'packed', installationOnly: false, keep: false }
+  const options = { mode: 'packed', installationOnly: false, keep: false, skipDshPrepare: false }
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index]
     if (argument === '--installation-only') options.installationOnly = true
     else if (argument === '--keep') options.keep = true
+    else if (argument === '--skip-dsh-prepare') options.skipDshPrepare = true
     else if (argument === '--mode' || argument === '--dsh' || argument === '--version') {
       const value = argv[++index]
       if (value === undefined) throw new Error(`${argument} requires a value`)
@@ -139,11 +141,19 @@ async function stagePackedBundle(stage, evidence) {
 async function stageFixture(scratch) {
   const source = await readFile(FIXTURE_PATCH, 'utf8')
   const absoluteAdapter = pathToFileURL(resolve(SCRIPTED_ADAPTER)).href.replaceAll("'", "''")
-  const staged = source.replace("name: './scripted-llm.ts'", `name: '${absoluteAdapter}'`)
-  if (staged === source) throw new Error('browser fixture has no scripted adapter placeholder')
+  const absoluteTaskToolsProfile = pathToFileURL(resolve(TASK_TOOLS_PROFILE)).href.replaceAll("'", "''")
+  const stagedAdapter = source.replace("name: './scripted-llm.ts'", `name: '${absoluteAdapter}'`)
+  if (stagedAdapter === source) throw new Error('browser fixture has no scripted adapter placeholder')
+  const staged = stagedAdapter.replace("name: './task-tools-profile.ts'", `name: '${absoluteTaskToolsProfile}'`)
+  if (staged === stagedAdapter) throw new Error('browser fixture has no task-tools profile placeholder')
   const path = join(scratch, 'cordis.test.yml')
   await writeFile(path, staged, 'utf8')
-  return { path, adapter: absoluteAdapter }
+  const taskToolsRow = `    # This profile-only setup seeds a human task because the Browser product\n    # does not yet expose formal-task creation.  The employee itself invokes\n    # its registered tools through the normal agent loop.\n    - id: agent-workspace-task-tools-profile\n      name: './task-tools-profile.ts'\n`
+  const withoutTaskTools = source.replace(taskToolsRow, '')
+  if (withoutTaskTools === source) throw new Error('browser fixture has no removable task-tools profile row')
+  const uninstalledPath = join(scratch, 'cordis.after-uninstall.yml')
+  await writeFile(uninstalledPath, withoutTaskTools.replace("name: './scripted-llm.ts'", `name: '${absoluteAdapter}'`), 'utf8')
+  return { path, uninstalledPath, adapter: absoluteAdapter, taskToolsProfile: absoluteTaskToolsProfile }
 }
 
 async function waitForRegistry(version, evidence) {
@@ -339,7 +349,7 @@ async function main() {
     hostLogFinished = Promise.resolve()
   }
   try {
-    await prepareDsh(options.dsh)
+    if (!options.skipDshPrepare) await prepareDsh(options.dsh)
     let installCommands
     let registryPackages = []
     if (options.mode === 'packed') {
@@ -355,6 +365,7 @@ async function main() {
       DSH_AGENTS_HOME: agentsHome,
       DSH_TELEMETRY_DISABLED: '1',
       DSH_AGENT_GROUP_SMOKE_GATE: gate,
+      DSH_AGENT_GROUP_TASK_TOOLS_FIXTURE: join(scratch, 'task-tools-input.json'),
       NODE_NO_WARNINGS: '1',
     })
     const fixture = await stageFixture(scratch)
@@ -373,7 +384,7 @@ async function main() {
       stdio: 'pipe',
     })
     await writeFile(join(artifactsRoot, 'assembled-config.yml'), config.stdout, 'utf8')
-    assertAssembledConfig(config.stdout, fixture.adapter)
+    assertAssembledConfig(config.stdout, fixture.adapter, fixture.taskToolsProfile)
     await copyProfileEvidence(dshHome, join(artifactsRoot, 'installed'))
 
     const launchUrl = await startServer(fixture, environment, 'host.log')
@@ -387,6 +398,7 @@ async function main() {
         '--gate', gate,
         '--workspace', coreWorkspace,
         '--phase', 'installed',
+        '--task-tools-fixture', environment.DSH_AGENT_GROUP_TASK_TOOLS_FIXTURE,
       ], { cwd: REPO_ROOT, env: environment })
       await stopServer()
       await copyProfileEvidence(dshHome, join(artifactsRoot, 'installed'))
@@ -402,7 +414,7 @@ async function main() {
       await run('pnpm', uninstallCommand, { cwd: options.dsh, env: environment })
 
       const uninstalledManifest = JSON.parse(await readFile(join(profile, 'package.json'), 'utf8'))
-      const uninstalledConfig = await run('pnpm', ['dsh', '--profile', 'web', '--patch', fixture.path, '--dump-config'], {
+      const uninstalledConfig = await run('pnpm', ['dsh', '--profile', 'web', '--patch', fixture.uninstalledPath, '--dump-config'], {
         cwd: options.dsh,
         env: environment,
         stdio: 'pipe',
@@ -422,7 +434,7 @@ async function main() {
       }, null, 2)}\n`, 'utf8')
       await copyProfileEvidence(dshHome, join(artifactsRoot, 'uninstalled'))
 
-      const restartUrl = await startServer(fixture, environment, 'host-after-uninstall.log')
+      const restartUrl = await startServer({ ...fixture, path: fixture.uninstalledPath }, environment, 'host-after-uninstall.log')
       await run(process.execPath, [BROWSER_DRIVER,
         '--url', restartUrl,
         '--dsh-home', dshHome,
@@ -430,6 +442,7 @@ async function main() {
         '--gate', gate,
         '--workspace', coreWorkspace,
         '--phase', 'after-uninstall',
+        '--task-tools-fixture', environment.DSH_AGENT_GROUP_TASK_TOOLS_FIXTURE,
       ], { cwd: REPO_ROOT, env: environment })
       await stopServer()
 
