@@ -9,7 +9,7 @@ import { apply as jsonApply, Config as JsonConfig, inject as jsonInject } from '
 import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
 import { queryAgentMemory } from '../packages/host/src/memory-query.ts'
 import { agentWorkspaceSpec } from '../packages/host/src/spec.ts'
-import { AgentId, HumanId, TaskId } from '../packages/host/src/ids.ts'
+import { AgentId, AgentMemoryEntryId, HumanId, TaskId } from '../packages/host/src/ids.ts'
 import type { TaskId as WorkspaceTaskId } from '../packages/host/src/ids.ts'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import { assignHumanTask, recordChildRunStarted } from '../packages/host/src/tasks.ts'
@@ -53,6 +53,44 @@ async function boot(root: string): Promise<Booted> {
 }
 
 describe('agent workspace persistence', () => {
+  test('loads and preserves legacy duplicate memory associations while querying first provenance', async () => {
+    const root = await freshRoot()
+    const fixture = new URL('./fixtures/v0.1.0/agent-workspace.json', import.meta.url)
+    const stored = JSON.parse(await readFile(fixture, 'utf8')) as {
+      unit: { name: string; version: number }
+      global: null
+      tables: { workspaces: { local: WorkspaceState } }
+    }
+    const originalEntry = stored.tables.workspaces.local.memoryEntries[0]!
+    stored.tables.workspaces.local = {
+      ...stored.tables.workspaces.local,
+      nextId: 9,
+      memoryEntries: [
+        originalEntry,
+        { ...originalEntry, id: AgentMemoryEntryId('memory-8'), acquiredBy: 'history-sync' },
+      ],
+    }
+    await writeFile(join(root, 'agent_workspace.json'), JSON.stringify(stored), 'utf8')
+
+    const first = await boot(root)
+    const snapshot = first.service.snapshot()
+    const agentId = Object.values(snapshot.agents)[0]!.id
+    expect(first.service.queryMemory({ agentId, snapshotRevision: snapshot.revision, limit: 10 }).items).toEqual([
+      expect.objectContaining({ eventId: originalEntry.eventId, provenance: 'room-membership' }),
+    ])
+    const afterBoot = JSON.parse(await readFile(join(root, 'agent_workspace.json'), 'utf8')) as typeof stored
+    expect(afterBoot).toEqual(stored)
+    await first.dispose()
+
+    const second = await boot(root)
+    const restarted = second.service.snapshot()
+    expect(restarted.memoryEntries).toHaveLength(2)
+    expect(second.service.queryMemory({ agentId, snapshotRevision: restarted.revision, limit: 10 }).items).toEqual([
+      expect.objectContaining({ eventId: originalEntry.eventId, provenance: 'room-membership' }),
+    ])
+    await second.dispose()
+  })
+
   test('opens, mutates, and restarts an authentic v0.1.0 workspace', async () => {
     const root = await freshRoot()
     const fixture = new URL('./fixtures/v0.1.0/agent-workspace.json', import.meta.url)

@@ -245,17 +245,11 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
   }
 
   const memoryIds = new Set<string>()
-  const memoryAssociations = new Set<string>()
   for (const entry of state.memoryEntries) {
     if (memoryIds.has(entry.id)) throw new Error(`duplicate memory entry id '${entry.id}'`)
     memoryIds.add(entry.id)
     if (!events.has(entry.eventId)) throw new Error(`memory entry '${entry.id}' references missing event '${entry.eventId}'`)
     if (state.agents[entry.agentId] === undefined) throw new Error(`memory entry '${entry.id}' references missing agent '${entry.agentId}'`)
-    const association = `${entry.agentId}\u0000${entry.eventId}`
-    if (memoryAssociations.has(association)) {
-      throw new Error(`duplicate memory association for agent '${entry.agentId}' and event '${entry.eventId}'`)
-    }
-    memoryAssociations.add(association)
   }
 
   const sessionIds = new Set<string>()

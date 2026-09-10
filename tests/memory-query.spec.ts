@@ -98,6 +98,9 @@ describe('unified personal memory query', () => {
     })
     expect(page.items.find(item => item.eventId === 'event-legacy')?.definitionRevision).toEqual({ status: 'unresolved' })
     expect(page.items.find(item => item.eventId === 'event-room')?.text).toContain('Release İSTANBUL Friday')
+    const aliasedEvent = (page.items.at(-1) as unknown as { event?: { text?: string } } | undefined)?.event
+    if (aliasedEvent !== undefined) aliasedEvent.text = 'mutated through query result'
+    expect(page.items.at(-1)).not.toHaveProperty('event')
     expect(snapshot).toEqual(before)
   })
 
@@ -111,13 +114,20 @@ describe('unified personal memory query', () => {
 
     const rejected = [
       () => queryAgentMemory(snapshot, { agentId: aliceId, snapshotRevision: 17, limit: 2, cursor: 'not-json' }),
+      () => queryAgentMemory(snapshot, { agentId: aliceId, snapshotRevision: 17, limit: 2, cursor: `@@${first.nextCursor}` }),
+      () => queryAgentMemory(snapshot, { agentId: aliceId, snapshotRevision: 17, limit: 2, cursor: `${first.nextCursor}!!` }),
+      () => queryAgentMemory(snapshot, { agentId: aliceId, snapshotRevision: 17, limit: 2, cursor: `${first.nextCursor}\n` }),
+      () => queryAgentMemory(snapshot, { agentId: aliceId, snapshotRevision: 17, limit: 2, cursor: `${first.nextCursor}=` }),
+      () => queryAgentMemory(snapshot, { agentId: aliceId, snapshotRevision: 17, limit: 2, cursor: Buffer.from(` ${Buffer.from(first.nextCursor!, 'base64url').toString('utf8')}`, 'utf8').toString('base64url') }),
+      () => queryAgentMemory(snapshot, { agentId: aliceId, snapshotRevision: 17, limit: 2, cursor: Buffer.from(JSON.stringify({ version: 1, agentId: aliceId, beforeSequence: 5 }), 'utf8').toString('base64url') }),
+      () => queryAgentMemory(snapshot, { agentId: aliceId, snapshotRevision: 17, limit: 2, cursor: Buffer.from(JSON.stringify({ version: 1, agentId: aliceId, beforeSequence: 5, snapshotRevision: 17, extra: true }), 'utf8').toString('base64url') }),
       () => queryAgentMemory(snapshot, { agentId: aliceId, snapshotRevision: 17, limit: 2, cursor: Buffer.from(JSON.stringify({ version: 2, agentId: aliceId, beforeSequence: 5, snapshotRevision: 17 })).toString('base64url') }),
       () => queryAgentMemory(snapshot, { agentId: bobId, snapshotRevision: 17, limit: 2, cursor: first.nextCursor }),
       () => queryAgentMemory(snapshot, { agentId: aliceId, snapshotRevision: 16, limit: 2 }),
       () => queryAgentMemory({ ...snapshot, revision: 18 }, { agentId: aliceId, snapshotRevision: 17, limit: 2, cursor: first.nextCursor }),
     ]
     for (const reject of rejected) expect(reject).toThrow()
-    expect(() => rejected[3]!()).toThrow(expect.objectContaining({
+    expect(() => rejected[10]!()).toThrow(expect.objectContaining({
       code: 'stale-revision', details: { expectedRevision: 16, actualRevision: 17 },
     }))
     expect(snapshot).toEqual(state())

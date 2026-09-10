@@ -63,7 +63,6 @@ export interface MemoryItem {
   readonly text?: string | undefined
   readonly childStatus?: ChildRunTerminalStatus | undefined
   readonly definitionRevision: MemoryDefinitionRevision
-  readonly event: WorkspaceEvent
 }
 
 /** Stable filters and snapshot checkpoint for one agent's memory timeline. */
@@ -100,7 +99,13 @@ interface ProjectedMemoryItem {
   readonly searchableText: string
 }
 
-/** Query one departed or employed agent's durable memory without mutating the snapshot. */
+/**
+ * Query one departed or employed agent's durable memory without mutating the snapshot.
+ * @param state Immutable aggregate snapshot that owns every projected record.
+ * @param query Filters, page limit, cursor, and required snapshot revision.
+ * @returns A detached newest-first page tied to the requested snapshot revision.
+ * @throws {Error} When the query or opaque cursor is invalid, or its revision is stale.
+ */
 export function queryAgentMemory(state: WorkspaceState, query: MemoryQuery): MemoryPage {
   requireQuery(state, query)
   const cursor = query.cursor === undefined ? undefined : decodeCursor(query.cursor)
@@ -184,7 +189,6 @@ function projectMemoryItem(state: WorkspaceState, event: WorkspaceEvent, entry: 
     definitionRevision: revision === undefined
       ? { status: 'unresolved' }
       : { status: 'active', id: revision.id, number: revision.number },
-    event,
   }
 }
 
@@ -306,13 +310,20 @@ function encodeCursor(cursor: MemoryCursor): string {
 }
 
 function decodeCursor(encoded: string): MemoryCursor {
+  if (!/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error('memory cursor is malformed or non-canonical')
   let parsed: unknown
   try {
     parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'))
   } catch {
     throw new Error('memory cursor is malformed')
   }
+  const keys = isRecord(parsed) ? Object.keys(parsed).sort() : []
   if (!isRecord(parsed)
+    || keys.length !== 4
+    || keys[0] !== 'agentId'
+    || keys[1] !== 'beforeSequence'
+    || keys[2] !== 'snapshotRevision'
+    || keys[3] !== 'version'
     || parsed.version !== 1
     || typeof parsed.agentId !== 'string'
     || parsed.agentId.length === 0
@@ -322,7 +333,14 @@ function decodeCursor(encoded: string): MemoryCursor {
     || (parsed.snapshotRevision as number) < 0) {
     throw new Error('memory cursor is malformed or unsupported')
   }
-  return parsed as unknown as MemoryCursor
+  const cursor: MemoryCursor = {
+    version: 1,
+    agentId: parsed.agentId as AgentId,
+    beforeSequence: parsed.beforeSequence as number,
+    snapshotRevision: parsed.snapshotRevision as number,
+  }
+  if (encodeCursor(cursor) !== encoded) throw new Error('memory cursor is malformed or non-canonical')
+  return cursor
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

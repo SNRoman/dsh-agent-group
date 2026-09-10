@@ -218,7 +218,11 @@ export class AgentWorkspaceDomainService extends Service {
     return structuredClone(current)
   }
 
-  /** Query one agent's read-only memory at an exact aggregate revision. */
+  /**
+   * Query one agent's read-only memory at an exact aggregate revision.
+   * @param query Filters, page limit, cursor, and required snapshot revision.
+   * @returns A detached newest-first page from committed state.
+   */
   queryMemory(query: MemoryQuery): MemoryPage {
     return queryAgentMemory(this.snapshot(), query)
   }

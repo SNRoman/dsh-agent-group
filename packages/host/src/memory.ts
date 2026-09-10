@@ -86,7 +86,11 @@ export class MemoryReader {
     return recallAgentEvents(this.state, request)
   }
 
-  /** Inspect one employed or departed agent's durable memory at this snapshot revision. */
+  /**
+   * Inspect one employed or departed agent's durable memory at this snapshot revision.
+   * @param request Filters, page limit, cursor, and required snapshot revision.
+   * @returns A detached newest-first page from the reader's immutable snapshot.
+   */
   query(request: MemoryQuery): MemoryPage {
     return queryAgentMemory(this.state, request)
   }

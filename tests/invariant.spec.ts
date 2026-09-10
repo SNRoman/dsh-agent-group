@@ -175,10 +175,6 @@ const relationshipCorruptions: readonly Corruption[] = [
   ['event id uniqueness', state => ({ ...state, events: [...state.events, state.events[0]!] }), /duplicate event id/],
   ['event sequence uniqueness', state => ({ ...state, events: state.events.map((event, index) => index === 0 ? { ...event, sequence: 2 } : event) }), /event id|event sequence/],
   ['memory id uniqueness', state => ({ ...state, memoryEntries: [...state.memoryEntries, state.memoryEntries[0]!] }), /duplicate memory entry id/],
-  ['memory association uniqueness', state => {
-    const entry = state.memoryEntries[0]!
-    return { ...state, memoryEntries: [...state.memoryEntries, { ...entry, id: 'memory-999' }] } as WorkspaceState
-  }, /duplicate memory association/],
   ['task root', state => {
     const task = Object.values(state.tasks).find(candidate => candidate.id !== candidate.rootTaskId)!
     return { ...state, tasks: { ...state.tasks, [task.id]: { ...task, rootTaskId: TaskId('missing') } } }
