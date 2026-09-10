@@ -26,6 +26,7 @@ const COMPATIBILITY = JSON.parse(readFileSync(join(REPO_ROOT, 'compatibility.jso
 const FIXTURE_PATCH = join(REPO_ROOT, 'tests', 'fixtures', 'browser', 'cordis.test.yml')
 const SCRIPTED_ADAPTER = join(REPO_ROOT, 'tests', 'fixtures', 'browser', 'scripted-llm.ts')
 const TASK_TOOLS_PROFILE = join(REPO_ROOT, 'tests', 'fixtures', 'browser', 'task-tools-profile.ts')
+const TASK_TOOLS_DRIVER = join(REPO_ROOT, 'tests', 'e2e', 'task-tools-profile.mjs')
 const BROWSER_DRIVER = join(REPO_ROOT, 'tests', 'e2e', 'workspace-browser.mjs')
 const READY_TIMEOUT_MS = 120_000
 const COMMAND_TIMEOUT_MS = 20 * 60_000
@@ -33,10 +34,11 @@ const REGISTRY_ATTEMPTS = 12
 const REGISTRY_PACKAGES = ['@dsh-agent-group/host', '@dsh-agent-group/web', 'dsh-agent-group']
 
 function parseArgs(argv) {
-  const options = { mode: 'packed', installationOnly: false, keep: false, skipDshPrepare: false }
+  const options = { mode: 'packed', installationOnly: false, taskToolsOnly: false, keep: false, skipDshPrepare: false }
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index]
     if (argument === '--installation-only') options.installationOnly = true
+    else if (argument === '--task-tools-only') options.taskToolsOnly = true
     else if (argument === '--keep') options.keep = true
     else if (argument === '--skip-dsh-prepare') options.skipDshPrepare = true
     else if (argument === '--mode' || argument === '--dsh' || argument === '--version') {
@@ -49,6 +51,7 @@ function parseArgs(argv) {
   if (options.mode === 'registry' && !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(options.version ?? '')) {
     throw new Error('registry mode requires an exact SemVer through --version')
   }
+  if (options.installationOnly && options.taskToolsOnly) throw new Error('--installation-only and --task-tools-only cannot be combined')
   const defaultDsh = resolve(REPO_ROOT, '..', '..', 'deepseek-harness')
   options.dsh = resolve(options.dsh ?? process.env['DSH_SOURCE'] ?? defaultDsh)
   return options
@@ -390,6 +393,17 @@ async function main() {
     const launchUrl = await startServer(fixture, environment, 'host.log')
     if (options.installationOnly) {
       await stopServer()
+    } else if (options.taskToolsOnly) {
+      await run(process.execPath, [TASK_TOOLS_DRIVER,
+        '--dsh-home', dshHome,
+        '--evidence', artifactsRoot,
+        '--task-tools-fixture', environment.DSH_AGENT_GROUP_TASK_TOOLS_FIXTURE,
+      ], { cwd: REPO_ROOT, env: environment })
+      await stopServer()
+      await copyProfileEvidence(dshHome, join(artifactsRoot, 'installed'))
+      const sessions = await manifestFileTree(join(dshHome, 'sessions'))
+      if (sessions.length === 0) throw new Error('the task-tools profile run persisted no Session files')
+      await writeFile(join(artifactsRoot, 'task-tools-sessions.json'), `${JSON.stringify(sessions, null, 2)}\n`, 'utf8')
     } else {
       await run(process.execPath, [BROWSER_DRIVER,
         '--url', launchUrl,

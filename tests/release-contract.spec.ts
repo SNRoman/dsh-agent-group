@@ -17,6 +17,7 @@ const browserFixtureFiles = [
   'tests/fixtures/browser/scripted-llm.ts',
   'tests/fixtures/browser/task-tools-profile.ts',
   'tests/fixtures/task-tools/profile-session.expected.json',
+  'tests/e2e/task-tools-profile.mjs',
   'tests/e2e/workspace-browser.mjs',
   '.github/workflows/registry-smoke.yml',
 ] as const
@@ -190,6 +191,10 @@ describe('public release contract', () => {
     expect(smoke).toContain('toMatchAriaSnapshot')
     expect(smoke).toContain('@all')
 
+    const taskToolsSmoke = readText('tests/e2e/task-tools-profile.mjs')
+    expect(taskToolsSmoke).toContain('task-tools-recorded-session.json')
+    expect(taskToolsSmoke).toContain('profile-session.expected.json')
+
     const registryWorkflow = readText('.github/workflows/registry-smoke.yml')
     expect(registryWorkflow).toContain('workflow_dispatch')
     expect(registryWorkflow).toContain('plugin-version')
@@ -206,6 +211,7 @@ describe('public release contract', () => {
     expect(releaseDriver).toContain('assertProfileLock')
     expect(releaseDriver).toContain('assertAssembledConfig')
     expect(releaseDriver).toContain('packed-manifests.json')
+    expect(releaseDriver).toContain('--task-tools-only')
     expect(releaseDriver).toContain("REGISTRY_PACKAGES = ['@dsh-agent-group/host', '@dsh-agent-group/web', 'dsh-agent-group']")
   })
 
