@@ -58,6 +58,32 @@ Both `git diff --check` before staging and `git diff --cached --check` after sta
 - Cursors contain only version, agent id, exclusive upper sequence, and snapshot revision. Revision drift reports `stale-revision` with `expectedRevision` and `actualRevision`.
 - Text search lowercases the complete display projection and performs exact substring matching; it does not alter model recall or add semantic retrieval.
 
+## Review fix round
+
+Fix commit: `743c59692c218a6d18155fc76532632b123e625a` (`fix(host): harden personal memory query`).
+
+The fix-round RED command was:
+
+```text
+pnpm vitest run tests/memory-query.spec.ts tests/restart.integration.spec.ts
+```
+
+It exited 1 with 3 failures and 10 passes. The public result retained an event alias into the supplied state, permissive cursor decoding accepted a rejected input, and the real Host load path rejected a persisted duplicate association before query-time deduplication.
+
+The fix removes the raw canonical-event object from `MemoryItem`, accepts only the exact canonical unpadded base64url cursor emitted by Host, permits legacy duplicate agent/event associations while retaining memory-id and referential invariants, and completes the three public query JSDoc contracts. The restart test loads an authentic storage document augmented with a second distinct memory-entry id, proves startup does not rewrite that document, and proves both initial and restarted public Host queries retain the first provenance.
+
+Final fix-round verification:
+
+```text
+pnpm vitest run tests/memory.spec.ts tests/memory-query.spec.ts tests/restart.integration.spec.ts tests/invariant.spec.ts
+pnpm run typecheck
+pnpm run build:host
+git diff --check
+git diff --cached --check
+```
+
+The focused command exited 0 with 4 files and 90 tests passing. Typecheck and Host build exited 0, and both diff checks produced no output.
+
 ## Remaining risks
 
 - The query accepts a typed same-process request; cursor data is runtime-validated, while filter discriminants rely on TypeScript until the later RPC task adds transport parsing.
