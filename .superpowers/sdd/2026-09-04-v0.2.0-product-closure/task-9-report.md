@@ -94,3 +94,31 @@ git diff --cached --check
 The focused command passed 5 files and 108 tests. The expanded command passed 13 files and 179 tests. Typecheck and Host build exited 0, and both diff checks produced no output.
 
 The remaining legacy-attribution behavior is deliberate: an accepted attempt without exact or structurally provable revision provenance settles as interrupted rather than inheriting a current role.
+
+## Review fix round 2
+
+Fix commit: `6f6d13729da50c91a9c780c49aafcfc63c4d98b4` (`fix(host): close employee admission teardown race`).
+
+The deterministic RED command placed both single-agent and whole-pool teardown inside the awaited fresh-session hiding operation:
+
+```text
+pnpm vitest run tests/runtime.spec.ts -t "fresh-session hiding|started binding write"
+```
+
+It exited 1 with two failures because both hide-window cases called `recordSessionId()` after invalidation. The binding-write cases passed and established the supported ordering for a write already in progress: the binding may finish, but the invalidated handle and role are never published and the created handle is disposed exactly once.
+
+`EmployeeAgentPool` now uses one admission-token assertion for `stopped` and per-agent generation. Create and resume admission revalidate that token after each awaited preparation or hiding operation and before the next side effect. Fresh creation checks before `agents.create()`, before and after hiding, and after the binding write. Teardown during option preparation therefore prevents agent creation; teardown during hiding disposes the already-created handle without writing a binding; teardown during a started binding write preserves the completed binding but disposes the handle without publishing it.
+
+Final review-fix verification:
+
+```text
+pnpm vitest run tests/runtime.spec.ts
+pnpm vitest run tests/state.spec.ts tests/definition-history.spec.ts tests/runtime.spec.ts tests/dispatcher.spec.ts tests/task-delivery-coordinator.spec.ts
+pnpm vitest run tests/state.spec.ts tests/definition-history.spec.ts tests/runtime.spec.ts tests/dispatcher.spec.ts tests/task-delivery-coordinator.spec.ts tests/task-delivery.spec.ts tests/tasks.spec.ts tests/task-tools.spec.ts tests/activity-controller.spec.ts tests/workspace-activity-stream.spec.ts tests/memory.spec.ts tests/memory-query.spec.ts tests/restart.integration.spec.ts
+pnpm run typecheck
+pnpm run build:host
+git diff --check
+git diff --cached --check
+```
+
+The final runtime command passed 36/36 tests, the focused command passed 5 files and 112 tests, and the expanded command passed 13 files and 183 tests. Typecheck and Host build exited 0, and both diff checks produced no output.
