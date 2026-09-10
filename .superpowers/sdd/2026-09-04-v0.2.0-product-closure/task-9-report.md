@@ -122,3 +122,24 @@ git diff --cached --check
 ```
 
 The final runtime command passed 36/36 tests, the focused command passed 5 files and 112 tests, and the expanded command passed 13 files and 183 tests. Typecheck and Host build exited 0, and both diff checks produced no output.
+
+### Full-suite consistency correction
+
+Test commit: `557798a0f41f3b2ef29c15ff159ebc29dc904768` (`test(host): align admission disposal regression`).
+
+The first full `pnpm test` after the admission-token change found one obsolete expectation in `tests/host-consistency.spec.ts`. Its fixture started disposal before asynchronous admission preparation had reached `agents.create()`, but still expected a preconstructed handle disposer to run. The strengthened ordering correctly prevents `agents.create()` in that interleaving.
+
+The corrected consistency test uses an explicit options-preparation barrier. It proves disposal invalidates admission before agent creation, no Session binding is written, and no handle is published. The separate runtime hide-window cases remain the evidence that a handle already created before teardown is disposed exactly once.
+
+Final correction verification:
+
+```text
+pnpm vitest run tests/host-consistency.spec.ts -t "dispose during admission preparation"
+pnpm test
+pnpm run typecheck
+pnpm run build:host
+git diff --check
+git diff --cached --check
+```
+
+The focused case passed 1/1, the complete suite passed 29 files and 363 tests, TypeScript checks and the Host build exited 0, and both diff checks produced no output.
