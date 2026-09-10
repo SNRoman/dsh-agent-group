@@ -233,25 +233,36 @@ describe('dispatcher consistency', () => {
 })
 
 describe('employee pool lifecycle', () => {
-  test('dispose invalidates an in-flight ensure so a departed employee cannot be resurrected', async () => {
-    let publish!: (value: AgentHandle) => void
-    const created = new Promise<AgentHandle>(resolve => { publish = resolve })
-    const disposeHandle = vi.fn(async () => {})
+  test('dispose during admission preparation prevents agent creation and session binding', async () => {
+    const optionsStarted = Promise.withResolvers<void>()
+    const releaseOptions = Promise.withResolvers<void>()
+    const create = vi.fn(async () => handle())
+    const recordSessionId = vi.fn(async () => {})
     const source: EmployeeSessionSource = {
       sessionIdFor: () => undefined,
-      recordSessionId: vi.fn(async () => {}),
+      recordSessionId,
     }
-    const pool = new EmployeeAgentPool({ create: vi.fn(async () => created), resume: vi.fn() }, source)
+    const pool = new EmployeeAgentPool(
+      { create, resume: vi.fn() },
+      source,
+      async () => {
+        optionsStarted.resolve()
+        await releaseOptions.promise
+        return {}
+      },
+    )
     const alice = AgentId('alice')
 
     const ensuring = pool.ensure(alice)
+    await optionsStarted.promise
     const disposing = pool.dispose(alice)
-    publish(handle(disposeHandle))
+    releaseOptions.resolve()
 
     await expect(ensuring).rejects.toThrow(/invalidated|disposed/)
     await disposing
+    expect(create).not.toHaveBeenCalled()
+    expect(recordSessionId).not.toHaveBeenCalled()
     expect(pool.handleFor(alice)).toBeUndefined()
-    expect(disposeHandle).toHaveBeenCalledTimes(1)
   })
 })
 
