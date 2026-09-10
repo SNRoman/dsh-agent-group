@@ -60,5 +60,37 @@ pnpm run build:host
 
 ## Remaining risks
 
-- A failure of both replacement registration and prior-role rollback leaves no installed role section until a later synchronization retries the refresh. The failure retains both causes and does not strand the per-agent delivery lane.
 - Legacy claim attribution remains intentionally unresolved when the persisted event sequence cannot prove the revision. Such completed evidence is not converted into a model-visible result.
+
+## Review fix round 1
+
+Fix commit: `9567209220f3fbafa40c2a8559f1b27bd67919db` (`fix(host): converge role refresh and recovery`).
+
+The deterministic review RED command covered the four reported defects and exited 1 with five failures:
+
+```text
+pnpm vitest run tests/runtime.spec.ts tests/task-delivery-coordinator.spec.ts tests/definition-history.spec.ts -t "departure invalidates queued delivery|whole-pool teardown invalidates queued refresh|returns a committed revision|pending accepted recovery retains|derives authentic"
+```
+
+The failures proved that a queued delivery rematerialized a disposed employee, whole-pool teardown allowed a queued refresh to run, post-commit refresh failure rejected the committed command, pending accepted recovery wrote R2 instead of durable claim revision R1, and a count-matched `definition/revised`/`definition/revised` legacy sequence received invented provenance. A further deterministic maintenance barrier proved that disposal between `runMaintenance()` admission and its callback allowed a stale role write. A final refresh-after-departure RED proved that refresh could rematerialize under the new generation.
+
+The fix captures each operation's generation when it enters the per-agent lane and checks it before execution. Single-agent disposal invalidates queued work; whole-pool disposal becomes terminal, invalidates every handle, admission, and operation id, disposes published handles, and awaits both admissions and operation tails. Fresh admission checks invalidation before hiding or recording its Session binding. Refresh requires a resident handle and rechecks generation inside the maintenance callback; refresh failure retires the resident before queued work can advance.
+
+Host validates employment before pool delivery admission. After a revise or synchronize mutation commits, a resident refresh failure records `agent-role-refresh-failed`, retires the failed runtime while preserving its durable Session binding, and returns the committed state. A later delivery rematerializes from that binding and reads the durable revision; callers do not retry and create a duplicate revision or event.
+
+Pending recovery now distinguishes an attempt accepted before restart from one first claimed during recovery. The former uses only the durable accepted-event revision, exact or provably derived, even when the recovered runtime reports a newer role. The latter may use the recovery-time role captured by its claim. Legacy definition history derives positions only for exactly one leading `definition/created` followed by `definition/revised` events.
+
+Final review-fix verification:
+
+```text
+pnpm vitest run tests/state.spec.ts tests/definition-history.spec.ts tests/runtime.spec.ts tests/dispatcher.spec.ts tests/task-delivery-coordinator.spec.ts
+pnpm vitest run tests/state.spec.ts tests/definition-history.spec.ts tests/runtime.spec.ts tests/dispatcher.spec.ts tests/task-delivery-coordinator.spec.ts tests/task-delivery.spec.ts tests/tasks.spec.ts tests/task-tools.spec.ts tests/activity-controller.spec.ts tests/workspace-activity-stream.spec.ts tests/memory.spec.ts tests/memory-query.spec.ts tests/restart.integration.spec.ts
+pnpm run typecheck
+pnpm run build:host
+git diff --check
+git diff --cached --check
+```
+
+The focused command passed 5 files and 108 tests. The expanded command passed 13 files and 179 tests. Typecheck and Host build exited 0, and both diff checks produced no output.
+
+The remaining legacy-attribution behavior is deliberate: an accepted attempt without exact or structurally provable revision provenance settles as interrupted rather than inheriting a current role.
