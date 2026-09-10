@@ -396,6 +396,8 @@ export interface RoomMessageCommand {
   readonly actor: WorkspaceActor
   readonly text: string
   readonly mentions: readonly AgentId[]
+  /** Role revision captured for an agent-authored turn; absent for humans and legacy events. */
+  readonly definitionRevisionId?: DefinitionRevisionId | undefined
 }
 
 /** Every mutation accepted by the aggregate. */

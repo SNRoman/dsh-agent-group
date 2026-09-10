@@ -11,7 +11,7 @@ import { apply as domainApply, Config as DomainConfig, inject as domainInject } 
 import { apply as jsonApply, Config as JsonConfig, inject as jsonInject } from '@deepseek-ai/dsh-storage-json'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
-import { AgentId, HumanId, RoomId, TaskDeliveryAttemptId, TaskId } from '../packages/host/src/ids.ts'
+import { AgentId, DefinitionRevisionId, HumanId, RoomId, TaskDeliveryAttemptId, TaskId } from '../packages/host/src/ids.ts'
 import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
 import { EmployeeAgentPool } from '../packages/host/src/runtime.ts'
 import type { EmployeeSessionSource } from '../packages/host/src/runtime.ts'
@@ -239,6 +239,159 @@ describe('EmployeeAgentPool', () => {
     }))
     expect(configure).toHaveBeenCalledWith(AgentId('alice'), 'create')
     expect(configure).toHaveBeenCalledWith(AgentId('bob'), 'resume')
+  })
+
+  test('refreshes one resident role across an exact idle barrier and queues later deliveries', async () => {
+    const idle = Promise.withResolvers<void>()
+    const firstDelivery = Promise.withResolvers<void>()
+    const firstStarted = Promise.withResolvers<void>()
+    const calls: string[] = []
+    let activeRevision: DefinitionRevisionId | undefined
+    const disposers = new Map<string, ReturnType<typeof vi.fn>>()
+    const agentCtx = {} as Context
+    const agent = {
+      id: SessionId('stable-session'),
+      ctx: agentCtx,
+      session: { header: { id: SessionId('stable-session') } },
+      whenIdle: vi.fn(async () => await idle.promise),
+      runMaintenance: vi.fn(async <T>(task: (signal: AbortSignal) => Promise<T>) => await task(new AbortController().signal)),
+    } as unknown as Agent
+    const stableHandle = { agent, dispose: vi.fn(async () => {}) }
+    const pool = new EmployeeAgentPool(
+      {
+        create: vi.fn(async options => {
+          await options.setup?.(agentCtx)
+          return stableHandle
+        }),
+        resume: vi.fn(),
+      },
+      { sessionIdFor: () => undefined, recordSessionId: vi.fn(async () => {}) },
+      async () => ({ roleRevisionId: DefinitionRevisionId('revision-1') }),
+      undefined,
+      (_agentId, revisionId, context) => {
+        expect(context).toBe(agentCtx)
+        if (activeRevision !== undefined) throw new Error('duplicate role section')
+        activeRevision = revisionId
+        calls.push(`install:${revisionId}`)
+        const dispose = vi.fn(() => {
+          activeRevision = undefined
+          calls.push(`dispose:${revisionId}`)
+        })
+        disposers.set(revisionId, dispose)
+        return dispose
+      },
+    )
+    const handleBefore = await pool.ensure(AgentId('alice'))
+    const sessionBefore = handleBefore.agent.id
+    const active = pool.runDelivery(AgentId('alice'), async handle => {
+      expect(handle).toBe(handleBefore)
+      firstStarted.resolve()
+      await firstDelivery.promise
+      return 'old-turn'
+    })
+    await firstStarted.promise
+
+    const refreshing = pool.refreshRole(AgentId('alice'), DefinitionRevisionId('revision-2'))
+    let laterStarted = false
+    const later = pool.runDelivery(AgentId('alice'), async handle => {
+      laterStarted = true
+      expect(handle).toBe(handleBefore)
+      return 'new-turn'
+    })
+    await Promise.resolve()
+    expect(calls).toEqual(['install:revision-1'])
+    expect(laterStarted).toBe(false)
+
+    firstDelivery.resolve()
+    await active
+    await vi.waitFor(() => expect(agent.whenIdle).toHaveBeenCalledTimes(1))
+    expect(calls).toEqual(['install:revision-1'])
+    expect(laterStarted).toBe(false)
+
+    idle.resolve()
+    await refreshing
+    expect(await later).toBe('new-turn')
+    expect(pool.handleFor(AgentId('alice'))).toBe(handleBefore)
+    expect(pool.handleFor(AgentId('alice'))?.agent.id).toBe(sessionBefore)
+    expect(calls).toEqual(['install:revision-1', 'dispose:revision-1', 'install:revision-2'])
+    expect(disposers.get('revision-1')).toHaveBeenCalledTimes(1)
+    expect(agent.runMaintenance).toHaveBeenCalledTimes(1)
+  })
+
+  test('keeps the prior role and releases its gate when replacement registration fails', async () => {
+    const calls: string[] = []
+    const agentCtx = {} as Context
+    const agent = {
+      id: SessionId('stable-session'), ctx: agentCtx,
+      whenIdle: vi.fn(async () => {}),
+      runMaintenance: vi.fn(async <T>(task: (signal: AbortSignal) => Promise<T>) => await task(new AbortController().signal)),
+    } as unknown as Agent
+    let activeRevision: DefinitionRevisionId | undefined
+    const oldDispose = vi.fn(() => {
+      activeRevision = undefined
+      calls.push('dispose:old')
+    })
+    const pool = new EmployeeAgentPool(
+      {
+        create: vi.fn(async options => {
+          await options.setup?.(agentCtx)
+          return { agent, dispose: vi.fn(async () => {}) }
+        }),
+        resume: vi.fn(),
+      },
+      { sessionIdFor: () => undefined, recordSessionId: vi.fn(async () => {}) },
+      async () => ({ roleRevisionId: DefinitionRevisionId('revision-1') }),
+      undefined,
+      (_agentId, revisionId) => {
+        if (activeRevision !== undefined) throw new Error('duplicate role section')
+        calls.push(`install:${revisionId}`)
+        if (revisionId === DefinitionRevisionId('revision-2')) throw new Error('replacement failed')
+        activeRevision = revisionId
+        return revisionId === DefinitionRevisionId('revision-1') ? oldDispose : vi.fn()
+      },
+    )
+    await pool.ensure(AgentId('alice'))
+    await expect(pool.refreshRole(AgentId('alice'), DefinitionRevisionId('revision-2'))).rejects.toThrow('replacement failed')
+    expect(oldDispose).toHaveBeenCalledTimes(1)
+    expect(pool.roleRevisionFor(AgentId('alice'))).toBe(DefinitionRevisionId('revision-1'))
+    expect(await pool.runDelivery(AgentId('alice'), async () => 'released')).toBe('released')
+    await pool.refreshRole(AgentId('alice'), DefinitionRevisionId('revision-3'))
+    expect(calls).toEqual([
+      'install:revision-1', 'dispose:old', 'install:revision-2',
+      'install:revision-1', 'dispose:old', 'install:revision-3',
+    ])
+  })
+
+  test('keeps the prior role and releases its gate when prior role teardown fails', async () => {
+    const agentCtx = {} as Context
+    const agent = {
+      id: SessionId('stable-session'), ctx: agentCtx,
+      whenIdle: vi.fn(async () => {}),
+      runMaintenance: vi.fn(async <T>(task: (signal: AbortSignal) => Promise<T>) => await task(new AbortController().signal)),
+    } as unknown as Agent
+    const install = vi.fn((_agentId: AgentId, revisionId: DefinitionRevisionId) => {
+      if (revisionId === DefinitionRevisionId('revision-1')) return () => { throw new Error('teardown failed') }
+      return vi.fn()
+    })
+    const pool = new EmployeeAgentPool(
+      {
+        create: vi.fn(async options => {
+          await options.setup?.(agentCtx)
+          return { agent, dispose: vi.fn(async () => {}) }
+        }),
+        resume: vi.fn(),
+      },
+      { sessionIdFor: () => undefined, recordSessionId: vi.fn(async () => {}) },
+      async () => ({ roleRevisionId: DefinitionRevisionId('revision-1') }),
+      undefined,
+      install,
+    )
+
+    await pool.ensure(AgentId('alice'))
+    await expect(pool.refreshRole(AgentId('alice'), DefinitionRevisionId('revision-2'))).rejects.toThrow('teardown failed')
+    expect(pool.roleRevisionFor(AgentId('alice'))).toBe(DefinitionRevisionId('revision-1'))
+    expect(install).toHaveBeenCalledTimes(1)
+    await expect(pool.runDelivery(AgentId('alice'), async () => 'released')).resolves.toBe('released')
   })
 })
 

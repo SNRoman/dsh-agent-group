@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { DefinitionRevisionId, HumanId, WorkspaceId } from '../packages/host/src/ids.ts'
+import { AgentId, DefinitionRevisionId, HumanId, WorkspaceId } from '../packages/host/src/ids.ts'
 import { workspaceStateSchema } from '../packages/host/src/spec.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import { assignHumanTask, grantTaskDelegation, recordChildRunStarted } from '../packages/host/src/tasks.ts'
@@ -167,6 +167,104 @@ describe('WorkspaceState mutations', () => {
 
     expect(restored.state.agents[alice.agentId]?.definitionRevisionId).toBe(definition.definitionRevisionId)
     expect(restored.state.events.at(-1)?.definitionRevisionId).toBe(definition.definitionRevisionId)
+  })
+
+  test('records exact revision ids on new definition creation and revision events', () => {
+    const created = mutateWorkspace(createInitialState(WorkspaceId('local')), {
+      type: 'definition/create', ...javaEngineer,
+    })
+    expect(created.state.events[0]).toEqual(expect.objectContaining({
+      type: 'definition/created', definitionRevisionId: created.definitionRevisionId,
+    }))
+    const revised = mutateWorkspace(created.state, {
+      type: 'definition/revise', definitionId: created.definitionId, description: 'v2', instructions: 'two',
+    })
+    expect(revised.state.events.at(-1)).toEqual(expect.objectContaining({
+      type: 'definition/revised', definitionRevisionId: revised.definitionRevisionId,
+    }))
+  })
+
+  test('revises with none, all, or a mixed employed/departed subset only when explicitly selected', () => {
+    const created = mutateWorkspace(createInitialState(WorkspaceId('local')), {
+      type: 'definition/create', ...javaEngineer,
+    })
+    const alice = mutateWorkspace(created.state, { type: 'agent/create', definitionId: created.definitionId, name: 'Alice' })
+    const bob = mutateWorkspace(alice.state, { type: 'agent/create', definitionId: created.definitionId, name: 'Bob' })
+    const cara = mutateWorkspace(bob.state, { type: 'agent/create', definitionId: created.definitionId, name: 'Cara' })
+    const departed = mutateWorkspace(cara.state, { type: 'agent/depart', agentId: bob.agentId })
+
+    const none = mutateWorkspace(departed.state, {
+      type: 'definition/revise', definitionId: created.definitionId, description: 'v2', instructions: 'two',
+      synchronizeAgentIds: [],
+    })
+    expect(Object.values(none.state.agents).map(agent => agent.definitionRevisionId)).toEqual([
+      created.definitionRevisionId, created.definitionRevisionId, created.definitionRevisionId,
+    ])
+    const subset = mutateWorkspace(none.state, {
+      type: 'definition/revise', definitionId: created.definitionId, description: 'v3', instructions: 'three',
+      synchronizeAgentIds: [alice.agentId, bob.agentId],
+    })
+    expect(subset.state.agents[alice.agentId]?.definitionRevisionId).toBe(subset.definitionRevisionId)
+    expect(subset.state.agents[bob.agentId]?.definitionRevisionId).toBe(subset.definitionRevisionId)
+    expect(subset.state.agents[cara.agentId]?.definitionRevisionId).toBe(created.definitionRevisionId)
+    const all = mutateWorkspace(subset.state, {
+      type: 'definition/revise', definitionId: created.definitionId, description: 'v4', instructions: 'four',
+      synchronizeAgentIds: [alice.agentId, bob.agentId, cara.agentId],
+    })
+    expect(Object.values(all.state.agents).every(agent => agent.definitionRevisionId === all.definitionRevisionId)).toBe(true)
+  })
+
+  test('rejects an invalid revise selection before consuming ids, events, or aggregate revision', () => {
+    const first = mutateWorkspace(createInitialState(WorkspaceId('local')), {
+      type: 'definition/create', ...javaEngineer,
+    })
+    const alice = mutateWorkspace(first.state, { type: 'agent/create', definitionId: first.definitionId, name: 'Alice' })
+    const second = mutateWorkspace(alice.state, {
+      type: 'definition/create', name: 'Designer', description: 'd', instructions: 'i',
+    })
+    const outsider = mutateWorkspace(second.state, { type: 'agent/create', definitionId: second.definitionId, name: 'Bob' })
+    const before = structuredClone(outsider.state)
+
+    expect(() => mutateWorkspace(outsider.state, {
+      type: 'definition/revise', definitionId: first.definitionId, description: 'v2', instructions: 'two',
+      synchronizeAgentIds: [alice.agentId, outsider.agentId],
+    })).toThrow(`agent '${outsider.agentId}' does not use definition '${first.definitionId}'`)
+    expect(outsider.state).toEqual(before)
+    expect(() => mutateWorkspace(outsider.state, {
+      type: 'definition/revise', definitionId: first.definitionId, description: 'v2', instructions: 'two',
+      synchronizeAgentIds: [AgentId('missing')],
+    })).toThrow("agent 'missing' does not exist")
+    expect(outsider.state).toEqual(before)
+  })
+
+  test('synchronizes to an older revision while preserving every non-role agent and workspace field', () => {
+    const initial = createDefinitionAndAgent()
+    const agent = initial.state.agents[initial.agentId]!
+    const revised = mutateWorkspace(initial.state, {
+      type: 'definition/revise', definitionId: agent.definitionId, description: 'v2', instructions: 'two',
+      synchronizeAgentIds: [initial.agentId],
+    })
+    const beforeAgent = revised.state.agents[initial.agentId]!
+    const beforeRest = { ...revised.state, agents: undefined, events: undefined, revision: undefined, nextSequence: undefined }
+    const synchronized = mutateWorkspace(revised.state, {
+      type: 'definition/synchronize', definitionId: agent.definitionId,
+      definitionRevisionId: agent.definitionRevisionId, agentIds: [initial.agentId],
+    })
+    expect(synchronized.state.agents[initial.agentId]).toEqual({
+      ...beforeAgent, definitionRevisionId: agent.definitionRevisionId,
+    })
+    expect({ ...synchronized.state, agents: undefined, events: undefined, revision: undefined, nextSequence: undefined }).toEqual(beforeRest)
+  })
+
+  test('rejects an empty later synchronization selection without mutation', () => {
+    const initial = createDefinitionAndAgent()
+    const agent = initial.state.agents[initial.agentId]!
+    const before = structuredClone(initial.state)
+    expect(() => mutateWorkspace(initial.state, {
+      type: 'definition/synchronize', definitionId: agent.definitionId,
+      definitionRevisionId: agent.definitionRevisionId, agentIds: [],
+    })).toThrow(`definition synchronization for '${agent.definitionId}' needs at least one agent`)
+    expect(initial.state).toEqual(before)
   })
 
   test('rejects agent names that collide case-insensitively within a workspace', () => {

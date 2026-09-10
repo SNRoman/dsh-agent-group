@@ -405,9 +405,14 @@ function assertEventRelationships(state: WorkspaceState, event: WorkspaceEvent):
   }
   switch (event.type) {
     case 'definition/created':
-    case 'definition/revised':
+    case 'definition/revised': {
       requireEventSubject(event, state.definitions, 'definition')
+      if (event.definitionRevisionId !== undefined
+        && state.definitionRevisions[event.definitionRevisionId]?.definitionId !== event.subjectId) {
+        throw new Error(`event '${event.id}' references an invalid definition revision`)
+      }
       return
+    }
     case 'agent/definition-revision-assigned': {
       const agent = requireEventSubject(event, state.agents, 'agent')
       const revisionId = event.definitionRevisionId
@@ -424,6 +429,14 @@ function assertEventRelationships(state: WorkspaceState, event: WorkspaceEvent):
       return
     case 'room/created':
     case 'room/message':
+      if (event.definitionRevisionId !== undefined) {
+        if (event.actor?.type !== 'agent'
+          || state.definitionRevisions[event.definitionRevisionId]?.definitionId !== state.agents[event.actor.id]?.definitionId) {
+          throw new Error(`room message event '${event.id}' references an invalid definition revision`)
+        }
+      }
+      requireEventSubject(event, state.rooms, 'room')
+      return
     case 'conversation/stopped':
       requireEventSubject(event, state.rooms, 'room')
       return
@@ -467,10 +480,21 @@ function assertEventRelationships(state: WorkspaceState, event: WorkspaceEvent):
       return
     }
     case 'task/delivery-started':
-    case 'task/delivery-accepted':
     case 'task/delivery-failed':
       requireTaskReference(state, event.taskId, event.id)
       return
+    case 'task/delivery-accepted': {
+      requireTaskReference(state, event.taskId, event.id)
+      if (event.definitionRevisionId !== undefined) {
+        const assignment = Object.values(state.taskAssignments).find(candidate => candidate.taskId === event.taskId)
+        const assignee = assignment === undefined ? undefined : state.agents[assignment.assigneeAgentId]
+        if (assignee === undefined
+          || state.definitionRevisions[event.definitionRevisionId]?.definitionId !== assignee.definitionId) {
+          throw new Error(`event '${event.id}' definition revision does not belong to its task assignee`)
+        }
+      }
+      return
+    }
     case 'task/result':
     case 'task/result-after-cancel': {
       requireTaskReference(state, event.taskId, event.id)

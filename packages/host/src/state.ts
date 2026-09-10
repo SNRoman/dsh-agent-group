@@ -268,7 +268,7 @@ function createDefinition(state: WorkspaceState, command: CreateDefinitionComman
   ;[changed, definitionId] = mintWorkspaceId(changed, 'definition', AgentDefinitionId)
   let definitionRevisionId: RevisionId
   ;[changed, definitionRevisionId] = mintWorkspaceId(changed, 'definition-revision', DefinitionRevisionId)
-  ;[changed] = appendWorkspaceEvent(changed, 'definition/created', definitionId)
+  ;[changed] = appendWorkspaceEvent(changed, 'definition/created', definitionId, { definitionRevisionId })
   const definition: AgentDefinition = { id: definitionId, name: command.name, revisionIds: [definitionRevisionId], currentRevisionId: definitionRevisionId }
   const revision: DefinitionRevision = { id: definitionRevisionId, definitionId, number: 1, description: command.description, instructions: command.instructions }
   return {
@@ -284,10 +284,12 @@ function createDefinition(state: WorkspaceState, command: CreateDefinitionComman
 
 function reviseDefinition(state: WorkspaceState, command: ReviseDefinitionCommand): ReviseDefinitionResult {
   const definition = requireDefinition(state, command.definitionId)
+  const synchronizeAgentIds = command.synchronizeAgentIds ?? []
+  validateRevisionAssignments(state, command.definitionId, synchronizeAgentIds)
   let changed = beginWorkspaceMutation(state)
   let definitionRevisionId: RevisionId
   ;[changed, definitionRevisionId] = mintWorkspaceId(changed, 'definition-revision', DefinitionRevisionId)
-  ;[changed] = appendWorkspaceEvent(changed, 'definition/revised', command.definitionId)
+  ;[changed] = appendWorkspaceEvent(changed, 'definition/revised', command.definitionId, { definitionRevisionId })
   const revision: DefinitionRevision = {
     id: definitionRevisionId,
     definitionId: command.definitionId,
@@ -303,7 +305,7 @@ function reviseDefinition(state: WorkspaceState, command: ReviseDefinitionComman
     },
     definitionRevisions: { ...changed.definitionRevisions, [definitionRevisionId]: revision },
   }
-  changed = assignRevision(changed, command.definitionId, definitionRevisionId, command.synchronizeAgentIds ?? [])
+  changed = assignRevision(changed, command.definitionId, definitionRevisionId, synchronizeAgentIds)
   return { state: changed, definitionRevisionId }
 }
 
@@ -313,7 +315,17 @@ function synchronizeDefinition(state: WorkspaceState, command: SynchronizeDefini
   if (command.agentIds.length === 0) {
     throw new Error(`definition synchronization for '${command.definitionId}' needs at least one agent`)
   }
+  validateRevisionAssignments(state, command.definitionId, command.agentIds)
   return { state: assignRevision(beginWorkspaceMutation(state), command.definitionId, command.definitionRevisionId, command.agentIds) }
+}
+
+function validateRevisionAssignments(state: WorkspaceState, definitionId: DefinitionId, agentIds: readonly InstanceId[]): void {
+  for (const agentId of agentIds) {
+    const agent = requireAgent(state, agentId)
+    if (agent.definitionId !== definitionId) {
+      throw new Error(`agent '${agentId}' does not use definition '${definitionId}'`)
+    }
+  }
 }
 
 function assignRevision(state: WorkspaceState, definitionId: DefinitionId, revisionId: RevisionId, agentIds: readonly InstanceId[]): WorkspaceState {
@@ -453,6 +465,7 @@ function appendRoomMessageEvent(state: WorkspaceState, command: RoomMessageComma
     actor: command.actor,
     text: command.text,
     mentions: command.mentions,
+    ...(command.definitionRevisionId === undefined ? {} : { definitionRevisionId: command.definitionRevisionId }),
   })
   changed = appendMemoryEntries(changed, activeRoomMemberIds(changed, command.roomId).map(agentId => ({
     agentId,

@@ -145,6 +145,53 @@ describe('TaskDeliveryCoordinator', () => {
     expect(state.tasks[built.taskId]?.status).toBe('completed')
   })
 
+  test('keeps an active task result on its claimed revision and uses the refreshed revision for later work', async () => {
+    const built = assignedTask()
+    let state = built.state
+    const oldRevisionId = state.agents[built.agentId]!.definitionRevisionId
+    const firstResult = deferred<WorkspaceTurnOutcome>()
+    let deliveryNumber = 0
+    const host: TaskDeliveryCoordinatorHost = {
+      snapshot: () => structuredClone(state),
+      apply: async mutation => { state = mutation(state); return structuredClone(state) },
+      ensureEmployee: async () => handle(),
+      deliver: async (_agentId, _message, _recall, _source, hooks) => {
+        deliveryNumber++
+        const captured = state.agents[built.agentId]!.definitionRevisionId
+        await hooks?.onClaim?.(captured)
+        if (deliveryNumber === 1) return await firstResult.promise
+        return { ...outcome('new-role result'), definitionRevisionId: captured }
+      },
+    }
+    const coordinator = new TaskDeliveryCoordinator(host)
+    const active = coordinator.deliver(built.taskId)
+    await vi.waitFor(() => expect(state.events.some(event => event.type === 'task/delivery-accepted')).toBe(true))
+    const definitionId = state.agents[built.agentId]!.definitionId
+    const revised = mutateWorkspace(state, {
+      type: 'definition/revise', definitionId, description: 'new', instructions: 'new',
+      synchronizeAgentIds: [built.agentId],
+    })
+    state = revised.state
+    firstResult.resolve({ ...outcome('old-role result'), definitionRevisionId: oldRevisionId })
+    await active
+
+    const laterTask = assignHumanTask(state, {
+      humanId: HumanId('owner'), assigneeAgentId: built.agentId, title: 'later work',
+    })
+    state = laterTask.state
+    await coordinator.deliver(laterTask.taskId)
+    const results = state.events.filter(event => event.type === 'task/result')
+    expect(results.map(event => ({ text: event.text, revisionId: event.definitionRevisionId }))).toEqual([
+      { text: 'old-role result', revisionId: oldRevisionId },
+      { text: 'new-role result', revisionId: revised.definitionRevisionId },
+    ])
+    const accepted = state.events.filter(event => event.type === 'task/delivery-accepted')
+    expect(accepted.map(event => event.definitionRevisionId)).toEqual([
+      oldRevisionId,
+      revised.definitionRevisionId,
+    ])
+  })
+
   test('a wake failure leaves an open task retryable without creating another task', async () => {
     const built = assignedTask()
     let state = built.state
@@ -488,6 +535,60 @@ describe('TaskDeliveryCoordinator', () => {
     await expect(coordinator.recoverAgent(built.agentId, resumed)).resolves.toEqual([])
     expect(state.events.filter(event => event.type === 'task/result')).toHaveLength(1)
     expect(state.tasks[built.taskId]?.status).toBe('completed')
+  })
+
+  test('legacy recovery derives the accepted turn revision instead of using a later synchronized revision', async () => {
+    const built = acceptedTask()
+    const agent = built.state.agents[built.agentId]!
+    const oldRevisionId = agent.definitionRevisionId
+    const revised = mutateWorkspace(built.state, {
+      type: 'definition/revise', definitionId: agent.definitionId,
+      description: 'new', instructions: 'new', synchronizeAgentIds: [built.agentId],
+    })
+    let state = revised.state
+    const host: TaskDeliveryCoordinatorHost = {
+      snapshot: () => structuredClone(state),
+      apply: async mutation => { state = mutation(state); return structuredClone(state) },
+      ensureEmployee: async () => handle(),
+      deliver: async () => outcome('unused'),
+    }
+    const coordinator = new TaskDeliveryCoordinator(host)
+    const resumed = recoveredHandle([], persistedTurn(built.message, {
+      output: 'legacy answer', reason: { kind: 'completed' },
+    }))
+
+    await expect(coordinator.recoverAgent(built.agentId, resumed)).resolves.toEqual([
+      { taskId: built.taskId, status: 'completed' },
+    ])
+    const result = state.events.find(event => event.type === 'task/result')
+    expect(result?.definitionRevisionId).toBe(oldRevisionId)
+    expect(result?.definitionRevisionId).not.toBe(revised.definitionRevisionId)
+  })
+
+  test('legacy recovery refuses to invent an unprovable claim revision', async () => {
+    const built = acceptedTask()
+    let state = {
+      ...built.state,
+      events: built.state.events.filter(event => event.type !== 'definition/created'),
+    }
+    const host: TaskDeliveryCoordinatorHost = {
+      snapshot: () => structuredClone(state),
+      apply: async mutation => { state = mutation(state); return structuredClone(state) },
+      ensureEmployee: async () => handle(),
+      deliver: async () => outcome('unused'),
+    }
+    const coordinator = new TaskDeliveryCoordinator(host)
+    const resumed = recoveredHandle([], persistedTurn(built.message, {
+      output: 'ambiguous answer', reason: { kind: 'completed' },
+    }))
+
+    await expect(coordinator.recoverAgent(built.agentId, resumed)).resolves.toEqual([
+      { taskId: built.taskId, status: 'interrupted' },
+    ])
+    expect(state.events.some(event => event.type === 'task/result')).toBe(false)
+    expect(state.events.findLast(event => event.type === 'task/delivery-failed')).toEqual(expect.objectContaining({
+      failureCode: 'interrupted', failureSummary: 'Delivery claim revision could not be recovered.',
+    }))
   })
 
   test('a matching user message without the durable inbox removal is not treated as a claimed task', async () => {

@@ -97,6 +97,7 @@ function fakeHost(initial: WorkspaceState, replies: Map<AgentId, string>): FakeH
         output: [{ type: 'text', text: host.replies.get(agentId) ?? '' }],
         stopReason: { kind: 'completed' },
         interrupted: false,
+        definitionRevisionId: host.state.agents[agentId]?.definitionRevisionId,
         ...(source === undefined
           ? {}
           : {
@@ -178,6 +179,35 @@ describe('WorkspaceDispatcher', () => {
       turn: 1,
       workspaceRevision: host.snapshot().revision,
     })])
+  })
+
+  test('attributes a room reply to the role revision captured for its active turn', async () => {
+    const { state, roomId, agentIds } = buildRoom(['alice'])
+    const alice = agentIds[0]!
+    const definitionId = state.agents[alice]!.definitionId
+    const oldRevisionId = state.agents[alice]!.definitionRevisionId
+    const outcome = Promise.withResolvers<Awaited<ReturnType<WorkspaceDispatcherHost['deliver']>>>()
+    const host = fakeHost(state, new Map())
+    host.deliver = async () => await outcome.promise
+    const dispatcher = new WorkspaceDispatcher(host, undefined, 'spawn', limits)
+
+    const posting = dispatcher.postHumanMessage(roomId, HumanId('owner'), 'hello', [alice])
+    await vi.waitFor(() => expect(host.snapshot().events.some(event => event.type === 'room/message')).toBe(true))
+    const revised = mutateWorkspace(host.state, {
+      type: 'definition/revise', definitionId, description: 'new', instructions: 'new',
+      synchronizeAgentIds: [alice],
+    })
+    host.state = revised.state
+    outcome.resolve({
+      output: [{ type: 'text', text: 'old-role reply' }],
+      stopReason: { kind: 'completed' }, interrupted: false,
+      definitionRevisionId: oldRevisionId,
+    })
+    await posting
+
+    const reply = host.snapshot().events.findLast(event => event.type === 'room/message' && event.actor?.type === 'agent')
+    expect(reply?.definitionRevisionId).toBe(oldRevisionId)
+    expect(reply?.definitionRevisionId).not.toBe(revised.definitionRevisionId)
   })
 
   test('records one durable reply when the same terminal notification is observed twice', async () => {

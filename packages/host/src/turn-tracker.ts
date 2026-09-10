@@ -10,7 +10,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock, MessageId, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, SessionId, TurnEndReason } from '@deepseek-ai/dsh-session'
-import type { AgentId, WorkspaceActivityId } from './ids.ts'
+import type { AgentId, DefinitionRevisionId, WorkspaceActivityId } from './ids.ts'
 import type { WorkspaceActivityIdentity, WorkspaceActivitySource, WorkspaceActivityStream } from './activity-stream.ts'
 import type { WorkspaceDeliveryHooks } from './task-delivery-coordinator.ts'
 
@@ -24,6 +24,8 @@ export interface WorkspaceTurnOutcome {
   readonly interrupted: boolean
   /** Exact transient Workspace activity, present for room and task deliveries. */
   readonly workspaceActivity?: WorkspaceActivityIdentity
+  /** Role revision installed when this Workspace delivery entered its serialized turn lane. */
+  readonly definitionRevisionId?: DefinitionRevisionId
 }
 
 interface PendingDelivery {

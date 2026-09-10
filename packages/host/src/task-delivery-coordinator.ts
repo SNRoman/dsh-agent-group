@@ -3,9 +3,10 @@
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock, MessageId, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, TurnEndReason } from '@deepseek-ai/dsh-session'
-import type { AgentId, TaskDeliveryAttemptId, TaskId } from './ids.ts'
+import type { AgentId, DefinitionRevisionId, TaskDeliveryAttemptId, TaskId } from './ids.ts'
 import type { TaskAssignment, TaskDeliveryProgressEvent, WorkspaceState } from './types.ts'
 import type { WorkspaceActivitySource } from './activity-stream.ts'
+import { projectDefinitionHistory } from './definition-history.ts'
 import type { WorkspaceTurnOutcome } from './turn-tracker.ts'
 import {
   acceptTaskDelivery,
@@ -19,7 +20,7 @@ import {
 /** Durable callbacks observed while one tracked delivery enters its turn. */
 export interface WorkspaceDeliveryHooks {
   /** Persist that the exact inbox message entered its owning turn. */
-  onClaim?(): void | Promise<void>
+  onClaim?(definitionRevisionId?: DefinitionRevisionId): void | Promise<void>
 }
 
 /** Host operations used by the task delivery coordinator. */
@@ -149,9 +150,12 @@ export class TaskDeliveryCoordinator {
         undefined,
         { kind: 'task', taskId, attemptId: startedAttempt.attemptId },
         {
-          onClaim: async () => {
+          onClaim: async definitionRevisionId => {
             claimed = true
-            await this.host.apply(current => acceptTaskDelivery(current, identity).state)
+            await this.host.apply(current => acceptTaskDelivery(current, {
+              ...identity,
+              definitionRevisionId: definitionRevisionId ?? agent.definitionRevisionId,
+            }).state)
           },
         },
       )
@@ -173,7 +177,7 @@ export class TaskDeliveryCoordinator {
       await this.failIfOpen(identity, 'interrupted', 'Delivery was interrupted before a terminal result.')
       throw new Error(`task '${taskId}' delivery was interrupted before a terminal result`)
     }
-    await this.recordCompletedResult(assignment, identity, result)
+    await this.recordCompletedResult(assignment, identity, result, outcome.definitionRevisionId ?? agent.definitionRevisionId)
     return completedTaskResult(this.host.snapshot(), identity) ?? result
   }
 
@@ -204,12 +208,19 @@ export class TaskDeliveryCoordinator {
         const completion = this.finishRecovered(
           assignment,
           identity,
+          this.revisionForAcceptedAttempt(snapshot, assignment, identity)
+            ?? snapshot.agents[agentId]?.definitionRevisionId,
           recoverDelivery(
             agentId,
             handle,
             evidence.message,
             { kind: 'task', taskId: assignment.taskId, attemptId: inspection.attemptId },
-            { onClaim: async () => await this.acceptIfStarted(identity) },
+            {
+              onClaim: async definitionRevisionId => await this.acceptIfStarted(
+                identity,
+                definitionRevisionId ?? snapshot.agents[agentId]?.definitionRevisionId,
+              ),
+            },
           ),
         )
         this.publishRecoveredFlight(assignment.taskId, completion)
@@ -218,8 +229,18 @@ export class TaskDeliveryCoordinator {
       }
 
       if (evidence.status === 'completed') {
-        await this.acceptIfStarted(identity)
-        await this.recordCompletedResult(assignment, identity, evidence.result)
+        const revisionId = this.revisionForAcceptedAttempt(snapshot, assignment, identity)
+        if (inspection.phase === 'started') {
+          await this.failIfOpen(identity, 'interrupted', 'Delivery claim revision could not be recovered.')
+          outcomes.push({ taskId: assignment.taskId, status: 'interrupted' })
+          continue
+        }
+        if (revisionId === undefined) {
+          await this.failIfOpen(identity, 'interrupted', 'Delivery claim revision could not be recovered.')
+          outcomes.push({ taskId: assignment.taskId, status: 'interrupted' })
+          continue
+        }
+        await this.recordCompletedResult(assignment, identity, evidence.result, revisionId)
         outcomes.push({ taskId: assignment.taskId, status: 'completed' })
         continue
       }
@@ -256,6 +277,7 @@ export class TaskDeliveryCoordinator {
   private async finishRecovered(
     assignment: TaskAssignment,
     identity: { readonly taskId: TaskId; readonly attemptId: TaskDeliveryAttemptId; readonly messageId: MessageId },
+    capturedRevisionId: DefinitionRevisionId | undefined,
     pending: Promise<WorkspaceTurnOutcome>,
   ): Promise<string> {
     let outcome: WorkspaceTurnOutcome
@@ -272,36 +294,50 @@ export class TaskDeliveryCoordinator {
       await this.failIfOpen(identity, 'interrupted', 'Delivery was interrupted before a terminal result.')
       throw new Error(`task '${identity.taskId}' delivery was interrupted before a terminal result`)
     }
-    await this.recordCompletedResult(assignment, identity, result)
+    const definitionRevisionId = outcome.definitionRevisionId ?? capturedRevisionId
+    if (definitionRevisionId === undefined) throw new Error(`task '${identity.taskId}' assignee does not exist`)
+    await this.recordCompletedResult(assignment, identity, result, definitionRevisionId)
     return completedTaskResult(this.host.snapshot(), identity) ?? result
   }
 
   private async acceptIfStarted(
     identity: { readonly taskId: TaskId; readonly attemptId: TaskDeliveryAttemptId; readonly messageId: MessageId },
+    definitionRevisionId?: DefinitionRevisionId,
   ): Promise<void> {
     await this.host.apply(current => {
       const inspection = inspectTaskDelivery(current, identity.taskId)
       if (inspection.attemptId !== identity.attemptId || inspection.phase !== 'started') return current
-      return acceptTaskDelivery(current, identity).state
+      return acceptTaskDelivery(current, { ...identity, ...(definitionRevisionId === undefined ? {} : { definitionRevisionId }) }).state
     })
+  }
+
+  private revisionForAcceptedAttempt(
+    state: WorkspaceState,
+    assignment: TaskAssignment,
+    identity: { readonly attemptId: TaskDeliveryAttemptId },
+  ): DefinitionRevisionId | undefined {
+    const accepted = state.events.findLast(event => (
+      event.type === 'task/delivery-accepted'
+      && event.taskDeliveryAttemptId === identity.attemptId
+    ))
+    return accepted?.definitionRevisionId ?? deriveLegacyClaimRevision(state, assignment, accepted?.sequence)
   }
 
   private async recordCompletedResult(
     assignment: TaskAssignment,
     identity: { readonly taskId: TaskId; readonly attemptId: TaskDeliveryAttemptId; readonly messageId: MessageId },
     result: string,
+    definitionRevisionId: DefinitionRevisionId,
   ): Promise<void> {
     await this.host.apply(current => {
       const inspection = inspectTaskDelivery(current, identity.taskId)
       if (inspection.attemptId !== identity.attemptId || inspection.phase !== 'accepted') return current
-      const agent = current.agents[assignment.assigneeAgentId]
-      if (agent === undefined) throw new Error(`task '${identity.taskId}' assignee does not exist`)
       const request = {
-        actorAgentId: agent.id,
+        actorAgentId: assignment.assigneeAgentId,
         taskId: identity.taskId,
         attemptId: identity.attemptId,
         result,
-        definitionRevisionId: agent.definitionRevisionId,
+        definitionRevisionId,
       }
       return current.tasks[identity.taskId]?.status === 'cancelled'
         ? recordTaskResultAfterCancel(current, request).state
@@ -328,6 +364,33 @@ function completedText(outcome: WorkspaceTurnOutcome): string | undefined {
   if (outcome.stopReason.kind !== 'completed' || outcome.interrupted) return undefined
   const text = textOf(outcome.output)
   return text.trim() === '' ? undefined : text
+}
+
+function deriveLegacyClaimRevision(
+  state: WorkspaceState,
+  assignment: TaskAssignment,
+  acceptedSequence: number | undefined,
+): DefinitionRevisionId | undefined {
+  if (acceptedSequence === undefined) return undefined
+  const agent = state.agents[assignment.assigneeAgentId]
+  const createdEventId = agent?.employmentPeriods[0]?.startedEventId
+  const createdSequence = createdEventId === undefined
+    ? undefined
+    : state.events.find(event => event.id === createdEventId)?.sequence
+  if (agent === undefined || createdSequence === undefined) return undefined
+  let revisionId = projectDefinitionHistory(state, agent.definitionId)
+    .filter(item => item.creationEvent.status !== 'unresolved' && item.creationEvent.sequence <= createdSequence)
+    .at(-1)?.id
+  if (revisionId === undefined) return undefined
+  for (const event of state.events) {
+    if (event.sequence > acceptedSequence) break
+    if (event.type === 'agent/definition-revision-assigned'
+      && event.subjectId === agent.id
+      && event.definitionRevisionId !== undefined) {
+      revisionId = event.definitionRevisionId
+    }
+  }
+  return revisionId
 }
 
 function completedTaskResult(

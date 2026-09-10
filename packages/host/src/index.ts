@@ -15,6 +15,7 @@ import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { WorkspaceBusinessError } from './errors.ts'
 import { AgentId, HumanId, RoomId, TaskId, WorkspaceId } from './ids.ts'
+import type { DefinitionRevisionId } from './ids.ts'
 import type { ChildRunId } from './ids.ts'
 import { WorkspaceDispatcher } from './dispatcher.ts'
 import type { DispatcherLimits, SubagentRuntimeLike } from './dispatcher.ts'
@@ -187,6 +188,7 @@ export class AgentWorkspaceDomainService extends Service {
         async (agentId, agent) => {
           await taskDelivery.recoverAgent(agentId, { agent })
         },
+        (agentId, revisionId, agentCtx) => this.installWorkspaceRole(agentCtx, agentId, revisionId),
       )
       const dispatcher = new WorkspaceDispatcher(
         this,
@@ -385,6 +387,14 @@ export class AgentWorkspaceDomainService extends Service {
     if (command.type === 'agent/depart') {
       await this.pool?.dispose(command.agentId)
     }
+    if (command.type === 'definition/revise' || command.type === 'definition/synchronize') {
+      const selected = command.type === 'definition/revise' ? command.synchronizeAgentIds ?? [] : command.agentIds
+      await Promise.all(selected.map(async agentId => {
+        const agent = next.agents[agentId]
+        if (agent?.employmentStatus !== 'employed' || this.pool?.handleFor(agentId) === undefined) return
+        await this.pool.refreshRole(agentId, agent.definitionRevisionId)
+      }))
+    }
     return structuredClone(next)
   }
 
@@ -459,21 +469,49 @@ export class AgentWorkspaceDomainService extends Service {
     source?: WorkspaceActivitySource,
     hooks?: WorkspaceDeliveryHooks,
   ): Promise<WorkspaceTurnOutcome> {
-    let handle: AgentHandle
-    try {
-      handle = await this.ensureEmployee(agentId)
-    } catch (error) {
-      this.activityStream.recordAgentFailureIfAbsent(agentId, {
-        code: 'agent-materialization-failed',
-        summary: 'Agent could not be started.',
-      })
-      throw error
+    const pool = this.pool
+    if (pool === undefined) {
+      try {
+        const handle = await this.ensureEmployee(agentId)
+        const tracker = this.trackers.get(agentId)
+        if (tracker === undefined) throw new Error(`agent '${agentId}' has no turn tracker`)
+        const outcome = await tracker.deliver(handle.agent, delivery, recall, source, hooks)
+        await this.flushEmployeeSession(agentId, handle.agent.session)
+        return outcome
+      } catch (error) {
+        if (this.pool?.handleFor(agentId) === undefined) {
+          this.activityStream.recordAgentFailureIfAbsent(agentId, {
+            code: 'agent-materialization-failed', summary: 'Agent could not be started.',
+          })
+        }
+        throw error
+      }
     }
-    const tracker = this.trackers.get(agentId)
-    if (tracker === undefined) throw new Error(`agent '${agentId}' has no turn tracker`)
-    const outcome = await tracker.deliver(handle.agent, delivery, recall, source, hooks)
-    await this.flushEmployeeSession(agentId, handle.agent.session)
-    return outcome
+    const run = async (handle: AgentHandle): Promise<WorkspaceTurnOutcome> => {
+      const durableAgent = this.snapshot().agents[agentId]
+      if (durableAgent === undefined || durableAgent.employmentStatus !== 'employed') {
+        throw new Error(`agent '${agentId}' is not employed`)
+      }
+      const definitionRevisionId = pool.roleRevisionFor(agentId) ?? durableAgent.definitionRevisionId
+      const tracker = this.trackers.get(agentId)
+      if (tracker === undefined) throw new Error(`agent '${agentId}' has no turn tracker`)
+      const capturedHooks = hooks?.onClaim === undefined
+        ? hooks
+        : { ...hooks, onClaim: async () => await hooks.onClaim?.(definitionRevisionId) }
+      const outcome = await tracker.deliver(handle.agent, delivery, recall, source, capturedHooks)
+      await this.flushEmployeeSession(agentId, handle.agent.session)
+      return { ...outcome, definitionRevisionId }
+    }
+    const result = pool.runDelivery(agentId, run)
+    return await result.catch(error => {
+      if (this.pool?.handleFor(agentId) === undefined) {
+        this.activityStream.recordAgentFailureIfAbsent(agentId, {
+          code: 'agent-materialization-failed',
+          summary: 'Agent could not be started.',
+        })
+      }
+      throw error
+    })
   }
 
   /**
@@ -494,9 +532,15 @@ export class AgentWorkspaceDomainService extends Service {
   ): Promise<WorkspaceTurnOutcome> {
     const tracker = this.trackers.get(agentId)
     if (tracker === undefined) throw new Error(`agent '${agentId}' has no turn tracker`)
-    const outcome = await tracker.recover(handle.agent, delivery, source, hooks)
+    const definitionRevisionId = this.pool?.roleRevisionFor(agentId)
+      ?? this.snapshot().agents[agentId]?.definitionRevisionId
+    if (definitionRevisionId === undefined) throw new Error(`agent '${agentId}' has no role revision for recovered delivery`)
+    const capturedHooks = hooks?.onClaim === undefined
+      ? hooks
+      : { ...hooks, onClaim: async () => await hooks.onClaim?.(definitionRevisionId) }
+    const outcome = await tracker.recover(handle.agent, delivery, source, capturedHooks)
     await this.flushEmployeeSession(agentId, handle.agent.session)
-    return outcome
+    return { ...outcome, definitionRevisionId }
   }
 
   private async flushEmployeeSession(agentId: AgentId, session: Session): Promise<void> {
@@ -589,6 +633,7 @@ export class AgentWorkspaceDomainService extends Service {
 
     return {
       agentOptions: { provider: selected.provider, model: selected.model },
+      roleRevisionId: this.requireAgentRevision(agentId),
       ...(mode === 'create'
         ? { meta: { cwd: process.cwd(), ...(createPresetId === undefined ? {} : { agentPreset: createPresetId }) } }
         : {}),
@@ -620,8 +665,6 @@ export class AgentWorkspaceDomainService extends Service {
           const persistedPreset = scopedAgent.session.header.agentPreset
           await presets.mount(agentCtx, persistedPreset ?? createPresetId)
         }
-        this.installWorkspaceRole(agentCtx, agentId)
-
         const tracker = new WorkspaceTurnTracker({
           agentId,
           sessionId: scopedAgent.session.header.id,
@@ -637,13 +680,20 @@ export class AgentWorkspaceDomainService extends Service {
   }
 
   /** Install the selected definition revision as an agent-scoped role prompt. */
-  private installWorkspaceRole(agentCtx: Context, agentId: AgentId): void {
+  private requireAgentRevision(agentId: AgentId): DefinitionRevisionId {
+    const revisionId = this.snapshot().agents[agentId]?.definitionRevisionId
+    if (revisionId === undefined) throw new Error(`agent '${agentId}' disappeared before role setup`)
+    return revisionId
+  }
+
+  /** Install one exact definition revision as an agent-scoped role prompt. */
+  private installWorkspaceRole(agentCtx: Context, agentId: AgentId, revisionId: DefinitionRevisionId): () => void {
     const state = this.snapshot()
     const agent = state.agents[agentId]
     if (agent === undefined) throw new Error(`agent '${agentId}' disappeared before role setup`)
     const definition = state.definitions[agent.definitionId]
-    const revision = state.definitionRevisions[agent.definitionRevisionId]
-    if (definition === undefined || revision === undefined) {
+    const revision = state.definitionRevisions[revisionId]
+    if (definition === undefined || revision === undefined || revision.definitionId !== agent.definitionId) {
       throw new Error(`agent '${agentId}' has an incomplete definition binding`)
     }
     const systemPrompt = agentCtx.get('systemPrompt') as WorkspaceSystemPrompt | undefined
@@ -655,7 +705,7 @@ export class AgentWorkspaceDomainService extends Service {
       revision.instructions.trim() === '' ? '' : `角色指令：\n${revision.instructions}`,
       '协作规则：你可以阅读当前房间提供的成员目录。如果需要其他成员继续处理，请使用目录里的准确显示名称进行 @，例如 @老周；不要输出内部 agent id。',
     ].filter(Boolean).join('\n\n')
-    systemPrompt.section({ name: 'agent-workspace:role', order: 10, text })
+    return systemPrompt.section({ name: 'agent-workspace:role', order: 10, text })
   }
 
   private syncActivityProjection(state: WorkspaceState): void {
@@ -732,6 +782,8 @@ function validateWorkspaceState(candidate: WorkspaceState, expectedWorkspaceId: 
 }
 
 export default AgentWorkspaceDomainService
+export { projectDefinitionHistory } from './definition-history.ts'
+export type { DefinitionHistoryItem, DefinitionRevisionCreationEvent } from './definition-history.ts'
 export { queryAgentMemory } from './memory-query.ts'
 export type {
   MemoryActor,

@@ -256,7 +256,10 @@ export class WorkspaceDispatcher {
         const actor: WorkspaceActor = { type: 'agent', id: item.agentId }
         assertRoomMessageAuthorized(this.host.snapshot(), roomId, actor, next)
         const committed = await this.host.execute(
-          { type: 'room/message', roomId, actor, text: reply, mentions: next },
+          {
+            type: 'room/message', roomId, actor, text: reply, mentions: next,
+            ...(outcome.definitionRevisionId === undefined ? {} : { definitionRevisionId: outcome.definitionRevisionId }),
+          },
           outcome.workspaceActivity,
         )
         const replyEventId = requireLatestRoomMessageId(committed, roomId)

@@ -38,6 +38,11 @@ export interface TaskDeliveryIdentity {
   readonly messageId: MessageId
 }
 
+/** Claim identity plus the role revision active when the inbox claimed it. */
+export interface AcceptTaskDeliveryRequest extends TaskDeliveryIdentity {
+  readonly definitionRevisionId?: DefinitionRevisionId | undefined
+}
+
 /** Failure facts that make an inbox delivery retryable or settled. */
 export interface FailTaskDeliveryRequest extends TaskDeliveryIdentity {
   readonly failureCode: string
@@ -106,7 +111,7 @@ export function startTaskDelivery(state: WorkspaceState, request: StartTaskDeliv
 }
 
 /** Persist that the inbox accepted one started task-delivery message. */
-export function acceptTaskDelivery(state: WorkspaceState, identity: TaskDeliveryIdentity): { readonly state: WorkspaceState } {
+export function acceptTaskDelivery(state: WorkspaceState, identity: AcceptTaskDeliveryRequest): { readonly state: WorkspaceState } {
   requireDeliveryPhase(state, identity, 'started')
   let changed = beginWorkspaceMutation(state)
   ;[changed] = appendTaskDeliveryEvent(changed, {
@@ -114,6 +119,7 @@ export function acceptTaskDelivery(state: WorkspaceState, identity: TaskDelivery
     taskId: identity.taskId,
     taskDeliveryAttemptId: identity.attemptId,
     messageId: identity.messageId,
+    ...(identity.definitionRevisionId === undefined ? {} : { definitionRevisionId: identity.definitionRevisionId }),
   })
   return { state: changed }
 }
