@@ -20,6 +20,8 @@ import { WorkspaceDispatcher } from './dispatcher.ts'
 import type { DispatcherLimits, SubagentRuntimeLike } from './dispatcher.ts'
 import { assertWorkspaceInvariants } from './invariant.ts'
 import { joinRoomWithMemory } from './memory.ts'
+import { queryAgentMemory } from './memory-query.ts'
+import type { MemoryPage, MemoryQuery } from './memory-query.ts'
 import { assertDirectRoomTextAllowed, assertRoomMessageAuthorized, resolveHumanWakeTargets } from './room-policy.ts'
 import { AGENT_WORKSPACE_RPC_CHANNEL, createWorkspaceRpcHandler } from './rpc.ts'
 import type { WorkspaceDirectRoomResult, WorkspaceRoomRuntimeStatus, WorkspaceRuntimeStatus } from './rpc.ts'
@@ -214,6 +216,11 @@ export class AgentWorkspaceDomainService extends Service {
     const current = this.requireTable().get(LOCAL_WORKSPACE_ID)
     if (current === undefined) throw new Error('agent workspace aggregate is not initialized')
     return structuredClone(current)
+  }
+
+  /** Query one agent's read-only memory at an exact aggregate revision. */
+  queryMemory(query: MemoryQuery): MemoryPage {
+    return queryAgentMemory(this.snapshot(), query)
   }
 
   /** Current ephemeral background execution state, detached from internal maps. */
@@ -721,3 +728,13 @@ function validateWorkspaceState(candidate: WorkspaceState, expectedWorkspaceId: 
 }
 
 export default AgentWorkspaceDomainService
+export { queryAgentMemory } from './memory-query.ts'
+export type {
+  MemoryActor,
+  MemoryDefinitionRevision,
+  MemoryItem,
+  MemoryPage,
+  MemoryQuery,
+  MemorySource,
+  MemorySubject,
+} from './memory-query.ts'

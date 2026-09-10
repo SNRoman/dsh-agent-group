@@ -11,7 +11,9 @@ export type WorkspaceBusinessErrorDetailsMap = {
   readonly 'agent-missing': { readonly agentId: string }
   readonly 'agent-departed': { readonly agentId: string }
   readonly 'duplicate-membership': { readonly roomId: string; readonly agentId: string }
-  readonly 'stale-revision': { readonly definitionId: string; readonly revisionId: string }
+  readonly 'stale-revision':
+    | { readonly definitionId: string; readonly revisionId: string }
+    | { readonly expectedRevision: number; readonly actualRevision: number }
   readonly 'invalid-task-authority': { readonly taskId: string; readonly agentId: string }
   readonly 'task-not-open': { readonly taskId: string; readonly status: 'completed' | 'cancelled' }
   readonly 'task-not-assigned': { readonly taskId: string; readonly agentId: string }

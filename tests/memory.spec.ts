@@ -13,7 +13,7 @@ import {
   joinRoomWithMemory,
   recallAgentEvents,
 } from '../packages/host/src/memory.ts'
-import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
+import { appendMemoryEntries, createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import { acceptTaskDelivery, startTaskDelivery, terminalizeTask } from '../packages/host/src/task-delivery.ts'
 import { assignHumanTask } from '../packages/host/src/tasks.ts'
 import type { WorkspaceState } from '../packages/host/src/types.ts'
@@ -49,6 +49,27 @@ function memoryEventIds(state: WorkspaceState, agentId: AgentId): readonly Works
 }
 
 describe('unified event memory', () => {
+  test('admits one agent-event association and retains its first provenance', () => {
+    const workspace = createWorkspace()
+    const eventId = WorkspaceEventId('event-shared')
+    const seeded: WorkspaceState = {
+      ...workspace.state,
+      events: [...workspace.state.events, { id: eventId, sequence: 100, type: 'task/completed', text: 'shared' }],
+    }
+    const first = appendMemoryEntries(seeded, [
+      { agentId: workspace.aliceId, eventId, acquiredBy: 'task' },
+      { agentId: workspace.aliceId, eventId, acquiredBy: 'history-sync' },
+    ])
+    const repeated = appendMemoryEntries(first, [
+      { agentId: workspace.aliceId, eventId, acquiredBy: 'child-result' },
+    ])
+
+    expect(repeated.memoryEntries.filter(entry => entry.agentId === workspace.aliceId && entry.eventId === eventId)).toEqual([
+      expect.objectContaining({ acquiredBy: 'task' }),
+    ])
+    expect(repeated.nextId).toBe(first.nextId)
+  })
+
   test('recalls a terminal task result acquired by the assigned agent', () => {
     const workspace = createWorkspace()
     const assigned = assignHumanTask(workspace.state, {

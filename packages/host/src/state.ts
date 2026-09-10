@@ -74,7 +74,17 @@ export function createInitialState(workspaceId: WorkspaceId): WorkspaceState {
 export function appendMemoryEntries(state: WorkspaceState, acquisitions: readonly AgentMemoryAcquisition[]): WorkspaceState {
   let changed = state
   const entries: AgentMemoryEntry[] = []
+  const eventIdsByAgent = new Map<AgentId, Set<WorkspaceEventId>>()
+  for (const entry of state.memoryEntries) {
+    const eventIds = eventIdsByAgent.get(entry.agentId) ?? new Set<WorkspaceEventId>()
+    eventIds.add(entry.eventId)
+    eventIdsByAgent.set(entry.agentId, eventIds)
+  }
   for (const acquisition of acquisitions) {
+    const eventIds = eventIdsByAgent.get(acquisition.agentId) ?? new Set<WorkspaceEventId>()
+    if (eventIds.has(acquisition.eventId)) continue
+    eventIds.add(acquisition.eventId)
+    eventIdsByAgent.set(acquisition.agentId, eventIds)
     let memoryEntryId: ReturnType<typeof AgentMemoryEntryId>
     ;[changed, memoryEntryId] = mintWorkspaceId(changed, 'memory', AgentMemoryEntryId)
     entries.push({ id: memoryEntryId, ...acquisition })

@@ -7,6 +7,7 @@ import Storage from '@deepseek-ai/dsh-storage'
 import { apply as domainApply, Config as DomainConfig, inject as domainInject } from '@deepseek-ai/dsh-storage-domain'
 import { apply as jsonApply, Config as JsonConfig, inject as jsonInject } from '@deepseek-ai/dsh-storage-json'
 import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
+import { queryAgentMemory } from '../packages/host/src/memory-query.ts'
 import { agentWorkspaceSpec } from '../packages/host/src/spec.ts'
 import { AgentId, HumanId, TaskId } from '../packages/host/src/ids.ts'
 import type { TaskId as WorkspaceTaskId } from '../packages/host/src/ids.ts'
@@ -99,10 +100,17 @@ describe('agent workspace persistence', () => {
     })
     const after = first.service.snapshot()
     expect(after.revision).toBe(5)
+    const beforeRestartMemory = queryAgentMemory(after, { agentId: agent.id, snapshotRevision: after.revision, limit: 10 })
+    expect(beforeRestartMemory.items).toHaveLength(1)
+    await first.service.execute({ type: 'agent/depart', agentId: agent.id })
+    const departed = first.service.snapshot()
     await first.dispose()
 
     const second = await boot(root)
-    expect(second.service.snapshot()).toEqual(after)
+    expect(second.service.snapshot()).toEqual(departed)
+    expect(queryAgentMemory(second.service.snapshot(), {
+      agentId: agent.id, snapshotRevision: departed.revision, limit: 10,
+    }).items).toEqual(beforeRestartMemory.items)
     await second.dispose()
   })
 

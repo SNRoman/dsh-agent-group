@@ -1,6 +1,8 @@
 /** Pure room-event memory projection and recall selection. */
 
 import type { AgentId, WorkspaceEventId } from './ids.ts'
+import { queryAgentMemory } from './memory-query.ts'
+import type { MemoryPage, MemoryQuery } from './memory-query.ts'
 import { appendMemoryEntries, mutateWorkspace } from './state.ts'
 import type {
   AgentEventRecall,
@@ -82,6 +84,11 @@ export class MemoryReader {
   /** Select events for one awakened agent. */
   recall(request: RecallAgentEventsRequest): AgentEventRecall {
     return recallAgentEvents(this.state, request)
+  }
+
+  /** Inspect one employed or departed agent's durable memory at this snapshot revision. */
+  query(request: MemoryQuery): MemoryPage {
+    return queryAgentMemory(this.state, request)
   }
 }
 
