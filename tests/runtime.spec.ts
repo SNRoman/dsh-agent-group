@@ -232,24 +232,113 @@ describe('EmployeeAgentPool', () => {
     expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
   })
 
-  test('disposal during fresh admission prevents a session-binding write', async () => {
-    const admission = Promise.withResolvers<AgentHandle>()
-    const created = handle()
+  test('disposal during fresh admission prevents agent creation and session binding', async () => {
+    const optionsStarted = Promise.withResolvers<void>()
+    const releaseOptions = Promise.withResolvers<void>()
+    const create = vi.fn(async () => handle())
     const recordSessionId = vi.fn(async () => {})
     const pool = new EmployeeAgentPool(
-      { create: vi.fn(async () => await admission.promise), resume: vi.fn() },
+      { create, resume: vi.fn() },
       { sessionIdFor: () => undefined, recordSessionId },
+      async () => {
+        optionsStarted.resolve()
+        await releaseOptions.promise
+        return {}
+      },
     )
     const ensuring = pool.ensure(AgentId('alice'))
+    await optionsStarted.promise
     const disposing = pool.dispose(AgentId('alice'))
-    admission.resolve(created)
+    releaseOptions.resolve()
 
     await expect(ensuring).rejects.toThrow(/invalidated by disposal/)
     await expect(disposing).resolves.toBeUndefined()
+    expect(create).not.toHaveBeenCalled()
     expect(recordSessionId).not.toHaveBeenCalled()
-    expect(created.dispose).toHaveBeenCalledTimes(1)
     expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
   })
+
+  test.each(['dispose', 'disposeAll'] as const)(
+    '%s during fresh-session hiding prevents the later binding write',
+    async teardownKind => {
+      const hideStarted = Promise.withResolvers<void>()
+      const releaseHide = Promise.withResolvers<void>()
+      const agentCtx = {} as Context
+      const created = {
+        agent: { id: SessionId('fresh-session'), ctx: agentCtx } as unknown as Agent,
+        dispose: vi.fn(async () => {}),
+      }
+      const recordSessionId = vi.fn(async () => {})
+      const pool = new EmployeeAgentPool(
+        {
+          create: vi.fn(async options => {
+            await options.setup?.(agentCtx)
+            return created
+          }),
+          resume: vi.fn(),
+        },
+        {
+          sessionIdFor: () => undefined,
+          hideSession: vi.fn(async () => {
+            hideStarted.resolve()
+            await releaseHide.promise
+          }),
+          recordSessionId,
+        },
+        async () => ({ roleRevisionId: DefinitionRevisionId('revision-1') }),
+        undefined,
+        vi.fn(() => vi.fn()),
+      )
+      const ensuring = pool.ensure(AgentId('alice'))
+      await hideStarted.promise
+      const rejected = expect(ensuring).rejects.toThrow(/invalidated by disposal/)
+      const teardown = teardownKind === 'dispose'
+        ? pool.dispose(AgentId('alice'))
+        : pool.disposeAll()
+      releaseHide.resolve()
+
+      await rejected
+      await expect(teardown).resolves.toBeUndefined()
+      expect(recordSessionId).not.toHaveBeenCalled()
+      expect(created.dispose).toHaveBeenCalledTimes(1)
+      expect(pool.roleRevisionFor(AgentId('alice'))).toBeUndefined()
+      expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
+    },
+  )
+
+  test.each(['dispose', 'disposeAll'] as const)(
+    '%s during a started binding write preserves the binding without publishing its handle',
+    async teardownKind => {
+      const recordStarted = Promise.withResolvers<void>()
+      const releaseRecord = Promise.withResolvers<void>()
+      const created = handle()
+      let binding: SessionId | undefined
+      const recordSessionId = vi.fn(async (_agentId: AgentId, sessionId: SessionId) => {
+        recordStarted.resolve()
+        await releaseRecord.promise
+        binding = sessionId
+      })
+      const pool = new EmployeeAgentPool(
+        { create: vi.fn(async () => created), resume: vi.fn() },
+        { sessionIdFor: () => binding, hideSession: vi.fn(async () => {}), recordSessionId },
+      )
+      const ensuring = pool.ensure(AgentId('alice'))
+      await recordStarted.promise
+      const rejected = expect(ensuring).rejects.toThrow(/invalidated by disposal/)
+      const teardown = teardownKind === 'dispose'
+        ? pool.dispose(AgentId('alice'))
+        : pool.disposeAll()
+      releaseRecord.resolve()
+
+      await rejected
+      await expect(teardown).resolves.toBeUndefined()
+      expect(binding).toBeDefined()
+      expect(recordSessionId).toHaveBeenCalledTimes(1)
+      expect(created.dispose).toHaveBeenCalledTimes(1)
+      expect(pool.roleRevisionFor(AgentId('alice'))).toBeUndefined()
+      expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
+    },
+  )
 
   test('a materialized session never falls back to create when resume fails', async () => {
     const create = vi.fn(async () => handle())

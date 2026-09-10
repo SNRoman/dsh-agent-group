@@ -270,9 +270,12 @@ export class EmployeeAgentPool {
     const bound = this.source.sessionIdFor(agentId)
     if (bound !== undefined) {
       const disposition = await this.source.classifySession?.(agentId, bound) ?? 'resume'
+      this.assertAdmissionActive(agentId, generation)
       if (disposition === 'resume') {
         await this.source.hideSession?.(bound)
+        this.assertAdmissionActive(agentId, generation)
         const options = await this.optionsFactory?.(agentId, 'resume')
+        this.assertAdmissionActive(agentId, generation)
         // A compatible materialized session never falls back to create: a
         // resume failure remains a real persistence/runtime fault.
         const setup = this.resumeSetup(agentId, this.roleSetup(agentId, options))
@@ -286,6 +289,7 @@ export class EmployeeAgentPool {
       // a known compatibility gap. Retire the visible legacy row before minting
       // the new internal identity.
       await this.source.hideSession?.(bound)
+      this.assertAdmissionActive(agentId, generation)
     }
     return await this.createFresh(agentId, generation)
   }
@@ -316,6 +320,7 @@ export class EmployeeAgentPool {
   private async createFresh(agentId: AgentId, generation: number): Promise<AgentHandle> {
     const sessionId = SessionId(randomUUID())
     const options = await this.optionsFactory?.(agentId, 'create')
+    this.assertAdmissionActive(agentId, generation)
     const setup = this.roleSetup(agentId, options)
     const handle = await this.agents.create({
       sessionId,
@@ -324,19 +329,25 @@ export class EmployeeAgentPool {
       ...(setup === undefined ? {} : { setup }),
     })
     try {
-      if (this.stopped || this.generationOf(agentId) !== generation) {
-        throw new Error(`agent '${agentId}' admission was invalidated by disposal`)
-      }
+      this.assertAdmissionActive(agentId, generation)
       // The created Session is already live when create() resolves, so the DSH
       // workspace registry can archive it before any Agent Workspace delivery
       // makes it a visible ordinary conversation.
       await this.source.hideSession?.(sessionId)
+      this.assertAdmissionActive(agentId, generation)
       await this.source.recordSessionId(agentId, sessionId)
+      this.assertAdmissionActive(agentId, generation)
     } catch (error) {
       await handle.dispose()
       throw error
     }
     return handle
+  }
+
+  private assertAdmissionActive(agentId: AgentId, generation: number): void {
+    if (this.stopped || this.generationOf(agentId) !== generation) {
+      throw new Error(`agent '${agentId}' admission was invalidated by disposal`)
+    }
   }
 
   private async retireResident(agentId: AgentId, handle: AgentHandle): Promise<void> {
