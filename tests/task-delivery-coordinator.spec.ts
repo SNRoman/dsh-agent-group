@@ -514,6 +514,44 @@ describe('TaskDeliveryCoordinator', () => {
     expect(state.events.filter(event => event.type === 'task/delivery-accepted')).toHaveLength(1)
   })
 
+  test('pending accepted recovery retains its durable claim revision after synchronization', async () => {
+    const started = startedTask()
+    const agent = started.state.agents[started.agentId]!
+    const deliveryStarted = started.state.events.find(event => event.type === 'task/delivery-started')!
+    const accepted = acceptTaskDelivery(started.state, {
+      taskId: started.taskId,
+      attemptId: deliveryStarted.taskDeliveryAttemptId,
+      messageId: deliveryStarted.messageId,
+      definitionRevisionId: agent.definitionRevisionId,
+    })
+    const revised = mutateWorkspace(accepted.state, {
+      type: 'definition/revise', definitionId: agent.definitionId,
+      description: 'new', instructions: 'new', synchronizeAgentIds: [started.agentId],
+    })
+    let state = revised.state
+    const tracked = deferred<WorkspaceTurnOutcome>()
+    const host: TaskDeliveryCoordinatorHost = {
+      snapshot: () => structuredClone(state),
+      apply: async mutation => { state = mutation(state); return structuredClone(state) },
+      ensureEmployee: async () => handle(),
+      deliver: async () => outcome('unused'),
+      recoverDelivery: async () => await tracked.promise,
+    }
+    const coordinator = new TaskDeliveryCoordinator(host)
+
+    await expect(coordinator.recoverAgent(started.agentId, recoveredHandle([started.message], []))).resolves.toEqual([
+      { taskId: started.taskId, status: 'pending' },
+    ])
+    const completion = coordinator.deliver(started.taskId)
+    tracked.resolve({ ...outcome('recovered result'), definitionRevisionId: revised.definitionRevisionId })
+    await expect(completion).resolves.toBe('recovered result')
+
+    const acceptedEvent = state.events.find(event => event.type === 'task/delivery-accepted')
+    const resultEvent = state.events.find(event => event.type === 'task/result')
+    expect(acceptedEvent?.definitionRevisionId).toBe(agent.definitionRevisionId)
+    expect(resultEvent?.definitionRevisionId).toBe(agent.definitionRevisionId)
+  })
+
   test('recovery terminalizes one completed correlated turn exactly once', async () => {
     const built = acceptedTask()
     let state = built.state

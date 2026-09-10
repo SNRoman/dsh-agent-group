@@ -84,6 +84,7 @@ export class EmployeeAgentPool {
   private readonly generations = new Map<AgentId, number>()
   private readonly operations = new Map<AgentId, Promise<void>>()
   private readonly roles = new Map<AgentId, EmployeeRoleContribution>()
+  private stopped = false
 
   constructor(
     private readonly agents: AgentLifecycle,
@@ -105,13 +106,14 @@ export class EmployeeAgentPool {
 
   /** Admit the live handle for one agent, creating or resuming it exactly once. */
   async ensure(agentId: AgentId): Promise<AgentHandle> {
+    if (this.stopped) throw new Error('employee agent pool is disposed')
     const existing = this.handles.get(agentId)
     if (existing !== undefined) return existing
     const pending = this.inFlight.get(agentId)
     if (pending !== undefined) return pending
 
     const generation = this.generationOf(agentId)
-    const promise = this.materialize(agentId).then(async handle => {
+    const promise = this.materialize(agentId, generation).then(async handle => {
       if (this.generationOf(agentId) !== generation) {
         try {
           await handle.dispose()
@@ -147,37 +149,46 @@ export class EmployeeAgentPool {
     if (this.roleInstaller === undefined) throw new Error('employee role installer is not configured')
     await this.serialize(agentId, async () => {
       const generation = this.generationOf(agentId)
-      const handle = await this.ensure(agentId)
-      await handle.agent.whenIdle()
-      if (this.generationOf(agentId) !== generation || this.handles.get(agentId) !== handle) {
-        throw new Error(`agent '${agentId}' role refresh was invalidated by disposal`)
-      }
-      await handle.agent.runMaintenance(async () => {
-        const prior = this.roles.get(agentId)
-        if (prior?.revisionId === revisionId) return
-        if (prior === undefined) {
-          const dispose = this.roleInstaller!(agentId, revisionId, handle.agent.ctx)
-          this.roles.set(agentId, { revisionId, dispose })
-          return
+      const handle = this.handles.get(agentId)
+      if (handle === undefined) throw new Error(`agent '${agentId}' is not resident`)
+      try {
+        await handle.agent.whenIdle()
+        if (this.generationOf(agentId) !== generation || this.handles.get(agentId) !== handle) {
+          throw new Error(`agent '${agentId}' role refresh was invalidated by disposal`)
         }
-        prior.dispose()
-        this.roles.delete(agentId)
-        try {
-          const dispose = this.roleInstaller!(agentId, revisionId, handle.agent.ctx)
-          this.roles.set(agentId, { revisionId, dispose })
-        } catch (replacementError) {
-          try {
-            const dispose = this.roleInstaller!(agentId, prior.revisionId, handle.agent.ctx)
-            this.roles.set(agentId, { revisionId: prior.revisionId, dispose })
-          } catch (rollbackError) {
-            throw new AggregateError(
-              [replacementError, rollbackError],
-              `agent '${agentId}' role replacement and rollback both failed`,
-            )
+        await handle.agent.runMaintenance(async () => {
+          if (this.generationOf(agentId) !== generation || this.handles.get(agentId) !== handle) {
+            throw new Error(`agent '${agentId}' role refresh was invalidated by disposal`)
           }
-          throw replacementError
-        }
-      })
+          const prior = this.roles.get(agentId)
+          if (prior?.revisionId === revisionId) return
+          if (prior === undefined) {
+            const dispose = this.roleInstaller!(agentId, revisionId, handle.agent.ctx)
+            this.roles.set(agentId, { revisionId, dispose })
+            return
+          }
+          prior.dispose()
+          this.roles.delete(agentId)
+          try {
+            const dispose = this.roleInstaller!(agentId, revisionId, handle.agent.ctx)
+            this.roles.set(agentId, { revisionId, dispose })
+          } catch (replacementError) {
+            try {
+              const dispose = this.roleInstaller!(agentId, prior.revisionId, handle.agent.ctx)
+              this.roles.set(agentId, { revisionId: prior.revisionId, dispose })
+            } catch (rollbackError) {
+              throw new AggregateError(
+                [replacementError, rollbackError],
+                `agent '${agentId}' role replacement and rollback both failed`,
+              )
+            }
+            throw replacementError
+          }
+        })
+      } catch (error) {
+        await this.retireResident(agentId, handle)
+        throw error
+      }
     })
   }
 
@@ -215,17 +226,20 @@ export class EmployeeAgentPool {
 
   /** Dispose every live handle and invalidate every admission in flight. */
   async disposeAll(): Promise<void> {
-    const ids = new Set<AgentId>([...this.handles.keys(), ...this.inFlight.keys()])
+    this.stopped = true
+    const ids = new Set<AgentId>([...this.handles.keys(), ...this.inFlight.keys(), ...this.operations.keys()])
     for (const agentId of ids) this.generations.set(agentId, this.generationOf(agentId) + 1)
 
     const handles = [...this.handles.values()]
     const pending = [...this.inFlight.values()]
+    const operations = [...this.operations.values()]
     for (const handle of handles) this.agentIds.delete(handle.agent)
     this.handles.clear()
     this.roles.clear()
     await Promise.allSettled([
       ...handles.map(handle => handle.dispose()),
       ...pending,
+      ...operations,
     ])
   }
 
@@ -234,8 +248,15 @@ export class EmployeeAgentPool {
   }
 
   private async serialize<T>(agentId: AgentId, operation: () => Promise<T>): Promise<T> {
+    if (this.stopped) throw new Error('employee agent pool is disposed')
+    const generation = this.generationOf(agentId)
     const previous = this.operations.get(agentId) ?? Promise.resolve()
-    const result = previous.catch(() => {}).then(operation)
+    const result = previous.catch(() => {}).then(async () => {
+      if (this.stopped || this.generationOf(agentId) !== generation) {
+        throw new Error(`agent '${agentId}' operation was invalidated by disposal`)
+      }
+      return await operation()
+    })
     const settled = result.then(() => {}, () => {})
     this.operations.set(agentId, settled)
     try {
@@ -245,7 +266,7 @@ export class EmployeeAgentPool {
     }
   }
 
-  private async materialize(agentId: AgentId): Promise<AgentHandle> {
+  private async materialize(agentId: AgentId, generation: number): Promise<AgentHandle> {
     const bound = this.source.sessionIdFor(agentId)
     if (bound !== undefined) {
       const disposition = await this.source.classifySession?.(agentId, bound) ?? 'resume'
@@ -266,7 +287,7 @@ export class EmployeeAgentPool {
       // the new internal identity.
       await this.source.hideSession?.(bound)
     }
-    return await this.createFresh(agentId)
+    return await this.createFresh(agentId, generation)
   }
 
   private roleSetup(agentId: AgentId, options: EmployeeMaterializationOptions | undefined): AgentSetup | undefined {
@@ -292,7 +313,7 @@ export class EmployeeAgentPool {
     }
   }
 
-  private async createFresh(agentId: AgentId): Promise<AgentHandle> {
+  private async createFresh(agentId: AgentId, generation: number): Promise<AgentHandle> {
     const sessionId = SessionId(randomUUID())
     const options = await this.optionsFactory?.(agentId, 'create')
     const setup = this.roleSetup(agentId, options)
@@ -303,6 +324,9 @@ export class EmployeeAgentPool {
       ...(setup === undefined ? {} : { setup }),
     })
     try {
+      if (this.stopped || this.generationOf(agentId) !== generation) {
+        throw new Error(`agent '${agentId}' admission was invalidated by disposal`)
+      }
       // The created Session is already live when create() resolves, so the DSH
       // workspace registry can archive it before any Agent Workspace delivery
       // makes it a visible ordinary conversation.
@@ -313,5 +337,14 @@ export class EmployeeAgentPool {
       throw error
     }
     return handle
+  }
+
+  private async retireResident(agentId: AgentId, handle: AgentHandle): Promise<void> {
+    if (this.handles.get(agentId) !== handle) return
+    this.generations.set(agentId, this.generationOf(agentId) + 1)
+    this.handles.delete(agentId)
+    this.roles.delete(agentId)
+    this.agentIds.delete(handle.agent)
+    await handle.dispose()
   }
 }

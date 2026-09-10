@@ -62,6 +62,17 @@ describe('definition revision history', () => {
       { status: 'unresolved' },
       { status: 'unresolved' },
     ])
+
+    const wrongKinds = {
+      ...legacy,
+      events: legacy.events.map(event => event.type === 'definition/created'
+        ? { ...event, type: 'definition/revised' as const }
+        : event),
+    }
+    expect(projectDefinitionHistory(wrongKinds, created.definitionId).map(item => item.creationEvent)).toEqual([
+      { status: 'unresolved' },
+      { status: 'unresolved' },
+    ])
   })
 
   test('sorts pins deterministically even when the aggregate record order differs', () => {

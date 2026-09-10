@@ -208,8 +208,10 @@ export class TaskDeliveryCoordinator {
         const completion = this.finishRecovered(
           assignment,
           identity,
-          this.revisionForAcceptedAttempt(snapshot, assignment, identity)
-            ?? snapshot.agents[agentId]?.definitionRevisionId,
+          inspection.phase === 'accepted'
+            ? this.revisionForAcceptedAttempt(snapshot, assignment, identity)
+            : snapshot.agents[agentId]?.definitionRevisionId,
+          inspection.phase === 'accepted',
           recoverDelivery(
             agentId,
             handle,
@@ -278,6 +280,7 @@ export class TaskDeliveryCoordinator {
     assignment: TaskAssignment,
     identity: { readonly taskId: TaskId; readonly attemptId: TaskDeliveryAttemptId; readonly messageId: MessageId },
     capturedRevisionId: DefinitionRevisionId | undefined,
+    acceptedBeforeRecovery: boolean,
     pending: Promise<WorkspaceTurnOutcome>,
   ): Promise<string> {
     let outcome: WorkspaceTurnOutcome
@@ -294,8 +297,13 @@ export class TaskDeliveryCoordinator {
       await this.failIfOpen(identity, 'interrupted', 'Delivery was interrupted before a terminal result.')
       throw new Error(`task '${identity.taskId}' delivery was interrupted before a terminal result`)
     }
-    const definitionRevisionId = outcome.definitionRevisionId ?? capturedRevisionId
-    if (definitionRevisionId === undefined) throw new Error(`task '${identity.taskId}' assignee does not exist`)
+    const definitionRevisionId = acceptedBeforeRecovery
+      ? capturedRevisionId
+      : outcome.definitionRevisionId ?? capturedRevisionId
+    if (definitionRevisionId === undefined) {
+      await this.failIfOpen(identity, 'interrupted', 'Delivery claim revision could not be recovered.')
+      throw new Error(`task '${identity.taskId}' delivery claim revision could not be recovered`)
+    }
     await this.recordCompletedResult(assignment, identity, result, definitionRevisionId)
     return completedTaskResult(this.host.snapshot(), identity) ?? result
   }

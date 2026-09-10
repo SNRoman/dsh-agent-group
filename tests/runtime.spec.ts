@@ -11,10 +11,11 @@ import { apply as domainApply, Config as DomainConfig, inject as domainInject } 
 import { apply as jsonApply, Config as JsonConfig, inject as jsonInject } from '@deepseek-ai/dsh-storage-json'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
-import { AgentId, DefinitionRevisionId, HumanId, RoomId, TaskDeliveryAttemptId, TaskId } from '../packages/host/src/ids.ts'
+import { AgentId, DefinitionRevisionId, HumanId, RoomId, TaskDeliveryAttemptId, TaskId, WorkspaceId } from '../packages/host/src/ids.ts'
 import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
 import { EmployeeAgentPool } from '../packages/host/src/runtime.ts'
 import type { EmployeeSessionSource } from '../packages/host/src/runtime.ts'
+import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import { acceptTaskDelivery, startTaskDelivery } from '../packages/host/src/task-delivery.ts'
 import { assignHumanTask } from '../packages/host/src/tasks.ts'
 import { WorkspaceTurnTracker } from '../packages/host/src/turn-tracker.ts'
@@ -111,6 +112,143 @@ describe('EmployeeAgentPool', () => {
     await pool.disposeAll()
     expect(pool.agentIdFor(alice.agent)).toBeUndefined()
     expect(pool.agentIdFor(bob.agent)).toBeUndefined()
+  })
+
+  test('departure invalidates queued delivery before it can rematerialize the employee', async () => {
+    const activeStarted = Promise.withResolvers<void>()
+    const releaseActive = Promise.withResolvers<void>()
+    const recordSessionId = vi.fn(async () => {})
+    const dispose = vi.fn(async () => {})
+    const create = vi.fn(async () => handle(dispose))
+    const queuedDelivery = vi.fn(async () => 'stale')
+    const pool = new EmployeeAgentPool(
+      { create, resume: vi.fn() },
+      { sessionIdFor: () => undefined, recordSessionId },
+    )
+    await pool.ensure(AgentId('alice'))
+    const active = pool.runDelivery(AgentId('alice'), async () => {
+      activeStarted.resolve()
+      await releaseActive.promise
+      return 'active'
+    })
+    await activeStarted.promise
+    const queued = pool.runDelivery(AgentId('alice'), queuedDelivery)
+
+    await pool.dispose(AgentId('alice'))
+    releaseActive.resolve()
+    await expect(active).resolves.toBe('active')
+    await expect(queued).rejects.toThrow(/invalidated by disposal/)
+    expect(queuedDelivery).not.toHaveBeenCalled()
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(recordSessionId).toHaveBeenCalledTimes(1)
+    expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
+  })
+
+  test('whole-pool teardown invalidates queued refresh and drains its operation lane', async () => {
+    const activeStarted = Promise.withResolvers<void>()
+    const releaseActive = Promise.withResolvers<void>()
+    const install = vi.fn(() => vi.fn())
+    const stable = handle()
+    const pool = new EmployeeAgentPool(
+      { create: vi.fn(async () => stable), resume: vi.fn() },
+      { sessionIdFor: () => undefined, recordSessionId: vi.fn(async () => {}) },
+      async () => ({ roleRevisionId: DefinitionRevisionId('revision-1') }),
+      undefined,
+      install,
+    )
+    await pool.ensure(AgentId('alice'))
+    const active = pool.runDelivery(AgentId('alice'), async () => {
+      activeStarted.resolve()
+      await releaseActive.promise
+    })
+    await activeStarted.promise
+    const refresh = pool.refreshRole(AgentId('alice'), DefinitionRevisionId('revision-2'))
+    const teardown = pool.disposeAll()
+    releaseActive.resolve()
+
+    await expect(active).resolves.toBeUndefined()
+    await expect(refresh).rejects.toThrow(/invalidated by disposal/)
+    await expect(teardown).resolves.toBeUndefined()
+    expect(install).not.toHaveBeenCalled()
+    expect(pool.roleRevisionFor(AgentId('alice'))).toBeUndefined()
+    expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
+  })
+
+  test('disposal during refresh maintenance prevents a stale role write', async () => {
+    const maintenanceStarted = Promise.withResolvers<void>()
+    const releaseMaintenance = Promise.withResolvers<void>()
+    const agentCtx = {} as Context
+    const install = vi.fn(() => vi.fn())
+    const agent = {
+      id: SessionId('stable-session'), ctx: agentCtx,
+      whenIdle: vi.fn(async () => {}),
+      runMaintenance: vi.fn(async <T>(task: (signal: AbortSignal) => Promise<T>) => {
+        maintenanceStarted.resolve()
+        await releaseMaintenance.promise
+        return await task(new AbortController().signal)
+      }),
+    } as unknown as Agent
+    const stable = { agent, dispose: vi.fn(async () => {}) }
+    const pool = new EmployeeAgentPool(
+      {
+        create: vi.fn(async options => {
+          await options.setup?.(agentCtx)
+          return stable
+        }),
+        resume: vi.fn(),
+      },
+      { sessionIdFor: () => undefined, recordSessionId: vi.fn(async () => {}) },
+      async () => ({ roleRevisionId: DefinitionRevisionId('revision-1') }),
+      undefined,
+      install,
+    )
+    await pool.ensure(AgentId('alice'))
+    const refresh = pool.refreshRole(AgentId('alice'), DefinitionRevisionId('revision-2'))
+    await maintenanceStarted.promise
+
+    await pool.dispose(AgentId('alice'))
+    releaseMaintenance.resolve()
+
+    await expect(refresh).rejects.toThrow(/invalidated by disposal/)
+    expect(install).toHaveBeenCalledTimes(1)
+    expect(pool.roleRevisionFor(AgentId('alice'))).toBeUndefined()
+    expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
+  })
+
+  test('refresh after departure cannot rematerialize the employee', async () => {
+    const create = vi.fn(async () => handle())
+    const pool = new EmployeeAgentPool(
+      { create, resume: vi.fn() },
+      { sessionIdFor: () => undefined, recordSessionId: vi.fn(async () => {}) },
+      async () => ({ roleRevisionId: DefinitionRevisionId('revision-1') }),
+      undefined,
+      vi.fn(() => vi.fn()),
+    )
+    await pool.ensure(AgentId('alice'))
+    await pool.dispose(AgentId('alice'))
+
+    await expect(pool.refreshRole(AgentId('alice'), DefinitionRevisionId('revision-2'))).rejects.toThrow(/not resident/)
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
+  })
+
+  test('disposal during fresh admission prevents a session-binding write', async () => {
+    const admission = Promise.withResolvers<AgentHandle>()
+    const created = handle()
+    const recordSessionId = vi.fn(async () => {})
+    const pool = new EmployeeAgentPool(
+      { create: vi.fn(async () => await admission.promise), resume: vi.fn() },
+      { sessionIdFor: () => undefined, recordSessionId },
+    )
+    const ensuring = pool.ensure(AgentId('alice'))
+    const disposing = pool.dispose(AgentId('alice'))
+    admission.resolve(created)
+
+    await expect(ensuring).rejects.toThrow(/invalidated by disposal/)
+    await expect(disposing).resolves.toBeUndefined()
+    expect(recordSessionId).not.toHaveBeenCalled()
+    expect(created.dispose).toHaveBeenCalledTimes(1)
+    expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
   })
 
   test('a materialized session never falls back to create when resume fails', async () => {
@@ -318,7 +456,7 @@ describe('EmployeeAgentPool', () => {
     expect(agent.runMaintenance).toHaveBeenCalledTimes(1)
   })
 
-  test('keeps the prior role and releases its gate when replacement registration fails', async () => {
+  test('retires the resident and releases its gate when replacement registration fails', async () => {
     const calls: string[] = []
     const agentCtx = {} as Context
     const agent = {
@@ -353,16 +491,14 @@ describe('EmployeeAgentPool', () => {
     await pool.ensure(AgentId('alice'))
     await expect(pool.refreshRole(AgentId('alice'), DefinitionRevisionId('revision-2'))).rejects.toThrow('replacement failed')
     expect(oldDispose).toHaveBeenCalledTimes(1)
-    expect(pool.roleRevisionFor(AgentId('alice'))).toBe(DefinitionRevisionId('revision-1'))
-    expect(await pool.runDelivery(AgentId('alice'), async () => 'released')).toBe('released')
-    await pool.refreshRole(AgentId('alice'), DefinitionRevisionId('revision-3'))
+    expect(pool.roleRevisionFor(AgentId('alice'))).toBeUndefined()
+    expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
     expect(calls).toEqual([
-      'install:revision-1', 'dispose:old', 'install:revision-2',
-      'install:revision-1', 'dispose:old', 'install:revision-3',
+      'install:revision-1', 'dispose:old', 'install:revision-2', 'install:revision-1',
     ])
   })
 
-  test('keeps the prior role and releases its gate when prior role teardown fails', async () => {
+  test('retires the resident and releases its gate when prior role teardown fails', async () => {
     const agentCtx = {} as Context
     const agent = {
       id: SessionId('stable-session'), ctx: agentCtx,
@@ -389,9 +525,9 @@ describe('EmployeeAgentPool', () => {
 
     await pool.ensure(AgentId('alice'))
     await expect(pool.refreshRole(AgentId('alice'), DefinitionRevisionId('revision-2'))).rejects.toThrow('teardown failed')
-    expect(pool.roleRevisionFor(AgentId('alice'))).toBe(DefinitionRevisionId('revision-1'))
+    expect(pool.roleRevisionFor(AgentId('alice'))).toBeUndefined()
+    expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
     expect(install).toHaveBeenCalledTimes(1)
-    await expect(pool.runDelivery(AgentId('alice'), async () => 'released')).resolves.toBe('released')
   })
 })
 
@@ -707,6 +843,53 @@ describe('WorkspaceTurnTracker', () => {
 })
 
 describe('AgentWorkspaceDomainService delivery failures', () => {
+  test('returns a committed revision and retires its resident after role refresh fails', async () => {
+    const created = mutateWorkspace(createInitialState(WorkspaceId('local')), {
+      type: 'definition/create', name: 'Engineer', description: 'v1', instructions: 'one',
+    })
+    const hired = mutateWorkspace(created.state, {
+      type: 'agent/create', definitionId: created.definitionId, name: 'Alice',
+    })
+    let state = hired.state
+    const stable = handle()
+    const refreshRole = vi.fn(async () => { throw new Error('refresh failed') })
+    const dispose = vi.fn(async () => {})
+    const service = new AgentWorkspaceDomainService(new Context())
+    const internals = service as unknown as {
+      table: {
+        get(id: WorkspaceId): typeof state | undefined
+        update(id: WorkspaceId, mutation: (current: typeof state) => typeof state): Promise<typeof state>
+      }
+      pool: { handleFor(agentId: AgentId): AgentHandle | undefined; refreshRole: typeof refreshRole; dispose: typeof dispose }
+    }
+    internals.table = {
+      get: () => state,
+      update: async (_id, mutation) => {
+        state = mutation(state)
+        return state
+      },
+    }
+    internals.pool = { handleFor: () => stable, refreshRole, dispose }
+    const beforeRevision = state.revision
+    const beforeEvents = state.events.length
+
+    const committed = await service.execute({
+      type: 'definition/revise', definitionId: created.definitionId,
+      description: 'v2', instructions: 'two', synchronizeAgentIds: [hired.agentId],
+    })
+
+    expect(committed.revision).toBe(beforeRevision + 1)
+    expect(committed.events).toHaveLength(beforeEvents + 2)
+    expect(refreshRole).toHaveBeenCalledTimes(1)
+    expect(dispose).toHaveBeenCalledWith(hired.agentId)
+    expect(service.activitySnapshot().agents).toContainEqual({
+      agentId: hired.agentId,
+      status: 'failed',
+      usingTool: false,
+      error: { code: 'agent-role-refresh-failed', summary: 'Agent role could not be refreshed.' },
+    })
+  })
+
   test('materialization failure remains display-safe until acknowledged', async () => {
     const service = new AgentWorkspaceDomainService(new Context())
     const secretCanary = 'API_KEY=FAKE_REVIEW_CANARY'

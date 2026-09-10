@@ -45,6 +45,7 @@ export function projectDefinitionHistory(
     && events.every((event, index) => {
       const revision = revisions[index]
       return revision !== undefined
+        && event.type === (index === 0 ? 'definition/created' : 'definition/revised')
         && (event.definitionRevisionId === undefined || event.definitionRevisionId === revision.id)
     })
 

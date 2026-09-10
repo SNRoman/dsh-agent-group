@@ -370,7 +370,11 @@ export class AgentWorkspaceDomainService extends Service {
     return { state: structuredClone(next), roomId: resolvedRoomId }
   }
 
-  /** Apply one command durably and return the detached committed aggregate. */
+  /**
+   * Apply one command durably and return the detached committed aggregate.
+   * A post-commit resident-role refresh failure retires that runtime, records a
+   * safe activity failure, and leaves the durable mutation committed.
+   */
   async execute(command: WorkspaceCommand, settledActivity?: WorkspaceActivityIdentity): Promise<WorkspaceState> {
     const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => {
       if (command.type === 'room/message') {
@@ -392,7 +396,19 @@ export class AgentWorkspaceDomainService extends Service {
       await Promise.all(selected.map(async agentId => {
         const agent = next.agents[agentId]
         if (agent?.employmentStatus !== 'employed' || this.pool?.handleFor(agentId) === undefined) return
-        await this.pool.refreshRole(agentId, agent.definitionRevisionId)
+        try {
+          await this.pool.refreshRole(agentId, agent.definitionRevisionId)
+        } catch {
+          this.activityStream.recordAgentFailureIfAbsent(agentId, {
+            code: 'agent-role-refresh-failed',
+            summary: 'Agent role could not be refreshed.',
+          })
+          try {
+            await this.pool?.dispose(agentId)
+          } catch {
+            // The pool removes the failed resident before its handle teardown can reject.
+          }
+        }
       }))
     }
     return structuredClone(next)
@@ -486,6 +502,10 @@ export class AgentWorkspaceDomainService extends Service {
         }
         throw error
       }
+    }
+    const admittedAgent = this.snapshot().agents[agentId]
+    if (admittedAgent === undefined || admittedAgent.employmentStatus !== 'employed') {
+      throw new Error(`agent '${agentId}' is not employed`)
     }
     const run = async (handle: AgentHandle): Promise<WorkspaceTurnOutcome> => {
       const durableAgent = this.snapshot().agents[agentId]
