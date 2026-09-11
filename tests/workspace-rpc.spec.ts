@@ -149,20 +149,38 @@ describe('workspace rpc handler', () => {
     expect(result.error.code).toBe('cancelled')
   })
 
-  it('does not forward a pre-cancelled mutation to durable or runtime services', async () => {
+  it.each([
+    ['definition/create', { expectedRevision: 0, name: 'Role', description: '', instructions: '' }],
+    ['definition/revise', { expectedRevision: 0, definitionId: 'definition-1', description: '', instructions: '' }],
+    ['definition/synchronize', { expectedRevision: 0, definitionId: 'definition-1', definitionRevisionId: 'revision-1', agentIds: ['agent-1'] }],
+    ['agent/create', { expectedRevision: 0, definitionId: 'definition-1', name: 'Alice' }],
+    ['agent/depart', { expectedRevision: 0, agentId: 'agent-1' }],
+    ['agent/employ', { expectedRevision: 0, agentId: 'agent-1' }],
+    ['room/create', { expectedRevision: 0, kind: 'group' }],
+    ['room/direct/open', { expectedRevision: 0, agentId: 'agent-1' }],
+    ['room/join', { expectedRevision: 0, roomId: 'room-1', agentId: 'agent-1', memoryStart: { type: 'new-events' } }],
+    ['room/leave', { expectedRevision: 0, membershipId: 'membership-1' }],
+    ['room/post', { expectedRevision: 0, roomId: 'room-1', text: 'hello', mentions: [] }],
+    ['task/assign', { expectedRevision: 0, assigneeAgentId: 'agent-1', title: 'never runs' }],
+    ['task/grant', { expectedRevision: 0, granteeAgentId: 'agent-1', rootTaskId: 'task-1' }],
+    ['task/revoke', { expectedRevision: 0, delegationGrantId: 'grant-1' }],
+    ['task/cancel', { expectedRevision: 0, taskId: 'task-1' }],
+    ['task/retry-delivery', { expectedRevision: 0, taskId: 'task-1' }],
+    ['runtime/activity/stop', { expectedRevision: 0, activityId: 'activity-1', agentId: 'agent-1', messageId: 'message-1', sessionId: 'session-1', turn: 1 }],
+    ['runtime/child/stop', { expectedRevision: 0, childRunId: 'child-1' }],
+    ['runtime/failure/acknowledge', { expectedRevision: 0, agentId: 'agent-1' }],
+  ] as const)('does not forward a pre-cancelled %s mutation to durable or runtime services', async (endpoint, payload) => {
     const fixture = serviceFixture()
     const controller = new AbortController()
     controller.abort()
 
-    const result = await createWorkspaceRpcHandler(fixture.service)(
-      'task/assign',
-      { expectedRevision: 0, assigneeAgentId: 'agent-1', title: 'never runs' },
-      controller.signal,
-    )
+    const result = await createWorkspaceRpcHandler(fixture.service)(endpoint, payload, controller.signal)
 
     expect(result.ok).toBe(false)
     expect(fixture.commands).toEqual([])
     expect(fixture.operations).toEqual([])
+    expect(fixture.posts).toEqual([])
+    expect(fixture.directOpens).toEqual([])
   })
 
   it('maps definition creation to the existing durable command boundary', async () => {
@@ -365,11 +383,26 @@ describe('workspace rpc handler', () => {
   })
 
   it.each([
-    ['definition/create', { expectedRevision: 0, name: 'Role', description: '', instructions: '', actorAgentId: 'agent-1' }],
-    ['task/assign', { expectedRevision: 0, assigneeAgentId: 'agent-1', title: 'Ship', humanId: 'attacker' }],
-    ['room/post', { expectedRevision: 0, roomId: 'room-1', text: 'hello', mentions: [], actor: { type: 'agent', id: 'agent-1' } }],
+    ['definition/create', { expectedRevision: 0, name: 'Role', description: '', instructions: '', extra: true }],
+    ['definition/revise', { expectedRevision: 0, definitionId: 'definition-1', description: '', instructions: '', extra: true }],
+    ['definition/synchronize', { expectedRevision: 0, definitionId: 'definition-1', definitionRevisionId: 'revision-1', agentIds: ['agent-1'], extra: true }],
+    ['agent/create', { expectedRevision: 0, definitionId: 'definition-1', name: 'Alice', extra: true }],
+    ['agent/depart', { expectedRevision: 0, agentId: 'agent-1', extra: true }],
+    ['agent/employ', { expectedRevision: 0, agentId: 'agent-1', extra: true }],
+    ['room/create', { expectedRevision: 0, kind: 'group', extra: true }],
+    ['room/direct/open', { expectedRevision: 0, agentId: 'agent-1', extra: true }],
+    ['room/join', { expectedRevision: 0, roomId: 'room-1', agentId: 'agent-1', memoryStart: { type: 'new-events' }, extra: true }],
+    ['room/leave', { expectedRevision: 0, membershipId: 'membership-1', extra: true }],
+    ['room/post', { expectedRevision: 0, roomId: 'room-1', text: 'hello', mentions: [], extra: true }],
+    ['task/assign', { expectedRevision: 0, assigneeAgentId: 'agent-1', title: 'Ship', extra: true }],
+    ['task/grant', { expectedRevision: 0, granteeAgentId: 'agent-1', rootTaskId: 'task-1', extra: true }],
+    ['task/revoke', { expectedRevision: 0, delegationGrantId: 'grant-1', extra: true }],
+    ['task/cancel', { expectedRevision: 0, taskId: 'task-1', extra: true }],
+    ['task/retry-delivery', { expectedRevision: 0, taskId: 'task-1', extra: true }],
+    ['runtime/activity/stop', { expectedRevision: 0, activityId: 'activity-1', agentId: 'agent-1', messageId: 'message-1', sessionId: 'session-1', turn: 1, extra: true }],
     ['runtime/child/stop', { expectedRevision: 0, childRunId: 'child-1', extra: true }],
-  ] as const)('strictly rejects extra actor or control fields for %s', async (endpoint, payload) => {
+    ['runtime/failure/acknowledge', { expectedRevision: 0, agentId: 'agent-1', extra: true }],
+  ] as const)('strictly rejects extra fields for %s', async (endpoint, payload) => {
     const fixture = serviceFixture()
     const result = await createWorkspaceRpcHandler(fixture.service)(endpoint, payload, new AbortController().signal)
 
@@ -442,6 +475,104 @@ describe('workspace rpc handler', () => {
       }] },
       { name: 'definitionHistory', arguments: ['definition-1'] },
     ])
+  })
+
+  it.each([
+    ['room', 'room-1'],
+    ['task', 'task-1'],
+    ['child', 'child-run-1'],
+  ] as const)('converts a %s memory source id at the transport boundary', async (sourceKind, sourceId) => {
+    const fixture = serviceFixture()
+    const result = await createWorkspaceRpcHandler(fixture.service)('memory/query', {
+      agentId: 'agent-1', snapshotRevision: 0, sourceKind, sourceId, limit: 20,
+    }, new AbortController().signal)
+
+    expect(result.ok).toBe(true)
+    expect(fixture.operations).toEqual([{
+      name: 'queryMemory',
+      arguments: [{ agentId: 'agent-1', snapshotRevision: 0, sourceKind, sourceId, limit: 20 }],
+    }])
+  })
+
+  it('rejects an ambiguous memory source id without a source kind', async () => {
+    const fixture = serviceFixture()
+    const result = await createWorkspaceRpcHandler(fixture.service)('memory/query', {
+      agentId: 'agent-1', snapshotRevision: 0, sourceId: 'source-1', limit: 20,
+    }, new AbortController().signal)
+
+    expect(result).toMatchObject({ ok: false, error: { kind: 'bad-request' } })
+    expect(fixture.operations).toEqual([])
+  })
+
+  it('maps stale memory filters exactly and hides malformed cursor details', async () => {
+    const fixture = serviceFixture()
+    fixture.service.queryMemory = query => {
+      if (query.cursor !== undefined) throw new Error(`sensitive cursor ${query.cursor}`)
+      throw new WorkspaceBusinessError('stale-revision', {
+        expectedRevision: query.snapshotRevision,
+        actualRevision: query.snapshotRevision + 1,
+      })
+    }
+    const handler = createWorkspaceRpcHandler(fixture.service)
+
+    await expect(handler('memory/query', {
+      agentId: 'agent-1', snapshotRevision: 4, minimumSequence: 2, maximumSequence: 7, limit: 20,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'business', code: 'stale-revision', details: { expectedRevision: 4, actualRevision: 5 } },
+    })
+    await expect(handler('memory/query', {
+      agentId: 'agent-1', snapshotRevision: 4, limit: 20, cursor: 'opaque-secret',
+    }, new AbortController().signal)).resolves.toEqual({
+      ok: false,
+      error: { kind: 'internal', code: 'internal', message: 'agent workspace request failed', details: {} },
+    })
+  })
+
+  it.each([
+    ['runtime/activity/stop', 'stopActivity'],
+    ['runtime/child/stop', 'stopChildRun'],
+  ] as const)('returns every exact stop convergence variant for %s', async (endpoint, method) => {
+    for (const status of ['stopping', 'already-stopping', 'not-active'] as const) {
+      const fixture = serviceFixture()
+      fixture.service[method] = async () => ({ revision: 12, value: { status } })
+      const payload = endpoint === 'runtime/activity/stop'
+        ? { expectedRevision: 12, activityId: 'activity-1', agentId: 'agent-1', messageId: 'message-1', sessionId: 'session-1', turn: 1 }
+        : { expectedRevision: 12, childRunId: 'child-1' }
+      const result = await createWorkspaceRpcHandler(fixture.service)(endpoint, payload, new AbortController().signal)
+      expect(result).toEqual({ ok: true, value: { revision: 12, value: { status } } })
+    }
+  })
+
+  it('cancels an activity wait under its named runtime endpoint', async () => {
+    const fixture = serviceFixture()
+    const controller = new AbortController()
+    const waiting = createWorkspaceRpcHandler(fixture.service)(
+      'runtime/activity/wait', { afterVersion: 0 }, controller.signal,
+    )
+    controller.abort()
+
+    await expect(waiting).resolves.toMatchObject({ ok: false, error: { kind: 'cancelled', code: 'cancelled' } })
+  })
+
+  it('returns exact and unresolved definition history projections and hides lookup failures', async () => {
+    const fixture = serviceFixture()
+    fixture.service.definitionHistory = definitionId => {
+      if (definitionId === 'missing') throw new Error('sensitive definition id')
+      return [{ id: 'revision-1', creationEvent: { status: definitionId === 'legacy' ? 'unresolved' : 'exact' } }] as never
+    }
+    const handler = createWorkspaceRpcHandler(fixture.service)
+
+    await expect(handler('definition/history', { definitionId: 'exact' }, new AbortController().signal)).resolves.toMatchObject({
+      ok: true, value: [{ creationEvent: { status: 'exact' } }],
+    })
+    await expect(handler('definition/history', { definitionId: 'legacy' }, new AbortController().signal)).resolves.toMatchObject({
+      ok: true, value: [{ creationEvent: { status: 'unresolved' } }],
+    })
+    await expect(handler('definition/history', { definitionId: 'missing' }, new AbortController().signal)).resolves.toEqual({
+      ok: false,
+      error: { kind: 'internal', code: 'internal', message: 'agent workspace request failed', details: {} },
+    })
   })
 
   it('exposes the activity snapshot and cancellation-aware wait under the runtime names', async () => {

@@ -200,7 +200,11 @@ const memoryQueryPayload = z.object({
   limit: z.number().int().positive(),
   cursor: z.string().min(1).optional(),
   snapshotRevision: expectedRevision,
-}).strict()
+}).strict().superRefine((query, context) => {
+  if (query.sourceId !== undefined && query.sourceKind === undefined) {
+    context.addIssue({ code: 'custom', path: ['sourceKind'], message: 'sourceKind is required with sourceId' })
+  }
+})
 
 /**
  * Build the isolated endpoint dispatcher consumed by `ctx.connection.rpc.handle`.
@@ -386,11 +390,12 @@ export function createWorkspaceRpcHandler(service: WorkspaceRpcService): Workspa
         case 'memory/query': {
           const parsed = memoryQueryPayload.safeParse(payload)
           if (!parsed.success) return invalid(parsed.error.issues)
-          const { agentId, sourceId, ...fields } = parsed.data
+          const { agentId, sourceId, sourceKind, ...fields } = parsed.data
           const query: MemoryQuery = {
             ...fields,
             agentId: AgentId(agentId),
-            ...(sourceId === undefined ? {} : { sourceId: sourceId as MemoryQuery['sourceId'] }),
+            ...(sourceKind === undefined ? {} : { sourceKind }),
+            ...(sourceId === undefined ? {} : { sourceId: memorySourceId(sourceKind, sourceId) }),
           }
           return success(service.queryMemory(query))
         }
@@ -428,6 +433,15 @@ export function createWorkspaceRpcHandler(service: WorkspaceRpcService): Workspa
       if (isWorkspaceBusinessError(error)) return business(error)
       return internal()
     }
+  }
+}
+
+function memorySourceId(sourceKind: MemoryQuery['sourceKind'], sourceId: string): NonNullable<MemoryQuery['sourceId']> {
+  switch (sourceKind) {
+    case 'room': return RoomId(sourceId)
+    case 'task': return TaskId(sourceId)
+    case 'child': return ChildRunId(sourceId)
+    case undefined: throw new Error('memory sourceId requires sourceKind')
   }
 }
 

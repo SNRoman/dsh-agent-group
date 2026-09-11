@@ -62,6 +62,17 @@ interface TaskFlight {
   readonly promise: Promise<string>
 }
 
+/** Delivery attempt durably started by an owning serialized mutation. */
+export interface PreparedTaskDelivery {
+  readonly state: WorkspaceState
+  readonly assignment: TaskAssignment
+  readonly agentId: AgentId
+  readonly definitionRevisionId: DefinitionRevisionId
+  readonly taskId: TaskId
+  readonly attemptId: TaskDeliveryAttemptId
+  readonly message: UserMessage
+}
+
 /** Coordinates one durable inbox delivery attempt per task. */
 export class TaskDeliveryCoordinator {
   private readonly taskFlights = new Map<TaskId, TaskFlight>()
@@ -85,6 +96,48 @@ export class TaskDeliveryCoordinator {
    */
   async retryTaskDelivery(taskId: TaskId): Promise<string> {
     return await this.singleFlight(taskId)
+  }
+
+  /**
+   * Start a retry in the caller's serialized aggregate update.
+   * @param state - Aggregate current in the caller's revision-checked update slot.
+   * @param taskId - Open task whose previous delivery attempt is terminal.
+   * @returns The committed candidate and exact attempt to continue afterward.
+   */
+  prepareTaskDelivery(state: WorkspaceState, taskId: TaskId): PreparedTaskDelivery {
+    const assignment = assignmentFor(state, taskId)
+    const agent = state.agents[assignment.assigneeAgentId]
+    if (agent === undefined) throw new Error(`task '${taskId}' assignee does not exist`)
+    const started = startTaskDelivery(state, { taskId })
+    return {
+      state: started.state,
+      assignment,
+      agentId: agent.id,
+      definitionRevisionId: agent.definitionRevisionId,
+      taskId,
+      attemptId: started.attemptId,
+      message: started.message,
+    }
+  }
+
+  /**
+   * Continue one attempt already committed by the Browser mutation owner.
+   * @param prepared - Exact committed attempt returned by {@link prepareTaskDelivery}.
+   * @returns The completed task text.
+   */
+  async continuePreparedTaskDelivery(prepared: PreparedTaskDelivery): Promise<string> {
+    if (this.taskFlights.has(prepared.taskId)) {
+      throw new Error(`task '${prepared.taskId}' already has a live delivery`)
+    }
+    const owner = {}
+    const promise = Promise.resolve().then(async () => await this.runPrepared(prepared, owner, true))
+    const flight = { owner, promise }
+    this.taskFlights.set(prepared.taskId, flight)
+    try {
+      return await promise
+    } finally {
+      if (this.taskFlights.get(prepared.taskId) === flight) this.taskFlights.delete(prepared.taskId)
+    }
   }
 
   /**
@@ -128,40 +181,43 @@ export class TaskDeliveryCoordinator {
     const recovered = this.taskFlights.get(taskId)
     if (recovered !== undefined && recovered.owner !== owner) return await recovered.promise
 
-    let attempt: {
-      readonly attemptId: TaskDeliveryAttemptId
-      readonly message: UserMessage
-    } | undefined
+    let prepared: PreparedTaskDelivery | undefined
     await this.host.apply(current => {
-      const started = startTaskDelivery(current, { taskId })
-      attempt = { attemptId: started.attemptId, message: started.message }
-      return started.state
+      prepared = this.prepareTaskDelivery(current, taskId)
+      return prepared.state
     })
-    if (attempt === undefined) throw new Error(`task '${taskId}' delivery start did not publish an attempt`)
-    const startedAttempt = attempt
-    const identity = { taskId, attemptId: startedAttempt.attemptId, messageId: startedAttempt.message.id }
+    if (prepared === undefined) throw new Error(`task '${taskId}' delivery start did not publish an attempt`)
+    return await this.runPrepared(prepared, owner, false)
+  }
+
+  private async runPrepared(prepared: PreparedTaskDelivery, owner: object, ensureEmployee: boolean): Promise<string> {
+    const { assignment, agentId, definitionRevisionId, taskId, attemptId, message } = prepared
+    const recovered = this.taskFlights.get(taskId)
+    if (recovered !== undefined && recovered.owner !== owner) return await recovered.promise
+    const identity = { taskId, attemptId, messageId: message.id }
 
     let claimed = false
     let outcome: WorkspaceTurnOutcome
     try {
+      if (ensureEmployee) await this.host.ensureEmployee(agentId)
       outcome = await this.host.deliver(
-        agent.id,
-        startedAttempt.message,
+        agentId,
+        message,
         undefined,
-        { kind: 'task', taskId, attemptId: startedAttempt.attemptId },
+        { kind: 'task', taskId, attemptId },
         {
           onClaim: async definitionRevisionId => {
             claimed = true
             await this.host.apply(current => acceptTaskDelivery(current, {
               ...identity,
-              definitionRevisionId: definitionRevisionId ?? agent.definitionRevisionId,
+              definitionRevisionId: definitionRevisionId ?? prepared.definitionRevisionId,
             }).state)
           },
         },
       )
     } catch (error) {
       const inspection = inspectTaskDelivery(this.host.snapshot(), taskId)
-      const accepted = inspection.attemptId === startedAttempt.attemptId && inspection.phase === 'accepted'
+      const accepted = inspection.attemptId === attemptId && inspection.phase === 'accepted'
       await this.failIfOpen(
         identity,
         claimed || accepted ? 'interrupted' : 'delivery-rejected',
@@ -177,7 +233,7 @@ export class TaskDeliveryCoordinator {
       await this.failIfOpen(identity, 'interrupted', 'Delivery was interrupted before a terminal result.')
       throw new Error(`task '${taskId}' delivery was interrupted before a terminal result`)
     }
-    await this.recordCompletedResult(assignment, identity, result, outcome.definitionRevisionId ?? agent.definitionRevisionId)
+    await this.recordCompletedResult(assignment, identity, result, outcome.definitionRevisionId ?? definitionRevisionId)
     return completedTaskResult(this.host.snapshot(), identity) ?? result
   }
 

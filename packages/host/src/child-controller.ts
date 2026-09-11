@@ -2,7 +2,9 @@
 
 import type { AgentId, ChildRunId, TaskId } from './ids.ts'
 import type { FinishChildRunRequest } from './child-runs.ts'
+import { finishChildRun } from './child-runs.ts'
 import type { WorkspaceStopResult } from './activity-controller.ts'
+import type { WorkspaceState } from './types.ts'
 
 /** Controller fields published immediately after the durable child id commits. */
 export interface RegisterChildController {
@@ -43,9 +45,19 @@ export interface ChildStartReservation {
 
 interface ChildControllerRecord extends RegisterChildController {
   stopping: boolean
-  phase: 'live' | 'settling' | 'settled'
+  phase: 'live' | 'stop-reserved' | 'settling' | 'settled'
   winner?: FinishChildRunRequest
   attempt: Promise<void> | undefined
+}
+
+/** CAS-slot child stop whose runtime abort is deferred until durable commit. */
+export interface PreparedChildStop {
+  readonly state: WorkspaceState
+  readonly value: WorkspaceStopResult
+  /** Publish the reserved stop after its candidate aggregate commits. */
+  commit(): void
+  /** Release the reservation when validation or persistence rejects the candidate. */
+  rollback(): void
 }
 
 /** Serialized durable terminal mutation supplied by the Workspace Host. */
@@ -147,6 +159,57 @@ export class ChildControllerRegistry {
     return { status: 'stopping' }
   }
 
+  /**
+   * Reserve an exact live child and build its terminal state in the caller's serialized update.
+   * @param state - Aggregate current in the caller's table update slot.
+   * @param childRunId - Exact durable child identity to stop.
+   * @returns Candidate state plus commit and rollback hooks for the table write.
+   */
+  prepareStop(state: WorkspaceState, childRunId: ChildRunId): PreparedChildStop {
+    const record = this.records.get(childRunId)
+    if (record === undefined || record.winner !== undefined && record.phase !== 'stop-reserved') {
+      return inertPreparedStop(state, { status: 'not-active' })
+    }
+    if (record.stopping || record.phase === 'stop-reserved') {
+      return inertPreparedStop(state, { status: 'already-stopping' })
+    }
+
+    const request: FinishChildRunRequest = {
+      childRunId,
+      status: 'cancelled',
+      result: 'Child run cancelled.',
+    }
+    const candidate = finishChildRun(state, request).state
+    const barrier = Promise.withResolvers<void>()
+    record.stopping = true
+    record.winner = request
+    record.phase = 'stop-reserved'
+    record.attempt = barrier.promise
+    let completed = false
+    return {
+      state: candidate,
+      value: { status: 'stopping' },
+      commit: () => {
+        if (completed) return
+        completed = true
+        record.abort()
+        record.phase = 'settled'
+        record.attempt = undefined
+        if (this.records.get(childRunId) === record) this.records.delete(childRunId)
+        barrier.resolve()
+      },
+      rollback: () => {
+        if (completed) return
+        completed = true
+        record.stopping = false
+        delete record.winner
+        record.phase = 'live'
+        record.attempt = undefined
+        barrier.resolve()
+      },
+    }
+  }
+
   /** @returns Fulfillment after every child owned by this runtime generation stops. */
   async stopAll(): Promise<void> {
     if (this.lifecycle === 'closed') return
@@ -174,6 +237,8 @@ export class ChildControllerRegistry {
   }
 
   private async converge(record: ChildControllerRecord): Promise<void> {
+    if (record.phase === 'stop-reserved') await record.attempt
+    if (record.phase === 'settled') return
     if (record.winner === undefined) {
       record.stopping = true
       record.abort()
@@ -196,6 +261,11 @@ export class ChildControllerRegistry {
 
   private async settle(record: ChildControllerRecord, request: FinishChildRunRequest): Promise<boolean> {
     if (record.phase === 'settled') return false
+    if (record.phase === 'stop-reserved') {
+      await record.attempt
+      if (this.records.get(record.childRunId) !== record) return false
+      return await this.settle(record, request)
+    }
     if (record.winner === undefined) record.winner = { ...request }
     else if (!sameTerminalRequest(record.winner, request)) return false
     if (record.phase === 'settling') {
@@ -223,6 +293,10 @@ export class ChildControllerRegistry {
       throw error
     }
   }
+}
+
+function inertPreparedStop(state: WorkspaceState, value: WorkspaceStopResult): PreparedChildStop {
+  return { state, value, commit: () => {}, rollback: () => {} }
 }
 
 function sameTerminalRequest(left: FinishChildRunRequest, right: FinishChildRunRequest): boolean {

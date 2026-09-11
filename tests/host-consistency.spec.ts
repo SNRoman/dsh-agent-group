@@ -13,13 +13,15 @@ import { apply as jsonApply, Config as JsonConfig, inject as jsonInject } from '
 import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
 import { WorkspaceDispatcher } from '../packages/host/src/dispatcher.ts'
 import type { SubagentRuntimeLike, WorkspaceDispatcherHost } from '../packages/host/src/dispatcher.ts'
-import { AgentId, AgentMemoryEntryId, HumanId, RoomId, WorkspaceActivityId, WorkspaceEventId, WorkspaceId } from '../packages/host/src/ids.ts'
+import { AgentId, AgentMemoryEntryId, ChildRunId, HumanId, RoomId, WorkspaceActivityId, WorkspaceEventId, WorkspaceId } from '../packages/host/src/ids.ts'
 import { EmployeeAgentPool } from '../packages/host/src/runtime.ts'
 import type { EmployeeSessionSource } from '../packages/host/src/runtime.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
-import { assignHumanTask } from '../packages/host/src/tasks.ts'
+import { assignHumanTask, recordChildRunStarted } from '../packages/host/src/tasks.ts'
+import { failTaskDelivery, startTaskDelivery } from '../packages/host/src/task-delivery.ts'
 import type { WorkspaceState } from '../packages/host/src/types.ts'
 import { TaskDeliveryCoordinator } from '../packages/host/src/task-delivery-coordinator.ts'
+import { createWorkspaceRpcHandler } from '../packages/host/src/rpc.ts'
 
 const limits = { maxAgentHops: 3, maxRepliesPerRoot: 8, recallCharacterBudget: 4000 }
 
@@ -338,6 +340,138 @@ describe('durable service boundary', () => {
     await booted.dispose()
   })
 
+  test('a post with wake targets rejects an unavailable dispatcher before committing', async () => {
+    const booted = await boot()
+    await booted.service.executeInternal({ type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+    let snapshot = booted.service.snapshot()
+    const definition = Object.values(snapshot.definitions)[0]!
+    await booted.service.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+    await booted.service.executeInternal({ type: 'room/create', kind: 'group', name: 'room' })
+    snapshot = booted.service.snapshot()
+    const alice = Object.values(snapshot.agents)[0]!
+    const room = Object.values(snapshot.rooms)[0]!
+    await booted.service.executeInternal({ type: 'room/join', roomId: room.id, agentId: alice.id, memoryStart: { type: 'new-events' } })
+    const before = booted.service.snapshot()
+
+    await expect(booted.service.postHumanMessage(
+      before.revision, room.id, HumanId('web-user'), 'must not commit', [alice.id],
+    )).rejects.toThrow(/dispatcher is not available/)
+
+    expect(booted.service.snapshot()).toEqual(before)
+    expect(booted.service.runtimeStatus()).toEqual({ rooms: {} })
+    await booted.dispose()
+  })
+
+  test('a dispatcher captured before commit survives generation teardown without pending leakage', async () => {
+    const booted = await boot()
+    await booted.service.executeInternal({ type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+    let snapshot = booted.service.snapshot()
+    const definition = Object.values(snapshot.definitions)[0]!
+    await booted.service.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+    await booted.service.executeInternal({ type: 'room/create', kind: 'group', name: 'room' })
+    snapshot = booted.service.snapshot()
+    const alice = Object.values(snapshot.agents)[0]!
+    const room = Object.values(snapshot.rooms)[0]!
+    await booted.service.executeInternal({ type: 'room/join', roomId: room.id, agentId: alice.id, memoryStart: { type: 'new-events' } })
+    snapshot = booted.service.snapshot()
+    const continued = vi.fn(async () => {})
+    ;(booted.service as unknown as { dispatcher: Pick<WorkspaceDispatcher, 'continueCommittedHumanMessage'> | undefined }).dispatcher = {
+      continueCommittedHumanMessage: continued,
+    }
+    booted.ctx.on('domain/changed', () => {
+      ;(booted.service as unknown as { dispatcher: WorkspaceDispatcher | undefined }).dispatcher = undefined
+    })
+
+    await expect(booted.service.postHumanMessage(
+      snapshot.revision, room.id, HumanId('web-user'), 'committed once', [alice.id],
+    )).resolves.toMatchObject({ revision: snapshot.revision + 1 })
+    await Promise.resolve()
+
+    expect(continued).toHaveBeenCalledTimes(1)
+    expect(booted.service.runtimeStatus()).toEqual({ rooms: {} })
+    await booted.dispose()
+  })
+
+  test('child stop commits its cancellation in the caller CAS slot', async () => {
+    const booted = await boot()
+    let childRunId: ChildRunId | undefined
+    await booted.service.apply(current => {
+      const definition = mutateWorkspace(current, { type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+      const agent = mutateWorkspace(definition.state, { type: 'agent/create', definitionId: definition.definitionId, name: 'Alice' })
+      const assigned = assignHumanTask(agent.state, { humanId: HumanId('owner'), assigneeAgentId: agent.agentId, title: 'root' })
+      const child = recordChildRunStarted(assigned.state, { parentAgentId: agent.agentId, taskId: assigned.taskId })
+      childRunId = child.childRunId
+      return child.state
+    })
+    if (childRunId === undefined) throw new Error('child setup did not publish an id')
+    const expectedRevision = booted.service.snapshot().revision
+    let competitor: Promise<unknown> | undefined
+    ;(booted.service as unknown as { childControllers: { register(input: unknown): unknown } }).childControllers.register({
+      childRunId,
+      parentAgentId: Object.values(booted.service.snapshot().agents)[0]!.id,
+      taskId: Object.values(booted.service.snapshot().tasks)[0]!.id,
+      abort: () => {
+        competitor = booted.service.execute(expectedRevision, { type: 'room/create', kind: 'group', name: 'racer' })
+      },
+    })
+
+    const stopped = await booted.service.stopChildRun(expectedRevision, childRunId)
+    if (competitor === undefined) throw new Error('child stop did not start its deterministic competitor')
+
+    await expect(competitor).rejects.toMatchObject({ code: 'stale-revision' })
+    expect(stopped).toEqual({ revision: expectedRevision + 1, value: { status: 'stopping' } })
+    expect(booted.service.snapshot().childRuns[childRunId]?.status).toBe('cancelled')
+    await booted.dispose()
+  })
+
+  test('task retry commits delivery start in the caller CAS slot', async () => {
+    const booted = await boot()
+    let taskId: ReturnType<typeof assignHumanTask>['taskId'] | undefined
+    await booted.service.apply(current => {
+      const definition = mutateWorkspace(current, { type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+      const agent = mutateWorkspace(definition.state, { type: 'agent/create', definitionId: definition.definitionId, name: 'Alice' })
+      const assigned = assignHumanTask(agent.state, { humanId: HumanId('owner'), assigneeAgentId: agent.agentId, title: 'root' })
+      const started = startTaskDelivery(assigned.state, { taskId: assigned.taskId })
+      taskId = assigned.taskId
+      return failTaskDelivery(started.state, {
+        taskId: assigned.taskId,
+        attemptId: started.attemptId,
+        messageId: started.message.id,
+        failureCode: 'test',
+        failureSummary: 'retryable',
+      }).state
+    })
+    if (taskId === undefined) throw new Error('task setup did not publish an id')
+    const expectedRevision = booted.service.snapshot().revision
+    const enteredEmployee = Promise.withResolvers<void>()
+    const releaseEmployee = Promise.withResolvers<void>()
+    const coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => booted.service.snapshot(),
+      apply: async mutation => await booted.service.apply(mutation),
+      ensureEmployee: async () => {
+        enteredEmployee.resolve()
+        await releaseEmployee.promise
+        return handle()
+      },
+      deliver: async (_agentId, _message, _recall, _source, hooks) => {
+        await hooks?.onClaim?.()
+        return { output: [{ type: 'text', text: 'retried' }], stopReason: { kind: 'completed' }, interrupted: false }
+      },
+    })
+    ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator }).taskDelivery = coordinator
+
+    const retry = booted.service.retryTaskDelivery(expectedRevision, taskId)
+    await enteredEmployee.promise
+    await expect(booted.service.execute(expectedRevision, {
+      type: 'room/create', kind: 'group', name: 'racer',
+    })).rejects.toMatchObject({ code: 'stale-revision' })
+    releaseEmployee.resolve()
+
+    await expect(retry).resolves.toEqual({ revision: expectedRevision + 1, value: 'retried' })
+    expect(booted.service.snapshot().events.filter(event => event.type === 'task/delivery-started')).toHaveLength(2)
+    await booted.dispose()
+  })
+
   test('task assignment rejects a missing delivery runtime before committing', async () => {
     const booted = await boot()
     await booted.service.executeInternal({ type: 'definition/create', name: 'Worker', description: '', instructions: '' })
@@ -383,6 +517,139 @@ describe('durable service boundary', () => {
       }),
     })
     expect(Object.values(booted.service.snapshot().definitions)).toHaveLength(1)
+    await booted.dispose()
+  })
+
+  test.each([
+    ['definition/create', { expectedRevision: 0, name: 'Role', description: '', instructions: '' }],
+    ['definition/revise', { expectedRevision: 0, definitionId: 'missing', description: '', instructions: '' }],
+    ['definition/synchronize', { expectedRevision: 0, definitionId: 'missing', definitionRevisionId: 'missing', agentIds: ['missing'] }],
+    ['agent/create', { expectedRevision: 0, definitionId: 'missing', name: 'Alice' }],
+    ['agent/depart', { expectedRevision: 0, agentId: 'missing' }],
+    ['agent/employ', { expectedRevision: 0, agentId: 'missing' }],
+    ['room/create', { expectedRevision: 0, kind: 'group', name: 'Room' }],
+    ['room/direct/open', { expectedRevision: 0, agentId: 'missing' }],
+    ['room/join', { expectedRevision: 0, roomId: 'missing', agentId: 'missing', memoryStart: { type: 'new-events' } }],
+    ['room/leave', { expectedRevision: 0, membershipId: 'missing' }],
+    ['room/post', { expectedRevision: 0, roomId: 'missing', text: 'hello', mentions: [] }],
+    ['task/assign', { expectedRevision: 0, assigneeAgentId: 'missing', title: 'Task' }],
+    ['task/grant', { expectedRevision: 0, granteeAgentId: 'missing', rootTaskId: 'missing' }],
+    ['task/revoke', { expectedRevision: 0, delegationGrantId: 'missing' }],
+    ['task/cancel', { expectedRevision: 0, taskId: 'missing' }],
+    ['task/retry-delivery', { expectedRevision: 0, taskId: 'missing' }],
+    ['runtime/activity/stop', { expectedRevision: 0, activityId: 'missing', agentId: 'missing', messageId: 'missing', sessionId: 'missing', turn: 0 }],
+    ['runtime/child/stop', { expectedRevision: 0, childRunId: 'missing' }],
+    ['runtime/failure/acknowledge', { expectedRevision: 0, agentId: 'missing' }],
+  ] as const)('%s reports real stale details with zero durable or runtime effects', async (endpoint, payload) => {
+    const booted = await boot()
+    await booted.service.execute(0, { type: 'definition/create', name: 'Seed', description: '', instructions: '' })
+    const before = booted.service.snapshot()
+    const runtimeBefore = booted.service.runtimeStatus()
+    const activityBefore = booted.service.activitySnapshot()
+
+    const result = await createWorkspaceRpcHandler(booted.service)(endpoint, payload, new AbortController().signal)
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: 'business', code: 'stale-revision', details: { expectedRevision: 0, actualRevision: 1 } },
+    })
+    expect(booted.service.snapshot()).toEqual(before)
+    expect(booted.service.runtimeStatus()).toEqual(runtimeBefore)
+    expect(booted.service.activitySnapshot()).toEqual(activityBefore)
+    await booted.dispose()
+  })
+
+  test('all definition, agent, room, membership, and post endpoints return their real committed revision', async () => {
+    const booted = await boot()
+    const handler = createWorkspaceRpcHandler(booted.service)
+    const call = async (endpoint: string, payload: object, revision: number, committedRevision = revision + 1): Promise<void> => {
+      const result = await handler(endpoint, { expectedRevision: revision, ...payload }, new AbortController().signal)
+      expect(result).toMatchObject({ ok: true, value: { revision: committedRevision } })
+      expect(booted.service.snapshot().revision).toBe(committedRevision)
+    }
+
+    await call('definition/create', { name: 'Worker', description: '', instructions: '' }, 0)
+    let snapshot = booted.service.snapshot()
+    const definition = Object.values(snapshot.definitions)[0]!
+    const firstRevisionId = definition.currentRevisionId
+    await call('definition/revise', { definitionId: definition.id, description: 'v2', instructions: '' }, 1)
+    await call('agent/create', { definitionId: definition.id, name: 'Alice' }, 2)
+    snapshot = booted.service.snapshot()
+    const alice = Object.values(snapshot.agents)[0]!
+    await call('definition/synchronize', {
+      definitionId: definition.id, definitionRevisionId: firstRevisionId, agentIds: [alice.id],
+    }, 3)
+    await call('agent/depart', { agentId: alice.id }, 4)
+    await call('agent/employ', { agentId: alice.id }, 5)
+    await call('room/create', { kind: 'group', name: 'Group' }, 6)
+    snapshot = booted.service.snapshot()
+    const group = Object.values(snapshot.rooms)[0]!
+    await call('room/direct/open', { agentId: alice.id }, 7, 9)
+    await call('room/join', { roomId: group.id, agentId: alice.id, memoryStart: { type: 'new-events' } }, 9)
+    snapshot = booted.service.snapshot()
+    const groupMembership = Object.values(snapshot.memberships).find(membership => membership.roomId === group.id)!
+    await call('room/leave', { membershipId: groupMembership.id }, 10)
+    await call('room/post', { roomId: group.id, text: 'human note', mentions: [] }, 11)
+
+    const message = booted.service.snapshot().events.at(-1)
+    expect(message).toMatchObject({ type: 'room/message', actor: { type: 'human', id: 'web-user' } })
+    await booted.dispose()
+  })
+
+  test('task mutation endpoints return the revision committed by the real service', async () => {
+    const booted = await boot()
+    await booted.service.execute(0, { type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+    const definition = Object.values(booted.service.snapshot().definitions)[0]!
+    await booted.service.execute(1, { type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+    const alice = Object.values(booted.service.snapshot().agents)[0]!
+    ;(booted.service as unknown as { taskDelivery: Pick<TaskDeliveryCoordinator, 'deliver'> }).taskDelivery = {
+      deliver: vi.fn(async () => 'not started by this transport assertion'),
+    }
+    const handler = createWorkspaceRpcHandler(booted.service)
+
+    const assigned = await handler('task/assign', {
+      expectedRevision: 2, assigneeAgentId: alice.id, title: 'Root task',
+    }, new AbortController().signal)
+    expect(assigned).toMatchObject({ ok: true, value: { revision: 3 } })
+    const rootTaskId = Object.values(booted.service.snapshot().tasks)[0]!.id
+
+    const granted = await handler('task/grant', {
+      expectedRevision: 3, granteeAgentId: alice.id, rootTaskId,
+    }, new AbortController().signal)
+    expect(granted).toMatchObject({ ok: true, value: { revision: 4 } })
+    const grantId = Object.values(booted.service.snapshot().delegationGrants)[0]!.id
+
+    await expect(handler('task/revoke', {
+      expectedRevision: 4, delegationGrantId: grantId,
+    }, new AbortController().signal)).resolves.toMatchObject({ ok: true, value: { revision: 5 } })
+    await expect(handler('task/cancel', {
+      expectedRevision: 5, taskId: rootTaskId,
+    }, new AbortController().signal)).resolves.toMatchObject({ ok: true, value: { revision: 6 } })
+    const final = booted.service.snapshot()
+    expect(final.revision).toBe(6)
+    expect(final.events.filter(event => (
+      event.type === 'task/assigned' || event.type === 'task/delegation-granted'
+      || event.type === 'task/delegation-revoked' || event.type === 'task/cancelled'
+    )).every(event => event.actor?.type === 'human' && event.actor.id === 'web-user')).toBe(true)
+    await booted.dispose()
+  })
+
+  test('real converged activity and failure controls return the checked durable revision', async () => {
+    const booted = await boot()
+    const handler = createWorkspaceRpcHandler(booted.service)
+
+    await expect(handler('runtime/activity/stop', {
+      expectedRevision: 0,
+      activityId: 'missing', agentId: 'missing', messageId: 'missing', sessionId: 'missing', turn: 0,
+    }, new AbortController().signal)).resolves.toEqual({
+      ok: true, value: { revision: 0, value: { status: 'not-active' } },
+    })
+    await expect(handler('runtime/failure/acknowledge', {
+      expectedRevision: 0, agentId: 'missing',
+    }, new AbortController().signal)).resolves.toEqual({
+      ok: true, value: { revision: 0, value: undefined },
+    })
+    expect(booted.service.snapshot().revision).toBe(0)
     await booted.dispose()
   })
 

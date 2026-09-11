@@ -38,6 +38,7 @@ import { WorkspaceTurnTracker } from './turn-tracker.ts'
 import type { WorkspaceTurnOutcome } from './turn-tracker.ts'
 import { finishChildRun, repairOrphanedChildRuns } from './child-runs.ts'
 import { ChildControllerRegistry } from './child-controller.ts'
+import type { PreparedChildStop } from './child-controller.ts'
 import {
   assignHumanTask,
   cancelTask as cancelWorkspaceTask,
@@ -47,7 +48,7 @@ import {
 import type { AssignHumanTaskResult, CancelTaskResult, GrantTaskDelegationResult } from './tasks.ts'
 import { inspectTaskDelivery } from './task-delivery.ts'
 import { TaskDeliveryCoordinator } from './task-delivery-coordinator.ts'
-import type { WorkspaceDeliveryHooks } from './task-delivery-coordinator.ts'
+import type { PreparedTaskDelivery, WorkspaceDeliveryHooks } from './task-delivery-coordinator.ts'
 import { registerWorkspaceTaskTools } from './task-tools.ts'
 import type { WorkspaceToolRegistry } from './task-tools.ts'
 import type { TaskDeliveryProgressEvent, WorkspaceCommand, WorkspaceState } from './types.ts'
@@ -175,7 +176,13 @@ export class AgentWorkspaceDomainService extends Service {
       const tools = toolCtx.get('tools') as WorkspaceToolRegistry | undefined
       if (tools === undefined) return
       toolCtx.effect(
-        () => registerWorkspaceTaskTools(tools, this),
+        () => registerWorkspaceTaskTools(tools, {
+          agentIdFor: agent => this.agentIdFor(agent),
+          snapshot: () => this.snapshot(),
+          apply: async mutation => await this.apply(mutation),
+          runAssignedTask: async (agentId, taskId) => await this.runAssignedTask(agentId, taskId),
+          runChild: async (parentAgentId, taskId, prompt, signal) => await this.runChild(parentAgentId, taskId, prompt, signal),
+        }),
         'agentWorkspace.taskTools',
       )
     })
@@ -188,7 +195,13 @@ export class AgentWorkspaceDomainService extends Service {
       const agents = runtimeCtx.get('agents') as AgentLifecycle | undefined
       if (agents === undefined) return
       this.childControllers.openGeneration()
-      const taskDelivery = new TaskDeliveryCoordinator(this)
+      const taskDelivery = new TaskDeliveryCoordinator({
+        snapshot: () => this.snapshot(),
+        apply: async mutation => await this.apply(mutation),
+        ensureEmployee: async agentId => await this.ensureEmployee(agentId),
+        deliver: async (agentId, delivery, recall, source, hooks) => await this.deliver(agentId, delivery, recall, source, hooks),
+        recoverDelivery: async (agentId, handle, delivery, source, hooks) => await this.recoverDelivery(agentId, handle, delivery, source, hooks),
+      })
       const pool = new EmployeeAgentPool(
         agents,
         this,
@@ -317,12 +330,18 @@ export class AgentWorkspaceDomainService extends Service {
     childRunId: ChildRunId,
     signal?: AbortSignal,
   ): Promise<WorkspaceMutationResult<WorkspaceStopResult>> {
-    await this.mutateRevisioned(expectedRevision, current => ({
-      state: current,
-      value: undefined,
-    }), signal)
-    const value = await this.childControllers.stopChildRun(childRunId)
-    return { revision: this.snapshot().revision, value }
+    let prepared: PreparedChildStop | undefined
+    try {
+      const committed = await this.mutateRevisioned(expectedRevision, current => {
+        prepared = this.childControllers.prepareStop(current, childRunId)
+        return { state: prepared.state, value: prepared.value }
+      }, signal)
+      prepared?.commit()
+      return committed
+    } catch (error) {
+      prepared?.rollback()
+      throw error
+    }
   }
 
   /**
@@ -489,7 +508,7 @@ export class AgentWorkspaceDomainService extends Service {
   }
 
   /** Commit one Host-owned command whose current revision is selected in the serialized callback. */
-  async executeInternal(command: WorkspaceCommand, settledActivity?: WorkspaceActivityIdentity): Promise<WorkspaceState> {
+  private async executeInternal(command: WorkspaceCommand, settledActivity?: WorkspaceActivityIdentity): Promise<WorkspaceState> {
     return (await this.executeCommand(undefined, command, settledActivity)).value
   }
 
@@ -538,7 +557,7 @@ export class AgentWorkspaceDomainService extends Service {
   }
 
   /** Apply an arbitrary pure mutation durably and return the detached committed aggregate. */
-  async apply(mutation: (state: WorkspaceState) => WorkspaceState): Promise<WorkspaceState> {
+  private async apply(mutation: (state: WorkspaceState) => WorkspaceState): Promise<WorkspaceState> {
     return (await this.mutateMaybeRevisioned(undefined, current => {
       const changed = mutation(current)
       return { state: changed, value: changed }
@@ -763,10 +782,12 @@ export class AgentWorkspaceDomainService extends Service {
     mentions: readonly AgentId[],
     signal?: AbortSignal,
   ): Promise<WorkspaceMutationResult<WorkspaceState>> {
+    let dispatcher: WorkspaceDispatcher | undefined
     const committed = await this.mutateRevisioned(expectedRevision, current => {
       if (current.rooms[roomId]?.kind === 'direct') assertDirectRoomTextAllowed(roomId, text)
       const targets = resolveHumanWakeTargets(current, roomId, mentions)
       assertRoomMessageAuthorized(current, roomId, { type: 'human', id: humanId }, targets)
+      if (targets.length > 0) dispatcher = this.requireDispatcher()
       const changed = mutateWorkspace(current, {
         type: 'room/message', roomId, actor: { type: 'human', id: humanId }, text, mentions: targets,
       })
@@ -775,8 +796,9 @@ export class AgentWorkspaceDomainService extends Service {
     if (committed.value.targets.length === 0) {
       return { revision: committed.revision, value: committed.value.state }
     }
+    if (dispatcher === undefined) throw new Error('human room post did not capture its dispatcher')
     this.beginRoomDispatch(roomId)
-    const completion = this.requireDispatcher().continueCommittedHumanMessage(
+    const completion = dispatcher.continueCommittedHumanMessage(
       roomId,
       text,
       committed.value.targets,
@@ -809,12 +831,18 @@ export class AgentWorkspaceDomainService extends Service {
     taskId: TaskId,
     signal?: AbortSignal,
   ): Promise<WorkspaceMutationResult<string>> {
-    await this.mutateRevisioned(expectedRevision, current => ({
-      state: current,
-      value: undefined,
-    }), signal)
-    const value = await this.requireTaskDelivery().retryTaskDelivery(taskId)
-    return { revision: this.snapshot().revision, value }
+    let delivery: TaskDeliveryCoordinator | undefined
+    let prepared: PreparedTaskDelivery | undefined
+    const committed = await this.mutateRevisioned(expectedRevision, current => {
+      delivery = this.requireTaskDelivery()
+      prepared = delivery.prepareTaskDelivery(current, taskId)
+      return { state: prepared.state, value: undefined }
+    }, signal)
+    if (delivery === undefined || prepared === undefined) {
+      throw new Error(`task '${taskId}' retry did not publish its delivery attempt`)
+    }
+    const value = await delivery.continuePreparedTaskDelivery(prepared)
+    return { revision: committed.revision, value }
   }
 
   /**

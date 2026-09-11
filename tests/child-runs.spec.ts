@@ -236,4 +236,30 @@ describe('child run terminalization', () => {
     await expect(settlement.settle('completed', 'winning result')).resolves.toBe(false)
     expect(attempts).toBe(2)
   })
+
+  test('a rejected CAS stop reservation releases a waiting runtime result to settle', async () => {
+    const fixture = childFixture('cas-stop-rollback')
+    let durable = fixture.state
+    const registry = new ChildControllerRegistry(async request => {
+      durable = finishChildRun(durable, request).state
+    })
+    const settlement = registry.register({
+      childRunId: fixture.childRunId,
+      parentAgentId: fixture.agentId,
+      taskId: fixture.taskId,
+      abort: vi.fn(),
+    })
+    const prepared = registry.prepareStop(durable, fixture.childRunId)
+
+    const runtimeResult = settlement.settle('completed', 'runtime won after rollback')
+    let settled = false
+    void runtimeResult.then(() => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    prepared.rollback()
+
+    await expect(runtimeResult).resolves.toBe(true)
+    expect(durable.childRuns[fixture.childRunId]).toMatchObject({ status: 'completed', result: 'runtime won after rollback' })
+  })
 })
