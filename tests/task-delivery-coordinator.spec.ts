@@ -8,12 +8,13 @@ import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { AgentId, HumanId, TaskId, WorkspaceId } from '../packages/host/src/ids.ts'
 import { TaskDeliveryCoordinator } from '../packages/host/src/task-delivery-coordinator.ts'
 import type { TaskDeliveryCoordinatorHost, WorkspaceDeliveryHooks } from '../packages/host/src/task-delivery-coordinator.ts'
+import { EmployeeAgentPool } from '../packages/host/src/runtime.ts'
 import { mutateWorkspace, createInitialState } from '../packages/host/src/state.ts'
 import { assignHumanTask, cancelTask } from '../packages/host/src/tasks.ts'
 import type { WorkspaceState } from '../packages/host/src/types.ts'
 import { WorkspaceTurnTracker } from '../packages/host/src/turn-tracker.ts'
 import type { WorkspaceTurnOutcome } from '../packages/host/src/turn-tracker.ts'
-import { acceptTaskDelivery, startTaskDelivery } from '../packages/host/src/task-delivery.ts'
+import { acceptTaskDelivery, failTaskDelivery, startTaskDelivery } from '../packages/host/src/task-delivery.ts'
 import { WorkspaceActivityStream } from '../packages/host/src/activity-stream.ts'
 
 function assignedTask(): { state: WorkspaceState; taskId: TaskId; agentId: AgentId } {
@@ -335,6 +336,65 @@ describe('TaskDeliveryCoordinator', () => {
     expect(state).toEqual(built.state)
     await expect(coordinator.retryTaskDelivery(built.taskId)).resolves.toBe('retry after rollback')
     expect(state.events.filter(event => event.type === 'task/delivery-started')).toHaveLength(1)
+  })
+
+  test('teardown during an owned retry resume releases the flight and preserves retryable state', async () => {
+    const built = startedTask()
+    const first = built.state.events.find(event => event.type === 'task/delivery-started')!
+    let state = failTaskDelivery(built.state, {
+      taskId: built.taskId,
+      attemptId: first.taskDeliveryAttemptId,
+      messageId: first.messageId,
+      failureCode: 'test',
+      failureSummary: 'retryable',
+    }).state
+    const recoveryFinished = deferred()
+    const releaseResume = deferred()
+    const dispose = vi.fn(async () => {})
+    const resumed = recoveredHandle([], [])
+    let coordinator: TaskDeliveryCoordinator
+    const pool = new EmployeeAgentPool(
+      {
+        create: vi.fn(async () => { throw new Error('must resume the bound employee') }),
+        resume: vi.fn(async options => {
+          await options.setup?.({ agent: resumed.agent } as unknown as Context)
+          return { ...resumed, dispose }
+        }),
+      },
+      {
+        sessionIdFor: () => SessionId('session'),
+        recordSessionId: async () => {},
+      },
+      undefined,
+      async (agentId, agent) => {
+        await coordinator.recoverAgent(agentId, { agent })
+        recoveryFinished.resolve()
+        await releaseResume.promise
+      },
+    )
+    coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => structuredClone(state),
+      apply: async mutation => { state = mutation(state); return structuredClone(state) },
+      ensureEmployee: async agentId => await pool.ensure(agentId),
+      deliver: async () => { throw new Error('teardown must prevent delivery') },
+    })
+    const reservation = coordinator.reserveTaskDelivery(built.taskId)
+    const prepared = reservation.prepare(state)
+    state = prepared.state
+    reservation.commit(prepared)
+
+    await recoveryFinished.promise
+    const teardown = pool.disposeAll()
+    releaseResume.resolve()
+
+    await teardown
+    await expect(reservation.result()).rejects.toThrow(/invalidated by disposal/)
+    expect(dispose).toHaveBeenCalledTimes(1)
+    expect(state.tasks[built.taskId]?.status).toBe('open')
+    expect(state.events.filter(event => event.type === 'task/delivery-failed')).toHaveLength(2)
+    const released = coordinator.reserveTaskDelivery(built.taskId)
+    released.rollback()
+    await expect(released.result()).rejects.toThrow(/rolled back/)
   })
 
   test.each(['deliver', 'retryTaskDelivery'] as const)(

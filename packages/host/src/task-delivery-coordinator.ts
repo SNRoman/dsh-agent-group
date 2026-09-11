@@ -60,6 +60,7 @@ export interface TaskDeliveryRecoveryOutcome {
 interface TaskFlight {
   readonly owner: object
   readonly promise: Promise<string>
+  ownedAttemptId?: TaskDeliveryAttemptId
 }
 
 /** Delivery attempt durably started by an owning serialized mutation. */
@@ -232,6 +233,7 @@ export class TaskDeliveryCoordinator {
     const { assignment, agentId, definitionRevisionId, taskId, attemptId, message } = prepared
     const recovered = this.taskFlights.get(taskId)
     if (recovered !== undefined && recovered.owner !== owner) return await recovered.promise
+    if (recovered !== undefined) recovered.ownedAttemptId = attemptId
     const identity = { taskId, attemptId, messageId: message.id }
 
     let claimed = false
@@ -283,6 +285,7 @@ export class TaskDeliveryCoordinator {
     for (const assignment of assignments) {
       const inspection = inspectTaskDelivery(this.host.snapshot(), assignment.taskId)
       if (inspection.attemptId === undefined || (inspection.phase !== 'started' && inspection.phase !== 'accepted')) continue
+      if (this.taskFlights.get(assignment.taskId)?.ownedAttemptId === inspection.attemptId) continue
       const started = latestStartedEvent(this.host.snapshot(), assignment.taskId, inspection.attemptId)
       if (started === undefined) continue
       const identity = {

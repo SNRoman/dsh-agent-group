@@ -472,6 +472,96 @@ describe('durable service boundary', () => {
     await booted.dispose()
   })
 
+  test('a Browser retry survives recovery while its resumed assignee is unpublished', async () => {
+    const booted = await boot()
+    let agentId: AgentId | undefined
+    let taskId: ReturnType<typeof assignHumanTask>['taskId'] | undefined
+    await booted.service.apply(current => {
+      const definition = mutateWorkspace(current, { type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+      const agent = mutateWorkspace(definition.state, { type: 'agent/create', definitionId: definition.definitionId, name: 'Alice' })
+      const assigned = assignHumanTask(agent.state, { humanId: HumanId('owner'), assigneeAgentId: agent.agentId, title: 'root' })
+      const started = startTaskDelivery(assigned.state, { taskId: assigned.taskId })
+      agentId = agent.agentId
+      taskId = assigned.taskId
+      return failTaskDelivery(started.state, {
+        taskId: assigned.taskId,
+        attemptId: started.attemptId,
+        messageId: started.message.id,
+        failureCode: 'test',
+        failureSummary: 'retryable',
+      }).state
+    })
+    if (agentId === undefined || taskId === undefined) throw new Error('resumed retry setup did not publish durable ids')
+
+    const dispose = vi.fn(async () => {})
+    const resumedAgent = {
+      id: SessionId('resumed-employee'),
+      inbox: { nextTurn: [], nextStep: [], hasPending: false },
+      session: { events: [] },
+    } as unknown as Agent
+    const resumedHandle = { agent: resumedAgent, dispose }
+    const resume = vi.fn(async (options: { setup?: (ctx: Context) => Promise<unknown> }) => {
+      await options.setup?.({ agent: resumedAgent } as unknown as Context)
+      return resumedHandle
+    })
+    const source: EmployeeSessionSource = {
+      sessionIdFor: () => SessionId('resumed-employee'),
+      recordSessionId: async () => {},
+    }
+    let coordinator: TaskDeliveryCoordinator
+    const pool = new EmployeeAgentPool(
+      { create: vi.fn(async () => { throw new Error('must resume the bound employee') }), resume },
+      source,
+      undefined,
+      async (recoveringAgentId, recoveringAgent) => {
+        await coordinator.recoverAgent(recoveringAgentId, { agent: recoveringAgent })
+      },
+    )
+    const deliveries: UserMessage[] = []
+    coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => booted.service.snapshot(),
+      apply: async mutation => await booted.service.apply(mutation),
+      ensureEmployee: async ensuringAgentId => await pool.ensure(ensuringAgentId),
+      deliver: async (_agentId, message, _recall, _source, hooks) => {
+        deliveries.push(message)
+        await hooks?.onClaim?.()
+        return { output: [{ type: 'text', text: 'resumed result' }], stopReason: { kind: 'completed' }, interrupted: false }
+      },
+    })
+    const serviceRuntime = booted.service as unknown as {
+      pool: EmployeeAgentPool | undefined
+      taskDelivery: TaskDeliveryCoordinator | undefined
+    }
+    serviceRuntime.pool = pool
+    serviceRuntime.taskDelivery = coordinator
+
+    try {
+      const before = booted.service.snapshot()
+      await expect(booted.service.retryTaskDelivery(before.revision, taskId)).resolves.toEqual({
+        revision: before.revision + 1,
+        value: 'resumed result',
+      })
+
+      const after = booted.service.snapshot()
+      expect(resume).toHaveBeenCalledTimes(1)
+      expect(deliveries).toHaveLength(1)
+      expect(after.events.filter(event => event.type === 'task/delivery-started')).toHaveLength(2)
+      expect(after.events.filter(event => event.type === 'task/delivery-failed')).toHaveLength(1)
+      expect(after.events.filter(event => event.type === 'task/delivery-accepted')).toHaveLength(1)
+      expect(after.events.filter(event => event.type === 'task/result')).toHaveLength(1)
+      expect(after.tasks[taskId]?.status).toBe('completed')
+
+      await pool.disposeAll()
+      expect(dispose).toHaveBeenCalledTimes(1)
+      expect(pool.handleFor(agentId)).toBeUndefined()
+    } finally {
+      serviceRuntime.pool = undefined
+      serviceRuntime.taskDelivery = undefined
+      await pool.disposeAll()
+      await booted.dispose()
+    }
+  })
+
   test('task cancellation returns its own final child-cleanup commit during unrelated work', async () => {
     const booted = await boot()
     let childRunId: ChildRunId | undefined
