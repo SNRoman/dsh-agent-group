@@ -562,6 +562,106 @@ describe('durable service boundary', () => {
     }
   })
 
+  test('concurrent recovery observes Browser retry ownership before reservation adoption', async () => {
+    const booted = await boot()
+    let agentId: AgentId | undefined
+    let blockerTaskId: ReturnType<typeof assignHumanTask>['taskId'] | undefined
+    let retryTaskId: ReturnType<typeof assignHumanTask>['taskId'] | undefined
+    await booted.service.apply(current => {
+      const definition = mutateWorkspace(current, { type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+      const agent = mutateWorkspace(definition.state, { type: 'agent/create', definitionId: definition.definitionId, name: 'Alice' })
+      const blocker = assignHumanTask(agent.state, { humanId: HumanId('owner'), assigneeAgentId: agent.agentId, title: 'orphan' })
+      const blockerStarted = startTaskDelivery(blocker.state, { taskId: blocker.taskId })
+      const retry = assignHumanTask(blockerStarted.state, { humanId: HumanId('owner'), assigneeAgentId: agent.agentId, title: 'retry' })
+      const retryStarted = startTaskDelivery(retry.state, { taskId: retry.taskId })
+      agentId = agent.agentId
+      blockerTaskId = blocker.taskId
+      retryTaskId = retry.taskId
+      return failTaskDelivery(retryStarted.state, {
+        taskId: retry.taskId,
+        attemptId: retryStarted.attemptId,
+        messageId: retryStarted.message.id,
+        failureCode: 'test',
+        failureSummary: 'retryable',
+      }).state
+    })
+    if (agentId === undefined || blockerTaskId === undefined || retryTaskId === undefined) {
+      throw new Error('concurrent recovery setup did not publish durable ids')
+    }
+
+    const recoveryPaused = Promise.withResolvers<void>()
+    const releaseRecovery = Promise.withResolvers<void>()
+    let pauseRecovery = true
+    const coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => booted.service.snapshot(),
+      apply: async mutation => {
+        const committed = await booted.service.apply(mutation)
+        const latest = committed.events.at(-1)
+        if (pauseRecovery && latest?.type === 'task/delivery-failed' && latest.taskId === blockerTaskId) {
+          pauseRecovery = false
+          recoveryPaused.resolve()
+          await releaseRecovery.promise
+        }
+        return committed
+      },
+      ensureEmployee: async () => handle(),
+      deliver: async (_agentId, _message, _recall, _source, hooks) => {
+        await hooks?.onClaim?.()
+        return { output: [{ type: 'text', text: 'owned result' }], stopReason: { kind: 'completed' }, interrupted: false }
+      },
+    })
+    ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator | undefined }).taskDelivery = coordinator
+    const recovery = coordinator.recoverAgent(agentId, {
+      agent: {
+        id: SessionId('already-resuming'),
+        inbox: { nextTurn: [], nextStep: [], hasPending: false },
+        session: { events: [] },
+      } as unknown as Agent,
+    })
+    await recoveryPaused.promise
+
+    type TestTable = {
+      get(key: WorkspaceId): WorkspaceState | undefined
+      update(key: WorkspaceId, mutation: (current: WorkspaceState | undefined) => WorkspaceState): Promise<WorkspaceState>
+    }
+    const table = (booted.service as unknown as { table: TestTable }).table
+    const update = table.update.bind(table)
+    const retryCommitted = Promise.withResolvers<void>()
+    const allowAdoption = Promise.withResolvers<void>()
+    let pauseRetryCommit = true
+    table.update = async (key, mutation) => {
+      const committed = await update(key, mutation)
+      if (pauseRetryCommit) {
+        pauseRetryCommit = false
+        retryCommitted.resolve()
+        await allowAdoption.promise
+      }
+      return committed
+    }
+    const before = booted.service.snapshot()
+    const retry = booted.service.retryTaskDelivery(before.revision, retryTaskId)
+
+    try {
+      await retryCommitted.promise
+      releaseRecovery.resolve()
+      await expect(recovery).resolves.toEqual([{ taskId: blockerTaskId, status: 'interrupted' }])
+      allowAdoption.resolve()
+      await expect(retry).resolves.toEqual({ revision: before.revision + 1, value: 'owned result' })
+
+      const after = booted.service.snapshot()
+      expect(after.events.filter(event => event.type === 'task/delivery-started' && event.taskId === retryTaskId)).toHaveLength(2)
+      expect(after.events.filter(event => event.type === 'task/delivery-failed' && event.taskId === retryTaskId)).toHaveLength(1)
+      expect(after.events.filter(event => event.type === 'task/result' && event.taskId === retryTaskId)).toHaveLength(1)
+    } finally {
+      releaseRecovery.resolve()
+      allowAdoption.resolve()
+      table.update = update
+      ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator | undefined }).taskDelivery = undefined
+      await Promise.allSettled([recovery, retry])
+      await booted.dispose()
+    }
+  })
+
   test('task cancellation returns its own final child-cleanup commit during unrelated work', async () => {
     const booted = await boot()
     let childRunId: ChildRunId | undefined

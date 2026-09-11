@@ -150,14 +150,24 @@ export class TaskDeliveryCoordinator {
     const owner = {}
     const completion = Promise.withResolvers<string>()
     void completion.promise.catch(() => {})
-    const flight = { owner, promise: completion.promise }
+    const flight: TaskFlight = { owner, promise: completion.promise }
     this.taskFlights.set(taskId, flight)
     let phase: 'reserved' | 'committed' | 'rolled-back' = 'reserved'
     return {
-      prepare: state => this.prepareTaskDelivery(state, taskId),
+      prepare: state => {
+        if (phase !== 'reserved' || flight.ownedAttemptId !== undefined) {
+          throw new Error(`task '${taskId}' delivery reservation is not pending`)
+        }
+        const prepared = this.prepareTaskDelivery(state, taskId)
+        flight.ownedAttemptId = prepared.attemptId
+        return prepared
+      },
       commit: prepared => {
         if (phase !== 'reserved') throw new Error(`task '${taskId}' delivery reservation is not pending`)
         if (prepared.taskId !== taskId) throw new Error(`task '${taskId}' delivery reservation received another task`)
+        if (flight.ownedAttemptId !== prepared.attemptId) {
+          throw new Error(`task '${taskId}' delivery reservation does not own the prepared attempt`)
+        }
         phase = 'committed'
         void (async () => {
           try {
@@ -172,6 +182,7 @@ export class TaskDeliveryCoordinator {
       rollback: () => {
         if (phase !== 'reserved') return
         phase = 'rolled-back'
+        delete flight.ownedAttemptId
         if (this.taskFlights.get(taskId) === flight) this.taskFlights.delete(taskId)
         completion.reject(new Error(`task '${taskId}' delivery reservation was rolled back`))
       },
@@ -233,7 +244,6 @@ export class TaskDeliveryCoordinator {
     const { assignment, agentId, definitionRevisionId, taskId, attemptId, message } = prepared
     const recovered = this.taskFlights.get(taskId)
     if (recovered !== undefined && recovered.owner !== owner) return await recovered.promise
-    if (recovered !== undefined) recovered.ownedAttemptId = attemptId
     const identity = { taskId, attemptId, messageId: message.id }
 
     let claimed = false
