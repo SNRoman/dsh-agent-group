@@ -142,3 +142,40 @@ pnpm run build:host
 git diff --check
 # all exit 0
 ```
+
+## Review fix round 2
+
+Review-fix commit: `3bf7551f77306f198e62c32d228d111c58a5f57e` (`fix(host): preserve task mutation ownership`).
+
+Task cancellation now prepares every affected child terminal transition inside the caller's revision-checked serialized update and commits the controller reservations only after the combined durable state succeeds. Persistence failure rolls the reservations back in reverse order. The response is the combined operation's committed revision and value, so unrelated work triggered during post-commit child abort cleanup cannot replace the operation-owned result. Cleanup still converges for child controllers, activities, and task inbox entries.
+
+Browser retry now synchronously reserves the task flight inside its CAS preparation before creating `task/delivery-started`. An existing owner rejects the Browser call without appending an attempt. A stale revision or failed durable write rolls the reservation back and settles joiners; durable success commits ownership and starts delivery afterward. The retryable aggregate remains unchanged on rejection, and a subsequent retry can acquire exactly one owner without an unowned open attempt or double delivery.
+
+Review-fix RED evidence:
+
+```text
+pnpm vitest run tests/host-consistency.spec.ts
+# exit 1; 2 tests failed and 44 passed
+```
+
+The cancellation race returned an unrelated commit's revision after cleanup, and the retry race left an open attempt without a flight owner. Additional rollback coverage executes the Browser update callback and rejects its durable write, then proves joined promises settle, the aggregate remains retryable, and the next retry succeeds.
+
+Review-fix GREEN evidence:
+
+```text
+pnpm vitest run tests/workspace-rpc.spec.ts tests/host-consistency.spec.ts tests/workspace-direct-room.spec.ts tests/workspace-async-dispatch.spec.ts tests/tasks.spec.ts tests/task-delivery.spec.ts tests/task-delivery-coordinator.spec.ts tests/activity-controller.spec.ts tests/child-runs.spec.ts tests/memory-query.spec.ts tests/definition-history.spec.ts tests/workspace-activity-stream.spec.ts tests/dispatcher.spec.ts tests/runtime.spec.ts tests/restart.integration.spec.ts tests/task-tools.spec.ts
+# 16 files passed; 317 tests passed
+
+pnpm exec tsc -p tests/types/tsconfig.json --noEmit
+pnpm run typecheck
+pnpm run build:host
+git diff --check
+# all exit 0
+```
+
+Round-two files changed:
+
+- `packages/host/src/index.ts`
+- `packages/host/src/task-delivery-coordinator.ts`
+- `tests/host-consistency.spec.ts`
+- `tests/task-delivery-coordinator.spec.ts`
