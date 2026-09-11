@@ -308,6 +308,35 @@ describe('TaskDeliveryCoordinator', () => {
     expect(state.events.filter(event => event.type === 'task/result')).toHaveLength(1)
   })
 
+  test('a rolled-back Browser reservation releases joiners and preserves retryable state', async () => {
+    const built = assignedTask()
+    let state = built.state
+    const host: TaskDeliveryCoordinatorHost = {
+      snapshot: () => structuredClone(state),
+      apply: async mutation => { state = mutation(state); return structuredClone(state) },
+      ensureEmployee: async () => handle(),
+      deliver: async (_agentId, _message, _recall, _source, hooks) => {
+        await hooks?.onClaim?.()
+        return outcome('retry after rollback')
+      },
+    }
+    const coordinator = new TaskDeliveryCoordinator(host)
+    const reservation = coordinator.reserveTaskDelivery(built.taskId)
+    reservation.prepare(state)
+    const joined = coordinator.retryTaskDelivery(built.taskId)
+    const joinedOutcome = joined.then(
+      value => ({ status: 'fulfilled' as const, value }),
+      error => ({ status: 'rejected' as const, error }),
+    )
+
+    reservation.rollback()
+
+    await expect(joinedOutcome).resolves.toMatchObject({ status: 'rejected', error: expect.any(Error) })
+    expect(state).toEqual(built.state)
+    await expect(coordinator.retryTaskDelivery(built.taskId)).resolves.toBe('retry after rollback')
+    expect(state.events.filter(event => event.type === 'task/delivery-started')).toHaveLength(1)
+  })
+
   test.each(['deliver', 'retryTaskDelivery'] as const)(
     'the first %s call that resumes a pending attempt shares its recovered completion',
     async method => {

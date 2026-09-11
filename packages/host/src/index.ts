@@ -48,7 +48,7 @@ import {
 import type { AssignHumanTaskResult, CancelTaskResult, GrantTaskDelegationResult } from './tasks.ts'
 import { inspectTaskDelivery } from './task-delivery.ts'
 import { TaskDeliveryCoordinator } from './task-delivery-coordinator.ts'
-import type { PreparedTaskDelivery, WorkspaceDeliveryHooks } from './task-delivery-coordinator.ts'
+import type { TaskDeliveryReservation, WorkspaceDeliveryHooks } from './task-delivery-coordinator.ts'
 import { registerWorkspaceTaskTools } from './task-tools.ts'
 import type { WorkspaceToolRegistry } from './task-tools.ts'
 import type { TaskDeliveryProgressEvent, WorkspaceCommand, WorkspaceState } from './types.ts'
@@ -357,11 +357,25 @@ export class AgentWorkspaceDomainService extends Service {
     signal?: AbortSignal,
   ): Promise<WorkspaceMutationResult<WorkspaceState>> {
     let cancellation: CancelTaskResult | undefined
-    const committed = await this.mutateMaybeRevisioned(expectedRevision, current => {
-      const changed = cancelWorkspaceTask(current, { humanId, taskId })
-      cancellation = changed
-      return { state: changed.state, value: changed.state }
-    }, signal)
+    const childStops: PreparedChildStop[] = []
+    let committed: WorkspaceMutationResult<WorkspaceState>
+    try {
+      committed = await this.mutateMaybeRevisioned(expectedRevision, current => {
+        const changed = cancelWorkspaceTask(current, { humanId, taskId })
+        cancellation = changed
+        let state = changed.state
+        for (const childRunId of changed.runningChildRunIds) {
+          const prepared = this.childControllers.prepareStop(state, childRunId)
+          childStops.push(prepared)
+          state = prepared.state
+        }
+        return { state, value: state }
+      }, signal)
+    } catch (error) {
+      for (const prepared of childStops.toReversed()) prepared.rollback()
+      throw error
+    }
+    for (const prepared of childStops) prepared.commit()
     const next = committed.value
     if (cancellation === undefined) throw new Error(`task '${taskId}' cancellation did not publish its affected work`)
 
@@ -393,9 +407,7 @@ export class AgentWorkspaceDomainService extends Service {
       this.pool?.handleFor(assignment.assigneeAgentId)?.agent.inbox.remove(started.messageId)
     }
     for (const identity of active) this.activityController.stopActivity(identity)
-    for (const childRunId of cancellation.runningChildRunIds) await this.childControllers.stopChildRun(childRunId)
-    const state = this.snapshot()
-    return { revision: state.revision, value: state }
+    return committed
   }
 
   /** Assign one root task, then start its delivery only after the durable commit. */
@@ -831,18 +843,25 @@ export class AgentWorkspaceDomainService extends Service {
     taskId: TaskId,
     signal?: AbortSignal,
   ): Promise<WorkspaceMutationResult<string>> {
-    let delivery: TaskDeliveryCoordinator | undefined
-    let prepared: PreparedTaskDelivery | undefined
-    const committed = await this.mutateRevisioned(expectedRevision, current => {
-      delivery = this.requireTaskDelivery()
-      prepared = delivery.prepareTaskDelivery(current, taskId)
-      return { state: prepared.state, value: undefined }
-    }, signal)
-    if (delivery === undefined || prepared === undefined) {
-      throw new Error(`task '${taskId}' retry did not publish its delivery attempt`)
+    let reservation: TaskDeliveryReservation | undefined
+    let prepared: ReturnType<TaskDeliveryReservation['prepare']> | undefined
+    try {
+      const committed = await this.mutateRevisioned(expectedRevision, current => {
+        const delivery = this.requireTaskDelivery()
+        reservation = delivery.reserveTaskDelivery(taskId)
+        prepared = reservation.prepare(current)
+        return { state: prepared.state, value: undefined }
+      }, signal)
+      if (reservation === undefined || prepared === undefined) {
+        throw new Error(`task '${taskId}' retry did not publish its delivery attempt`)
+      }
+      reservation.commit(prepared)
+      const value = await reservation.result()
+      return { revision: committed.revision, value }
+    } catch (error) {
+      reservation?.rollback()
+      throw error
     }
-    const value = await delivery.continuePreparedTaskDelivery(prepared)
-    return { revision: committed.revision, value }
   }
 
   /**

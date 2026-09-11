@@ -63,7 +63,7 @@ interface TaskFlight {
 }
 
 /** Delivery attempt durably started by an owning serialized mutation. */
-export interface PreparedTaskDelivery {
+interface PreparedTaskDelivery {
   readonly state: WorkspaceState
   readonly assignment: TaskAssignment
   readonly agentId: AgentId
@@ -71,6 +71,25 @@ export interface PreparedTaskDelivery {
   readonly taskId: TaskId
   readonly attemptId: TaskDeliveryAttemptId
   readonly message: UserMessage
+}
+
+/** Exclusive Browser retry ownership reserved before its durable attempt is created. */
+export interface TaskDeliveryReservation {
+  /**
+   * Build the exact delivery-start candidate in the caller's serialized update.
+   * @param state - Aggregate current in the caller's table update slot.
+   * @returns Candidate state and delivery identity owned by this reservation.
+   */
+  prepare(state: WorkspaceState): PreparedTaskDelivery
+  /**
+   * Adopt the reservation and start runtime delivery after persistence succeeds.
+   * @param prepared - Candidate returned by this reservation's prepare call.
+   */
+  commit(prepared: PreparedTaskDelivery): void
+  /** Release the reservation after stale rejection or persistence failure. */
+  rollback(): void
+  /** @returns The committed reservation's delivery result. */
+  result(): Promise<string>
 }
 
 /** Coordinates one durable inbox delivery attempt per task. */
@@ -104,7 +123,7 @@ export class TaskDeliveryCoordinator {
    * @param taskId - Open task whose previous delivery attempt is terminal.
    * @returns The committed candidate and exact attempt to continue afterward.
    */
-  prepareTaskDelivery(state: WorkspaceState, taskId: TaskId): PreparedTaskDelivery {
+  private prepareTaskDelivery(state: WorkspaceState, taskId: TaskId): PreparedTaskDelivery {
     const assignment = assignmentFor(state, taskId)
     const agent = state.agents[assignment.assigneeAgentId]
     if (agent === undefined) throw new Error(`task '${taskId}' assignee does not exist`)
@@ -121,22 +140,41 @@ export class TaskDeliveryCoordinator {
   }
 
   /**
-   * Continue one attempt already committed by the Browser mutation owner.
-   * @param prepared - Exact committed attempt returned by {@link prepareTaskDelivery}.
-   * @returns The completed task text.
+   * Reserve one task flight before the caller creates its durable retry attempt.
+   * @param taskId - Exact task whose retry flight must be owned.
+   * @returns Exclusive prepare/commit/rollback control for that flight.
    */
-  async continuePreparedTaskDelivery(prepared: PreparedTaskDelivery): Promise<string> {
-    if (this.taskFlights.has(prepared.taskId)) {
-      throw new Error(`task '${prepared.taskId}' already has a live delivery`)
-    }
+  reserveTaskDelivery(taskId: TaskId): TaskDeliveryReservation {
+    if (this.taskFlights.has(taskId)) throw new Error(`task '${taskId}' already has a live delivery`)
     const owner = {}
-    const promise = Promise.resolve().then(async () => await this.runPrepared(prepared, owner, true))
-    const flight = { owner, promise }
-    this.taskFlights.set(prepared.taskId, flight)
-    try {
-      return await promise
-    } finally {
-      if (this.taskFlights.get(prepared.taskId) === flight) this.taskFlights.delete(prepared.taskId)
+    const completion = Promise.withResolvers<string>()
+    void completion.promise.catch(() => {})
+    const flight = { owner, promise: completion.promise }
+    this.taskFlights.set(taskId, flight)
+    let phase: 'reserved' | 'committed' | 'rolled-back' = 'reserved'
+    return {
+      prepare: state => this.prepareTaskDelivery(state, taskId),
+      commit: prepared => {
+        if (phase !== 'reserved') throw new Error(`task '${taskId}' delivery reservation is not pending`)
+        if (prepared.taskId !== taskId) throw new Error(`task '${taskId}' delivery reservation received another task`)
+        phase = 'committed'
+        void (async () => {
+          try {
+            completion.resolve(await this.runPrepared(prepared, owner, true))
+          } catch (error) {
+            completion.reject(error)
+          } finally {
+            if (this.taskFlights.get(taskId) === flight) this.taskFlights.delete(taskId)
+          }
+        })()
+      },
+      rollback: () => {
+        if (phase !== 'reserved') return
+        phase = 'rolled-back'
+        if (this.taskFlights.get(taskId) === flight) this.taskFlights.delete(taskId)
+        completion.reject(new Error(`task '${taskId}' delivery reservation was rolled back`))
+      },
+      result: async () => await completion.promise,
     }
   }
 

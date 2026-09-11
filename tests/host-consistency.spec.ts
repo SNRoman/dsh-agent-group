@@ -472,6 +472,158 @@ describe('durable service boundary', () => {
     await booted.dispose()
   })
 
+  test('task cancellation returns its own final child-cleanup commit during unrelated work', async () => {
+    const booted = await boot()
+    let childRunId: ChildRunId | undefined
+    let taskId: ReturnType<typeof assignHumanTask>['taskId'] | undefined
+    await booted.service.apply(current => {
+      const definition = mutateWorkspace(current, { type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+      const agent = mutateWorkspace(definition.state, { type: 'agent/create', definitionId: definition.definitionId, name: 'Alice' })
+      const assigned = assignHumanTask(agent.state, { humanId: HumanId('owner'), assigneeAgentId: agent.agentId, title: 'root' })
+      const child = recordChildRunStarted(assigned.state, { parentAgentId: agent.agentId, taskId: assigned.taskId })
+      taskId = assigned.taskId
+      childRunId = child.childRunId
+      return child.state
+    })
+    if (taskId === undefined || childRunId === undefined) throw new Error('cancellation setup did not publish durable ids')
+    const before = booted.service.snapshot()
+    let competitor: Promise<unknown> | undefined
+    ;(booted.service as unknown as { childControllers: { register(input: unknown): unknown } }).childControllers.register({
+      childRunId,
+      parentAgentId: Object.values(before.agents)[0]!.id,
+      taskId,
+      abort: () => {
+        competitor = booted.service.execute(booted.service.snapshot().revision, {
+          type: 'room/create', kind: 'group', name: 'unrelated',
+        })
+      },
+    })
+
+    const cancelled = await booted.service.cancelTask(before.revision, HumanId('web-user'), taskId)
+    if (competitor === undefined) throw new Error('child cleanup did not start its deterministic competitor')
+    await competitor
+
+    expect(cancelled.revision).toBe(before.revision + 2)
+    expect(cancelled.value.revision).toBe(cancelled.revision)
+    expect(cancelled.value.childRuns[childRunId]?.status).toBe('cancelled')
+    expect(Object.values(cancelled.value.rooms)).toHaveLength(0)
+    expect(booted.service.snapshot().revision).toBe(cancelled.revision + 1)
+    expect(Object.values(booted.service.snapshot().rooms)).toHaveLength(1)
+    await booted.dispose()
+  })
+
+  test('a Browser retry rejects an existing flight before appending an unowned attempt', async () => {
+    const booted = await boot()
+    let taskId: ReturnType<typeof assignHumanTask>['taskId'] | undefined
+    await booted.service.apply(current => {
+      const definition = mutateWorkspace(current, { type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+      const agent = mutateWorkspace(definition.state, { type: 'agent/create', definitionId: definition.definitionId, name: 'Alice' })
+      const assigned = assignHumanTask(agent.state, { humanId: HumanId('owner'), assigneeAgentId: agent.agentId, title: 'root' })
+      const started = startTaskDelivery(assigned.state, { taskId: assigned.taskId })
+      taskId = assigned.taskId
+      return failTaskDelivery(started.state, {
+        taskId: assigned.taskId,
+        attemptId: started.attemptId,
+        messageId: started.message.id,
+        failureCode: 'test',
+        failureSummary: 'retryable',
+      }).state
+    })
+    if (taskId === undefined) throw new Error('retry race setup did not publish a task')
+    const enteredEmployee = Promise.withResolvers<void>()
+    const releaseEmployee = Promise.withResolvers<void>()
+    const coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => booted.service.snapshot(),
+      apply: async mutation => await booted.service.apply(mutation),
+      ensureEmployee: async () => {
+        enteredEmployee.resolve()
+        await releaseEmployee.promise
+        return handle()
+      },
+      deliver: async (_agentId, _message, _recall, _source, hooks) => {
+        await hooks?.onClaim?.()
+        return { output: [{ type: 'text', text: 'owned result' }], stopReason: { kind: 'completed' }, interrupted: false }
+      },
+    })
+    ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator }).taskDelivery = coordinator
+    const existing = coordinator.retryTaskDelivery(taskId)
+    await enteredEmployee.promise
+    const before = booted.service.snapshot()
+
+    const browserOutcome = await booted.service.retryTaskDelivery(before.revision, taskId).then(
+      value => ({ status: 'fulfilled' as const, value }),
+      error => ({ status: 'rejected' as const, error }),
+    )
+    const whileBlocked = booted.service.snapshot()
+    releaseEmployee.resolve()
+    const existingOutcome = await existing.then(
+      value => ({ status: 'fulfilled' as const, value }),
+      error => ({ status: 'rejected' as const, error }),
+    )
+
+    expect(browserOutcome).toMatchObject({ status: 'rejected', error: expect.any(Error) })
+    expect(whileBlocked).toEqual(before)
+    expect(existingOutcome).toEqual({ status: 'fulfilled', value: 'owned result' })
+    expect(booted.service.snapshot().events.filter(event => event.type === 'task/delivery-started')).toHaveLength(2)
+    expect(booted.service.snapshot().tasks[taskId]?.status).toBe('completed')
+    await booted.dispose()
+  })
+
+  test('a rejected retry table write rolls back its flight reservation', async () => {
+    const booted = await boot()
+    let taskId: ReturnType<typeof assignHumanTask>['taskId'] | undefined
+    await booted.service.apply(current => {
+      const definition = mutateWorkspace(current, { type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+      const agent = mutateWorkspace(definition.state, { type: 'agent/create', definitionId: definition.definitionId, name: 'Alice' })
+      const assigned = assignHumanTask(agent.state, { humanId: HumanId('owner'), assigneeAgentId: agent.agentId, title: 'root' })
+      const started = startTaskDelivery(assigned.state, { taskId: assigned.taskId })
+      taskId = assigned.taskId
+      return failTaskDelivery(started.state, {
+        taskId: assigned.taskId,
+        attemptId: started.attemptId,
+        messageId: started.message.id,
+        failureCode: 'test',
+        failureSummary: 'retryable',
+      }).state
+    })
+    if (taskId === undefined) throw new Error('retry rollback setup did not publish a task')
+    const coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => booted.service.snapshot(),
+      apply: async mutation => await booted.service.apply(mutation),
+      ensureEmployee: async () => handle(),
+      deliver: async (_agentId, _message, _recall, _source, hooks) => {
+        await hooks?.onClaim?.()
+        return { output: [{ type: 'text', text: 'retry after write failure' }], stopReason: { kind: 'completed' }, interrupted: false }
+      },
+    })
+    ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator }).taskDelivery = coordinator
+    const before = booted.service.snapshot()
+    type TestTable = {
+      get(key: WorkspaceId): WorkspaceState | undefined
+      update(key: WorkspaceId, mutation: (current: WorkspaceState | undefined) => WorkspaceState): Promise<WorkspaceState>
+    }
+    const table = (booted.service as unknown as { table: TestTable }).table
+    const update = table.update.bind(table)
+    table.update = async (key, mutation) => {
+      const current = table.get(key)
+      mutation(current)
+      throw new Error('retry table write failed')
+    }
+
+    try {
+      await expect(booted.service.retryTaskDelivery(before.revision, taskId)).rejects.toThrow('retry table write failed')
+      expect(booted.service.snapshot()).toEqual(before)
+    } finally {
+      table.update = update
+    }
+
+    await expect(booted.service.retryTaskDelivery(before.revision, taskId)).resolves.toEqual({
+      revision: before.revision + 1,
+      value: 'retry after write failure',
+    })
+    await booted.dispose()
+  })
+
   test('task assignment rejects a missing delivery runtime before committing', async () => {
     const booted = await boot()
     await booted.service.executeInternal({ type: 'definition/create', name: 'Worker', description: '', instructions: '' })
