@@ -220,3 +220,43 @@ Round-three files changed:
 - `packages/host/src/task-delivery-coordinator.ts`
 - `tests/host-consistency.spec.ts`
 - `tests/task-delivery-coordinator.spec.ts`
+
+## Review fix round 4
+
+Review-fix commit: `65c5e54e8db6d6e90cda99c7a7200687a9c75198` (`fix(host): bind retry ownership before publication`).
+
+The Browser retry reservation now binds its exact prepared attempt synchronously inside `prepare()`, which runs in the revision-checked serialized table callback. A candidate therefore cannot become durable before the existing task flight carries its ownership identifier. `commit()` validates the prebound identifier and starts continuation without rebinding it. Rollback deletes the prospective identifier, removes only the same reserved flight, and rejects its completion promise, so cancellation, stale rejection, callback failure, and persistence failure cannot leak ownership or joiners.
+
+The deterministic Host race begins recovery on an older orphan and pauses it after that repair commits. The Browser retry then commits its new attempt while its table wrapper withholds the return to `reservation.commit()`. Recovery resumes in that exact post-commit/pre-adoption interval, observes the prepared ownership, skips only the new attempt, and the later continuation delivers and completes it once. Genuine orphan repair, direct resumed admission, failed-table rollback, and teardown convergence remain covered by the focused lifecycle set.
+
+Review-fix RED evidence:
+
+```text
+pnpm vitest run tests/host-consistency.spec.ts -t "concurrent recovery observes Browser retry ownership before reservation adoption"
+# exit 1; 1 test failed and 48 skipped
+# recovery reported both the genuine orphan and the newly committed reserved attempt as interrupted
+```
+
+Review-fix GREEN evidence:
+
+```text
+pnpm vitest run tests/host-consistency.spec.ts tests/task-delivery-coordinator.spec.ts -t "(concurrent recovery observes|Browser retry survives recovery|owned retry resume|rolled-back Browser reservation|recovery marks a started attempt|rejected retry table write)"
+# 2 files passed; 6 tests passed and 70 skipped
+
+pnpm vitest run tests/host-consistency.spec.ts tests/task-delivery-coordinator.spec.ts tests/restart.integration.spec.ts tests/runtime.spec.ts
+# 4 files passed; 120 tests passed
+
+pnpm vitest run tests/workspace-rpc.spec.ts tests/host-consistency.spec.ts tests/workspace-direct-room.spec.ts tests/workspace-async-dispatch.spec.ts tests/tasks.spec.ts tests/task-delivery.spec.ts tests/task-delivery-coordinator.spec.ts tests/activity-controller.spec.ts tests/child-runs.spec.ts tests/memory-query.spec.ts tests/definition-history.spec.ts tests/workspace-activity-stream.spec.ts tests/dispatcher.spec.ts tests/runtime.spec.ts tests/restart.integration.spec.ts tests/task-tools.spec.ts
+# 16 files passed; 320 tests passed
+
+pnpm exec tsc -p tests/types/tsconfig.json --noEmit
+pnpm run typecheck
+pnpm run build:host
+git diff --check
+# all exit 0
+```
+
+Round-four files changed:
+
+- `packages/host/src/task-delivery-coordinator.ts`
+- `tests/host-consistency.spec.ts`
