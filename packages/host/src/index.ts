@@ -14,18 +14,18 @@ import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { WorkspaceBusinessError } from './errors.ts'
-import { AgentId, HumanId, RoomId, TaskId, WorkspaceId } from './ids.ts'
+import { AgentDefinitionId, AgentId, HumanId, RoomId, TaskId, WorkspaceId } from './ids.ts'
 import type { DefinitionRevisionId } from './ids.ts'
 import type { ChildRunId } from './ids.ts'
 import { WorkspaceDispatcher } from './dispatcher.ts'
-import type { DispatcherLimits, SubagentRuntimeLike } from './dispatcher.ts'
+import type { DispatcherLimits, SubagentRuntimeLike, WorkspaceDispatcherHost } from './dispatcher.ts'
 import { assertWorkspaceInvariants } from './invariant.ts'
 import { joinRoomWithMemory } from './memory.ts'
 import { queryAgentMemory } from './memory-query.ts'
 import type { MemoryPage, MemoryQuery } from './memory-query.ts'
 import { assertDirectRoomTextAllowed, assertRoomMessageAuthorized, resolveHumanWakeTargets } from './room-policy.ts'
 import { AGENT_WORKSPACE_RPC_CHANNEL, createWorkspaceRpcHandler } from './rpc.ts'
-import type { WorkspaceDirectRoomResult, WorkspaceRoomRuntimeStatus, WorkspaceRuntimeStatus } from './rpc.ts'
+import type { WorkspaceDirectRoomResult, WorkspaceMutationResult, WorkspaceRoomRuntimeStatus, WorkspaceRuntimeStatus } from './rpc.ts'
 import { EmployeeAgentPool } from './runtime.ts'
 import type { AgentLifecycle, EmployeeBoundSessionDisposition, EmployeeMaterializationOptions } from './runtime.ts'
 import { agentWorkspaceSpec, workspaceStateSchema } from './spec.ts'
@@ -38,14 +38,22 @@ import { WorkspaceTurnTracker } from './turn-tracker.ts'
 import type { WorkspaceTurnOutcome } from './turn-tracker.ts'
 import { finishChildRun, repairOrphanedChildRuns } from './child-runs.ts'
 import { ChildControllerRegistry } from './child-controller.ts'
-import { cancelTask as cancelWorkspaceTask } from './tasks.ts'
-import type { CancelTaskResult } from './tasks.ts'
+import {
+  assignHumanTask,
+  cancelTask as cancelWorkspaceTask,
+  grantTaskDelegation as grantWorkspaceTaskDelegation,
+  revokeTaskDelegation as revokeWorkspaceTaskDelegation,
+} from './tasks.ts'
+import type { AssignHumanTaskResult, CancelTaskResult, GrantTaskDelegationResult } from './tasks.ts'
 import { inspectTaskDelivery } from './task-delivery.ts'
 import { TaskDeliveryCoordinator } from './task-delivery-coordinator.ts'
 import type { WorkspaceDeliveryHooks } from './task-delivery-coordinator.ts'
 import { registerWorkspaceTaskTools } from './task-tools.ts'
 import type { WorkspaceToolRegistry } from './task-tools.ts'
 import type { TaskDeliveryProgressEvent, WorkspaceCommand, WorkspaceState } from './types.ts'
+import type { DelegationGrantId } from './ids.ts'
+import { projectDefinitionHistory } from './definition-history.ts'
+import type { DefinitionHistoryItem } from './definition-history.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -190,8 +198,16 @@ export class AgentWorkspaceDomainService extends Service {
         },
         (agentId, revisionId, agentCtx) => this.installWorkspaceRole(agentCtx, agentId, revisionId),
       )
+      const dispatcherHost: WorkspaceDispatcherHost = {
+        snapshot: () => this.snapshot(),
+        execute: async (command, settledActivity) => await this.executeInternal(command, settledActivity),
+        apply: async mutation => await this.apply(mutation),
+        deliver: async (agentId, delivery, recall, source) => await this.deliver(agentId, delivery, recall, source),
+        ensureEmployee: async agentId => await this.ensureEmployee(agentId),
+        retireWorkspaceActivity: (activity, workspaceRevision) => this.retireWorkspaceActivity(activity, workspaceRevision),
+      }
       const dispatcher = new WorkspaceDispatcher(
-        this,
+        dispatcherHost,
         () => this.ctx.get('subagents') as SubagentRuntimeLike | undefined,
         'spawn-in-process',
         DISPATCHER_LIMITS,
@@ -229,6 +245,11 @@ export class AgentWorkspaceDomainService extends Service {
     return queryAgentMemory(this.snapshot(), query)
   }
 
+  /** Project one definition's detached immutable revision history. */
+  definitionHistory(definitionId: AgentDefinitionId): readonly DefinitionHistoryItem[] {
+    return structuredClone(projectDefinitionHistory(this.snapshot(), definitionId))
+  }
+
   /** Current ephemeral background execution state, detached from internal maps. */
   runtimeStatus(): WorkspaceRuntimeStatus {
     const rooms: Record<string, WorkspaceRoomRuntimeStatus> = {}
@@ -256,8 +277,17 @@ export class AgentWorkspaceDomainService extends Service {
   }
 
   /** Clear one process-local agent failure after the Browser acknowledges it. */
-  acknowledgeAgentFailure(agentId: AgentId): void {
+  async acknowledgeAgentFailure(
+    expectedRevision: number,
+    agentId: AgentId,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceMutationResult<void>> {
+    const committed = await this.mutateRevisioned(expectedRevision, current => ({
+      state: current,
+      value: undefined,
+    }), signal)
     this.activityStream.acknowledgeAgentFailure(agentId)
+    return committed
   }
 
   /**
@@ -265,8 +295,16 @@ export class AgentWorkspaceDomainService extends Service {
    * @param identity - Complete activity, employee, message, Session, and turn identity.
    * @returns Whether this call started stopping, repeated it, or found no exact activity.
    */
-  stopActivity(identity: WorkspaceActivityIdentity): WorkspaceStopResult {
-    return this.activityController.stopActivity(identity)
+  async stopActivity(
+    expectedRevision: number,
+    identity: WorkspaceActivityIdentity,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceMutationResult<WorkspaceStopResult>> {
+    const committed = await this.mutateRevisioned(expectedRevision, current => ({
+      state: current,
+      value: undefined,
+    }), signal)
+    return { revision: committed.revision, value: this.activityController.stopActivity(identity) }
   }
 
   /**
@@ -274,8 +312,17 @@ export class AgentWorkspaceDomainService extends Service {
    * @param childRunId - Durable child identity to stop.
    * @returns Whether this call started stopping, repeated it, or found no live controller.
    */
-  async stopChildRun(childRunId: ChildRunId): Promise<WorkspaceStopResult> {
-    return await this.childControllers.stopChildRun(childRunId)
+  async stopChildRun(
+    expectedRevision: number,
+    childRunId: ChildRunId,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceMutationResult<WorkspaceStopResult>> {
+    await this.mutateRevisioned(expectedRevision, current => ({
+      state: current,
+      value: undefined,
+    }), signal)
+    const value = await this.childControllers.stopChildRun(childRunId)
+    return { revision: this.snapshot().revision, value }
   }
 
   /**
@@ -284,14 +331,19 @@ export class AgentWorkspaceDomainService extends Service {
    * @param taskId - Root or derived task to cancel.
    * @returns The state after exact queued, active, and child cleanup converges.
    */
-  async cancelTask(humanId: HumanId, taskId: TaskId): Promise<WorkspaceState> {
+  async cancelTask(
+    expectedRevision: number,
+    humanId: HumanId,
+    taskId: TaskId,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceMutationResult<WorkspaceState>> {
     let cancellation: CancelTaskResult | undefined
-    const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => {
+    const committed = await this.mutateMaybeRevisioned(expectedRevision, current => {
       const changed = cancelWorkspaceTask(current, { humanId, taskId })
       cancellation = changed
-      return validateWorkspaceState(changed.state, LOCAL_WORKSPACE_ID)
-    })
-    this.syncActivityProjection(next)
+      return { state: changed.state, value: changed.state }
+    }, signal)
+    const next = committed.value
     if (cancellation === undefined) throw new Error(`task '${taskId}' cancellation did not publish its affected work`)
 
     const cancelledTaskIds = new Set(cancellation.cancelledTaskIds)
@@ -321,15 +373,68 @@ export class AgentWorkspaceDomainService extends Service {
       if (started === undefined || assignment === undefined) continue
       this.pool?.handleFor(assignment.assigneeAgentId)?.agent.inbox.remove(started.messageId)
     }
-    for (const identity of active) this.stopActivity(identity)
-    for (const childRunId of cancellation.runningChildRunIds) await this.stopChildRun(childRunId)
-    return this.snapshot()
+    for (const identity of active) this.activityController.stopActivity(identity)
+    for (const childRunId of cancellation.runningChildRunIds) await this.childControllers.stopChildRun(childRunId)
+    const state = this.snapshot()
+    return { revision: state.revision, value: state }
+  }
+
+  /** Assign one root task, then start its delivery only after the durable commit. */
+  async assignTask(
+    expectedRevision: number,
+    humanId: HumanId,
+    assigneeAgentId: AgentId,
+    title: string,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceMutationResult<AssignHumanTaskResult>> {
+    let delivery: TaskDeliveryCoordinator | undefined
+    const committed = await this.mutateRevisioned(expectedRevision, current => {
+      delivery = this.requireTaskDelivery()
+      const value = assignHumanTask(current, { humanId, assigneeAgentId, title })
+      return { state: value.state, value }
+    }, signal)
+    if (delivery === undefined) throw new Error('task assignment did not resolve its delivery coordinator')
+    void delivery.deliver(committed.value.taskId).catch(() => {
+      // The coordinator records display-safe delivery failure before rejecting.
+    })
+    return committed
+  }
+
+  /** Grant one employed assignee delegation authority after a revision check. */
+  async grantTaskDelegation(
+    expectedRevision: number,
+    humanId: HumanId,
+    granteeAgentId: AgentId,
+    rootTaskId: TaskId,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceMutationResult<GrantTaskDelegationResult>> {
+    return await this.mutateRevisioned(expectedRevision, current => {
+      const value = grantWorkspaceTaskDelegation(current, { humanId, granteeAgentId, rootTaskId })
+      return { state: value.state, value }
+    }, signal)
+  }
+
+  /** Revoke one delegation grant after a revision check. */
+  async revokeTaskDelegation(
+    expectedRevision: number,
+    humanId: HumanId,
+    delegationGrantId: DelegationGrantId,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceMutationResult<WorkspaceState>> {
+    return await this.mutateRevisioned(expectedRevision, current => {
+      const changed = revokeWorkspaceTaskDelegation(current, { humanId, delegationGrantId })
+      return { state: changed.state, value: changed.state }
+    }, signal)
   }
 
   /** Open the stable direct room for one employed agent, creating it atomically when absent. */
-  async openDirectRoom(agentId: AgentId): Promise<WorkspaceDirectRoomResult> {
+  async openDirectRoom(
+    expectedRevision: number,
+    agentId: AgentId,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceMutationResult<WorkspaceDirectRoomResult>> {
     let resolvedRoomId: RoomId | undefined
-    const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => {
+    const committed = await this.mutateMaybeRevisioned(expectedRevision, current => {
       const agent = current.agents[agentId]
       if (agent === undefined) {
         throw new WorkspaceBusinessError('agent-missing', { agentId }, `agent '${agentId}' does not exist`)
@@ -352,7 +457,7 @@ export class AgentWorkspaceDomainService extends Service {
       const existing = matches[0]
       if (existing !== undefined) {
         resolvedRoomId = existing.id
-        return current
+        return { state: current, value: current }
       }
 
       const created = mutateWorkspace(current, { type: 'room/create', kind: 'direct' })
@@ -363,11 +468,11 @@ export class AgentWorkspaceDomainService extends Service {
         memoryStart: { type: 'new-events' },
       }).state
       resolvedRoomId = created.roomId
-      return validateWorkspaceState(joined, LOCAL_WORKSPACE_ID)
-    })
+      return { state: joined, value: joined }
+    }, signal)
     if (resolvedRoomId === undefined) throw new Error(`failed to resolve direct room for agent '${agentId}'`)
-    this.syncActivityProjection(next)
-    return { state: structuredClone(next), roomId: resolvedRoomId }
+    const value = { state: committed.value, roomId: resolvedRoomId }
+    return { revision: committed.revision, value }
   }
 
   /**
@@ -375,18 +480,36 @@ export class AgentWorkspaceDomainService extends Service {
    * A post-commit resident-role refresh failure retires that runtime, records a
    * safe activity failure, and leaves the durable mutation committed.
    */
-  async execute(command: WorkspaceCommand, settledActivity?: WorkspaceActivityIdentity): Promise<WorkspaceState> {
-    const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => {
+  async execute(
+    expectedRevision: number,
+    command: WorkspaceCommand,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceMutationResult<WorkspaceState>> {
+    return await this.executeCommand(expectedRevision, command, undefined, signal)
+  }
+
+  /** Commit one Host-owned command whose current revision is selected in the serialized callback. */
+  async executeInternal(command: WorkspaceCommand, settledActivity?: WorkspaceActivityIdentity): Promise<WorkspaceState> {
+    return (await this.executeCommand(undefined, command, settledActivity)).value
+  }
+
+  private async executeCommand(
+    expectedRevision: number | undefined,
+    command: WorkspaceCommand,
+    settledActivity?: WorkspaceActivityIdentity,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceMutationResult<WorkspaceState>> {
+    const committed = await this.mutateMaybeRevisioned(expectedRevision, current => {
       if (command.type === 'room/message') {
         assertRoomMessageAuthorized(current, command.roomId, command.actor, command.mentions)
       }
       const changed = command.type === 'room/join'
         ? joinRoomWithMemory(current, command).state
         : mutateWorkspace(current, command).state
-      return validateWorkspaceState(changed, LOCAL_WORKSPACE_ID)
-    })
+      return { state: changed, value: changed }
+    }, signal)
+    const next = committed.value
 
-    this.syncActivityProjection(next)
     if (settledActivity !== undefined) this.activityStream.retire(settledActivity, next.revision)
     if (command.type === 'agent/depart') {
       await this.pool?.dispose(command.agentId)
@@ -411,17 +534,15 @@ export class AgentWorkspaceDomainService extends Service {
         }
       }))
     }
-    return structuredClone(next)
+    return committed
   }
 
   /** Apply an arbitrary pure mutation durably and return the detached committed aggregate. */
   async apply(mutation: (state: WorkspaceState) => WorkspaceState): Promise<WorkspaceState> {
-    const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => {
+    return (await this.mutateMaybeRevisioned(undefined, current => {
       const changed = mutation(current)
-      return validateWorkspaceState(changed, LOCAL_WORKSPACE_ID)
-    })
-    this.syncActivityProjection(next)
-    return structuredClone(next)
+      return { state: changed, value: changed }
+    })).value
   }
 
   /** The durable session id bound to an agent, or `undefined` when never materialized. */
@@ -431,7 +552,7 @@ export class AgentWorkspaceDomainService extends Service {
 
   /** Durably record a freshly created or migrated session id for an agent. */
   async recordSessionId(agentId: AgentId, sessionId: SessionId): Promise<void> {
-    await this.execute({ type: 'runtime/session-bound', agentId, sessionId })
+    await this.executeInternal({ type: 'runtime/session-bound', agentId, sessionId })
   }
 
   /**
@@ -576,6 +697,39 @@ export class AgentWorkspaceDomainService extends Service {
     }
   }
 
+  private async mutateRevisioned<Value>(
+    expectedRevision: number,
+    mutation: (state: WorkspaceState) => { readonly state: WorkspaceState; readonly value: Value },
+    signal?: AbortSignal,
+  ): Promise<WorkspaceMutationResult<Value>> {
+    return await this.mutateMaybeRevisioned(expectedRevision, mutation, signal)
+  }
+
+  private async mutateMaybeRevisioned<Value>(
+    expectedRevision: number | undefined,
+    mutation: (state: WorkspaceState) => { readonly state: WorkspaceState; readonly value: Value },
+    signal?: AbortSignal,
+  ): Promise<WorkspaceMutationResult<Value>> {
+    let published = false
+    let value!: Value
+    const next = await this.requireTable().update(LOCAL_WORKSPACE_ID, current => {
+      signal?.throwIfAborted()
+      if (expectedRevision !== undefined && current.revision !== expectedRevision) {
+        throw new WorkspaceBusinessError('stale-revision', {
+          expectedRevision,
+          actualRevision: current.revision,
+        })
+      }
+      const changed = mutation(current)
+      value = changed.value
+      published = true
+      return validateWorkspaceState(changed.state, LOCAL_WORKSPACE_ID)
+    })
+    if (!published) throw new Error('workspace mutation did not publish its result')
+    this.syncActivityProjection(next)
+    return structuredClone({ revision: next.revision, value })
+  }
+
   private requireTable(): KvTable<WorkspaceId, WorkspaceState> {
     if (this.table === undefined) throw new Error('agent workspace service is not started yet')
     return this.table
@@ -601,18 +755,38 @@ export class AgentWorkspaceDomainService extends Service {
    * durable write. The potentially long collaboration chain continues in the
    * Host and is exposed to the Browser through runtimeStatus().
    */
-  async postHumanMessage(roomId: RoomId, humanId: HumanId, text: string, mentions: readonly AgentId[]): Promise<WorkspaceState> {
-    const snapshot = this.snapshot()
-    if (snapshot.rooms[roomId]?.kind === 'direct') assertDirectRoomTextAllowed(roomId, text)
-    const targets = resolveHumanWakeTargets(snapshot, roomId, mentions)
-    const started = await this.requireDispatcher().startHumanMessage(roomId, humanId, text, targets)
-    if (targets.length === 0) return started.state
+  async postHumanMessage(
+    expectedRevision: number,
+    roomId: RoomId,
+    humanId: HumanId,
+    text: string,
+    mentions: readonly AgentId[],
+    signal?: AbortSignal,
+  ): Promise<WorkspaceMutationResult<WorkspaceState>> {
+    const committed = await this.mutateRevisioned(expectedRevision, current => {
+      if (current.rooms[roomId]?.kind === 'direct') assertDirectRoomTextAllowed(roomId, text)
+      const targets = resolveHumanWakeTargets(current, roomId, mentions)
+      assertRoomMessageAuthorized(current, roomId, { type: 'human', id: humanId }, targets)
+      const changed = mutateWorkspace(current, {
+        type: 'room/message', roomId, actor: { type: 'human', id: humanId }, text, mentions: targets,
+      })
+      return { state: changed.state, value: { state: changed.state, targets, sourceEventId: changed.eventId } }
+    }, signal)
+    if (committed.value.targets.length === 0) {
+      return { revision: committed.revision, value: committed.value.state }
+    }
     this.beginRoomDispatch(roomId)
-    void started.completion.then(
+    const completion = this.requireDispatcher().continueCommittedHumanMessage(
+      roomId,
+      text,
+      committed.value.targets,
+      committed.value.sourceEventId,
+    )
+    void completion.then(
       () => this.finishRoomDispatch(roomId),
       error => this.finishRoomDispatch(roomId, error),
     )
-    return started.state
+    return { revision: committed.revision, value: committed.value.state }
   }
 
   /** Run one one-shot child for a parent agent and record its terminal result. */
@@ -630,8 +804,17 @@ export class AgentWorkspaceDomainService extends Service {
    * @param taskId - Existing open task whose latest attempt is terminal.
    * @returns The complete terminal task text.
    */
-  async retryTaskDelivery(taskId: TaskId): Promise<string> {
-    return await this.requireTaskDelivery().retryTaskDelivery(taskId)
+  async retryTaskDelivery(
+    expectedRevision: number,
+    taskId: TaskId,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceMutationResult<string>> {
+    await this.mutateRevisioned(expectedRevision, current => ({
+      state: current,
+      value: undefined,
+    }), signal)
+    const value = await this.requireTaskDelivery().retryTaskDelivery(taskId)
+    return { revision: this.snapshot().revision, value }
   }
 
   /**

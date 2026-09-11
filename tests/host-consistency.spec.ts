@@ -4,14 +4,16 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
+import { MessageId } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import Storage from '@deepseek-ai/dsh-storage'
 import { apply as domainApply, Config as DomainConfig, inject as domainInject } from '@deepseek-ai/dsh-storage-domain'
 import { apply as jsonApply, Config as JsonConfig, inject as jsonInject } from '@deepseek-ai/dsh-storage-json'
 import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
 import { WorkspaceDispatcher } from '../packages/host/src/dispatcher.ts'
 import type { SubagentRuntimeLike, WorkspaceDispatcherHost } from '../packages/host/src/dispatcher.ts'
-import { AgentId, AgentMemoryEntryId, HumanId, RoomId, WorkspaceEventId, WorkspaceId } from '../packages/host/src/ids.ts'
+import { AgentId, AgentMemoryEntryId, HumanId, RoomId, WorkspaceActivityId, WorkspaceEventId, WorkspaceId } from '../packages/host/src/ids.ts'
 import { EmployeeAgentPool } from '../packages/host/src/runtime.ts'
 import type { EmployeeSessionSource } from '../packages/host/src/runtime.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
@@ -298,21 +300,148 @@ async function boot(): Promise<Booted> {
 }
 
 describe('durable service boundary', () => {
-  test('departing an agent closes its active membership with the departure event', async () => {
+  test('a converged runtime stop validates CAS without changing durable revision', async () => {
     const booted = await boot()
-    await booted.service.execute({ type: 'definition/create', name: 'Worker', description: 'd', instructions: 'i' })
+    const before = booted.service.snapshot()
+
+    const stopped = await booted.service.stopActivity(before.revision, {
+      activityId: WorkspaceActivityId('activity-missing'),
+      agentId: AgentId('agent-missing'),
+      messageId: MessageId('message-missing'),
+      sessionId: SessionId('session-missing'),
+      turn: 1,
+    })
+
+    expect(stopped).toEqual({ revision: before.revision, value: { status: 'not-active' } })
+    expect(booted.service.snapshot()).toEqual(before)
+    await booted.dispose()
+  })
+
+  test('a stale human post fails before durable recording or runtime lookup', async () => {
+    const booted = await boot()
+    await booted.service.executeInternal({ type: 'room/create', kind: 'group', name: 'room' })
+    const before = booted.service.snapshot()
+    const room = Object.values(before.rooms)[0]!
+
+    await expect(booted.service.postHumanMessage(
+      before.revision - 1,
+      room.id,
+      HumanId('web-user'),
+      'must not commit',
+      [],
+    )).rejects.toMatchObject({
+      code: 'stale-revision',
+      details: { expectedRevision: before.revision - 1, actualRevision: before.revision },
+    })
+
+    expect(booted.service.snapshot()).toEqual(before)
+    await booted.dispose()
+  })
+
+  test('task assignment rejects a missing delivery runtime before committing', async () => {
+    const booted = await boot()
+    await booted.service.executeInternal({ type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+    let before = booted.service.snapshot()
+    const definition = Object.values(before.definitions)[0]!
+    await booted.service.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+    before = booted.service.snapshot()
+    const alice = Object.values(before.agents)[0]!
+
+    await expect(booted.service.assignTask(
+      before.revision,
+      HumanId('web-user'),
+      alice.id,
+      'must not commit',
+    )).rejects.toThrow(/coordinator is not available/)
+
+    expect(booted.service.snapshot()).toEqual(before)
+    await booted.dispose()
+  })
+
+  test('two mutations released at one revision commit exactly one winner', async () => {
+    const booted = await boot()
+    const release = Promise.withResolvers<void>()
+    const compete = async (name: string) => {
+      await release.promise
+      return await booted.service.execute(0, {
+        type: 'definition/create', name, description: '', instructions: '',
+      })
+    }
+    const first = compete('First')
+    const second = compete('Second')
+
+    release.resolve()
+    const results = await Promise.allSettled([first, second])
+
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    const rejected = results.find(result => result.status === 'rejected')
+    expect(rejected).toMatchObject({
+      status: 'rejected',
+      reason: expect.objectContaining({
+        code: 'stale-revision',
+        details: { expectedRevision: 0, actualRevision: 1 },
+      }),
+    })
+    expect(Object.values(booted.service.snapshot().definitions)).toHaveLength(1)
+    await booted.dispose()
+  })
+
+  test('only the winning same-revision post schedules runtime work', async () => {
+    const booted = await boot()
+    await booted.service.executeInternal({ type: 'definition/create', name: 'Worker', description: '', instructions: '' })
     let snapshot = booted.service.snapshot()
     const definition = Object.values(snapshot.definitions)[0]!
-    await booted.service.execute({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
-    await booted.service.execute({ type: 'room/create', kind: 'group', name: 'room' })
+    await booted.service.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+    await booted.service.executeInternal({ type: 'room/create', kind: 'group', name: 'room' })
     snapshot = booted.service.snapshot()
     const alice = Object.values(snapshot.agents)[0]!
     const room = Object.values(snapshot.rooms)[0]!
-    await booted.service.execute({
+    await booted.service.executeInternal({
+      type: 'room/join', roomId: room.id, agentId: alice.id, memoryStart: { type: 'new-events' },
+    })
+    snapshot = booted.service.snapshot()
+    const continueCommittedHumanMessage = vi.fn(async () => {})
+    ;(booted.service as unknown as { dispatcher: Pick<WorkspaceDispatcher, 'continueCommittedHumanMessage'> }).dispatcher = {
+      continueCommittedHumanMessage,
+    }
+    const release = Promise.withResolvers<void>()
+    const compete = async (text: string) => {
+      await release.promise
+      return await booted.service.postHumanMessage(
+        snapshot.revision,
+        room.id,
+        HumanId('web-user'),
+        text,
+        [alice.id],
+      )
+    }
+    const first = compete('first')
+    const second = compete('second')
+
+    release.resolve()
+    const results = await Promise.allSettled([first, second])
+
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    expect(continueCommittedHumanMessage).toHaveBeenCalledTimes(1)
+    expect(booted.service.snapshot().events.filter(event => event.type === 'room/message')).toHaveLength(1)
+    await booted.dispose()
+  })
+
+  test('departing an agent closes its active membership with the departure event', async () => {
+    const booted = await boot()
+    await booted.service.executeInternal({ type: 'definition/create', name: 'Worker', description: 'd', instructions: 'i' })
+    let snapshot = booted.service.snapshot()
+    const definition = Object.values(snapshot.definitions)[0]!
+    await booted.service.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+    await booted.service.executeInternal({ type: 'room/create', kind: 'group', name: 'room' })
+    snapshot = booted.service.snapshot()
+    const alice = Object.values(snapshot.agents)[0]!
+    const room = Object.values(snapshot.rooms)[0]!
+    await booted.service.executeInternal({
       type: 'room/join', roomId: room.id, agentId: alice.id, memoryStart: { type: 'new-events' },
     })
 
-    const departed = await booted.service.execute({ type: 'agent/depart', agentId: alice.id })
+    const departed = await booted.service.executeInternal({ type: 'agent/depart', agentId: alice.id })
 
     const membership = Object.values(departed.memberships)[0]!
     const departure = departed.events.find(event => event.id === membership.leftEventId)
@@ -322,15 +451,15 @@ describe('durable service boundary', () => {
 
   test('public room join synchronizes the requested historical room range', async () => {
     const booted = await boot()
-    await booted.service.execute({ type: 'definition/create', name: 'Worker', description: 'd', instructions: 'i' })
+    await booted.service.executeInternal({ type: 'definition/create', name: 'Worker', description: 'd', instructions: 'i' })
     let snapshot = booted.service.snapshot()
     const definition = Object.values(snapshot.definitions)[0]!
-    await booted.service.execute({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
-    await booted.service.execute({ type: 'room/create', kind: 'group', name: 'room' })
+    await booted.service.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+    await booted.service.executeInternal({ type: 'room/create', kind: 'group', name: 'room' })
     snapshot = booted.service.snapshot()
     const alice = Object.values(snapshot.agents)[0]!
     const room = Object.values(snapshot.rooms)[0]!
-    await booted.service.execute({
+    await booted.service.executeInternal({
       type: 'room/message',
       roomId: room.id,
       actor: { type: 'human', id: HumanId('owner') },
@@ -340,7 +469,7 @@ describe('durable service boundary', () => {
     snapshot = booted.service.snapshot()
     const historical = snapshot.events.find(event => event.type === 'room/message')!
 
-    await booted.service.execute({
+    await booted.service.executeInternal({
       type: 'room/join',
       roomId: room.id,
       agentId: alice.id,
@@ -388,7 +517,7 @@ describe('durable service boundary', () => {
     const changed = vi.fn()
     booted.ctx.on('domain/changed', changed)
 
-    const accepted = booted.service.execute({
+    const accepted = booted.service.executeInternal({
       type: 'definition/create', name: 'Worker', description: 'd', instructions: 'i',
     })
     const rejected = booted.service.apply(state => {

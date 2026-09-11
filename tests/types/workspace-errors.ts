@@ -14,6 +14,8 @@ const taskNotOpen = new WorkspaceBusinessError('task-not-open', { taskId: 'task-
 const taskNotAssigned = new WorkspaceBusinessError('task-not-assigned', { taskId: 'task-1', agentId: 'agent-1' })
 const grantMissing = new WorkspaceBusinessError('delegation-grant-missing', { lookup: 'root-agent', rootTaskId: 'task-1', agentId: 'agent-1' })
 const grantInactive = new WorkspaceBusinessError('delegation-grant-inactive', { delegationGrantId: 'grant-1' })
+const staleRevision = new WorkspaceBusinessError('stale-revision', { expectedRevision: 4, actualRevision: 5 })
+const staleDefinitionRevision = new WorkspaceBusinessError('stale-revision', { definitionId: 'definition-1', revisionId: 'revision-1' })
 
 // @ts-expect-error Task-open failures require the terminal status that blocked the operation.
 const taskNotOpenWithoutStatus = new WorkspaceBusinessError('task-not-open', { taskId: 'task-1' })
@@ -78,6 +80,8 @@ void [
   taskNotAssigned,
   grantMissing,
   grantInactive,
+  staleRevision,
+  staleDefinitionRevision,
   taskNotOpenWithoutStatus,
   looselyPairedBusinessError,
   crossedHostBusinessResult,

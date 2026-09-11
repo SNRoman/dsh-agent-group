@@ -11,6 +11,7 @@ export type WorkspaceBusinessErrorDetailsMap = {
   readonly 'agent-missing': { readonly agentId: string }
   readonly 'agent-departed': { readonly agentId: string }
   readonly 'duplicate-membership': { readonly roomId: string; readonly agentId: string }
+  /** Aggregate CAS mismatch or an unavailable immutable definition revision. */
   readonly 'stale-revision':
     | { readonly definitionId: string; readonly revisionId: string }
     | { readonly expectedRevision: number; readonly actualRevision: number }

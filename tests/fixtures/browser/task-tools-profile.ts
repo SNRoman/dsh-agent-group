@@ -17,7 +17,7 @@ export async function apply(ctx: Context): Promise<void> {
   const fixturePath = requireTaskToolsFixturePath()
   await waitForScriptedLlmAdapter(fixturePath)
   const service = ctx.agentWorkspace as AgentWorkspaceDomainService
-  await service.execute({
+  await service.executeInternal({
     type: 'definition/create',
     name: 'Task tools profile engineer',
     description: 'Executes the deterministic task tools smoke scenario.',
@@ -25,8 +25,8 @@ export async function apply(ctx: Context): Promise<void> {
   })
   const definition = Object.values(service.snapshot().definitions).find(item => item.name === 'Task tools profile engineer')
   if (definition === undefined) throw new Error('profile task-tools definition was not created')
-  await service.execute({ type: 'agent/create', definitionId: definition.id, name: 'Task tools Alice' })
-  await service.execute({ type: 'agent/create', definitionId: definition.id, name: 'Task tools Bob' })
+  await service.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Task tools Alice' })
+  await service.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Task tools Bob' })
   const state = service.snapshot()
   const alice = Object.values(state.agents).find(agent => agent.name === 'Task tools Alice')
   const bob = Object.values(state.agents).find(agent => agent.name === 'Task tools Bob')

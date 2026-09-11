@@ -120,6 +120,16 @@ export class WorkspaceDispatcher {
     return await this.startDispatch(roomId, { type: 'human', id: humanId }, text, mentions)
   }
 
+  /** Continue a human wake chain whose root room event already committed. */
+  continueCommittedHumanMessage(
+    roomId: RoomId,
+    text: string,
+    mentions: readonly AgentId[],
+    sourceEventId: WorkspaceEventId,
+  ): Promise<void> {
+    return this.continueDispatch(roomId, text, mentions, sourceEventId)
+  }
+
   /** Record a human message and wait for its complete collaboration chain. */
   async postHumanMessage(roomId: RoomId, humanId: HumanId, text: string, mentions: readonly AgentId[]): Promise<void> {
     const started = await this.startHumanMessage(roomId, humanId, text, mentions)

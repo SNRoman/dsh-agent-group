@@ -686,10 +686,10 @@ describe('AgentWorkspaceDomainService task-tool lifecycle', () => {
       fibers.push(host)
       const service = ctx.agentWorkspace
 
-      await service.execute({ type: 'definition/create', name: 'Engineer', description: 'Build', instructions: 'Ship' })
+      await service.executeInternal({ type: 'definition/create', name: 'Engineer', description: 'Build', instructions: 'Ship' })
       const definitionId = Object.values(service.snapshot().definitions)[0]?.id
       if (definitionId === undefined) throw new Error('expected definition')
-      await service.execute({ type: 'agent/create', definitionId, name: 'Alice' })
+      await service.executeInternal({ type: 'agent/create', definitionId, name: 'Alice' })
       const employeeId = Object.values(service.snapshot().agents)[0]?.id
       if (employeeId === undefined) throw new Error('expected employee')
       await service.ensureEmployee(employeeId)
@@ -962,13 +962,13 @@ describe('AgentWorkspaceDomainService delivery failures', () => {
     const beforeRevision = state.revision
     const beforeEvents = state.events.length
 
-    const committed = await service.execute({
+    const committed = await service.execute(beforeRevision, {
       type: 'definition/revise', definitionId: created.definitionId,
       description: 'v2', instructions: 'two', synchronizeAgentIds: [hired.agentId],
     })
 
     expect(committed.revision).toBe(beforeRevision + 1)
-    expect(committed.events).toHaveLength(beforeEvents + 2)
+    expect(committed.value.events).toHaveLength(beforeEvents + 2)
     expect(refreshRole).toHaveBeenCalledTimes(1)
     expect(dispose).toHaveBeenCalledWith(hired.agentId)
     expect(service.activitySnapshot().agents).toContainEqual({
@@ -995,7 +995,7 @@ describe('AgentWorkspaceDomainService delivery failures', () => {
       error: { code: 'agent-materialization-failed', summary: 'Agent could not be started.' },
     })
     expect(JSON.stringify(failed)).not.toContain(secretCanary)
-    service.acknowledgeAgentFailure(agentId)
+    ;(service as unknown as { activityStream: WorkspaceActivityStream }).activityStream.acknowledgeAgentFailure(agentId)
     expect(service.activitySnapshot().agents).toContainEqual({ agentId, status: 'idle', usingTool: false })
   })
 
@@ -1028,7 +1028,7 @@ describe('AgentWorkspaceDomainService delivery failures', () => {
       error: { code: 'agent-session-flush-failed', summary: 'Agent session could not be saved.' },
     })
     expect(JSON.stringify(failed)).not.toContain(secretCanary)
-    service.acknowledgeAgentFailure(agentId)
+    ;(service as unknown as { activityStream: WorkspaceActivityStream }).activityStream.acknowledgeAgentFailure(agentId)
     expect(service.activitySnapshot().agents).toContainEqual({ agentId, status: 'idle', usingTool: false })
   })
 

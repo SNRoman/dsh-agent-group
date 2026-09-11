@@ -237,7 +237,7 @@ describe('AgentWorkspaceDomainService exact cancellation', () => {
       childRunId: unrelatedChild.childRunId, parentAgentId: alice.agentId, taskId: unrelated.taskId, abort: unrelatedAbort,
     })
 
-    await service.cancelTask(HumanId('owner'), root.taskId)
+    await service.cancelTask(service.snapshot().revision, HumanId('owner'), root.taskId)
 
     expect(service.snapshot().tasks[root.taskId]?.status).toBe('cancelled')
     expect(service.snapshot().tasks[derived.taskId]?.status).toBe('cancelled')
@@ -254,7 +254,9 @@ describe('AgentWorkspaceDomainService exact cancellation', () => {
     expect(service.snapshot().events.some(event => event.type === 'task/result' || event.type === 'task/result-after-cancel')).toBe(false)
     expect(service.snapshot().events.some(event => event.type === 'room/message')).toBe(false)
 
-    await expect(service.stopChildRun(unrelatedChild.childRunId)).resolves.toEqual({ status: 'stopping' })
+    await expect(service.stopChildRun(service.snapshot().revision, unrelatedChild.childRunId)).resolves.toEqual({
+      revision: expect.any(Number), value: { status: 'stopping' },
+    })
     expect(unrelatedAbort).toHaveBeenCalledOnce()
   })
 })

@@ -52,22 +52,53 @@ async function boot(): Promise<{ service: AgentWorkspaceDomainService; dispose: 
 }
 
 describe('direct workspace rooms', () => {
+  it('allows only one same-revision direct-room open to commit', async () => {
+    const booted = await boot()
+    try {
+      await booted.service.executeInternal({ type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+      let snapshot = booted.service.snapshot()
+      const definition = Object.values(snapshot.definitions)[0]!
+      await booted.service.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+      snapshot = booted.service.snapshot()
+      const alice = Object.values(snapshot.agents)[0]!
+      const release = Promise.withResolvers<void>()
+      const compete = async () => {
+        await release.promise
+        return await booted.service.openDirectRoom(snapshot.revision, alice.id)
+      }
+      const first = compete()
+      const second = compete()
+
+      release.resolve()
+      const results = await Promise.allSettled([first, second])
+
+      expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+      expect(results.find(result => result.status === 'rejected')).toMatchObject({
+        status: 'rejected',
+        reason: expect.objectContaining({ code: 'stale-revision' }),
+      })
+      expect(Object.values(booted.service.snapshot().rooms).filter(room => room.kind === 'direct')).toHaveLength(1)
+    } finally {
+      await booted.dispose()
+    }
+  })
+
   it('reuses the same direct room when an employed agent is opened twice', async () => {
     const booted = await boot()
     try {
-      await booted.service.execute({ type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+      await booted.service.executeInternal({ type: 'definition/create', name: 'Worker', description: '', instructions: '' })
       let snapshot = booted.service.snapshot()
       const definition = Object.values(snapshot.definitions)[0]!
-      await booted.service.execute({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+      await booted.service.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
       snapshot = booted.service.snapshot()
       const alice = Object.values(snapshot.agents)[0]!
 
-      const created = await booted.service.openDirectRoom(alice.id)
-      const reopened = await booted.service.openDirectRoom(alice.id)
+      const created = await booted.service.openDirectRoom(snapshot.revision, alice.id)
+      const reopened = await booted.service.openDirectRoom(created.revision, alice.id)
 
-      expect(reopened.roomId).toBe(created.roomId)
-      expect(reopened.state).toEqual(created.state)
-      expect(Object.values(reopened.state.rooms).filter(room => room.kind === 'direct')).toHaveLength(1)
+      expect(reopened.value.roomId).toBe(created.value.roomId)
+      expect(reopened.value.state).toEqual(created.value.state)
+      expect(Object.values(reopened.value.state.rooms).filter(room => room.kind === 'direct')).toHaveLength(1)
     } finally {
       await booted.dispose()
     }
@@ -138,20 +169,20 @@ describe('direct workspace rooms', () => {
   it('rejects direct @all before durable state or delivery status changes', async () => {
     const booted = await boot()
     try {
-      await booted.service.execute({ type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+      await booted.service.executeInternal({ type: 'definition/create', name: 'Worker', description: '', instructions: '' })
       let snapshot = booted.service.snapshot()
       const definition = Object.values(snapshot.definitions)[0]!
-      await booted.service.execute({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+      await booted.service.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
       snapshot = booted.service.snapshot()
       const alice = Object.values(snapshot.agents)[0]!
-      const direct = await booted.service.openDirectRoom(alice.id)
+      const direct = await booted.service.openDirectRoom(snapshot.revision, alice.id)
       const before = booted.service.snapshot()
       const runtimeBefore = booted.service.runtimeStatus()
 
-      await expect(booted.service.postHumanMessage(direct.roomId, HumanId('web-user'), '@all hello', []))
+      await expect(booted.service.postHumanMessage(direct.revision, direct.value.roomId, HumanId('web-user'), '@all hello', []))
         .rejects.toMatchObject({
           code: 'reserved-direct-routing',
-          details: { roomId: direct.roomId, token: '@all' },
+          details: { roomId: direct.value.roomId, token: '@all' },
         })
 
       expect(booted.service.snapshot()).toEqual(before)
@@ -164,16 +195,16 @@ describe('direct workspace rooms', () => {
   it('returns stable agent codes when opening a missing or departed direct target', async () => {
     const booted = await boot()
     try {
-      await expect(booted.service.openDirectRoom(AgentId('agent-missing')))
+      await expect(booted.service.openDirectRoom(booted.service.snapshot().revision, AgentId('agent-missing')))
         .rejects.toMatchObject({ code: 'agent-missing', details: { agentId: 'agent-missing' } })
-      await booted.service.execute({ type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+      await booted.service.executeInternal({ type: 'definition/create', name: 'Worker', description: '', instructions: '' })
       let snapshot = booted.service.snapshot()
       const definition = Object.values(snapshot.definitions)[0]!
-      await booted.service.execute({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+      await booted.service.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
       snapshot = booted.service.snapshot()
       const alice = Object.values(snapshot.agents)[0]!
-      await booted.service.execute({ type: 'agent/depart', agentId: alice.id })
-      await expect(booted.service.openDirectRoom(alice.id))
+      await booted.service.executeInternal({ type: 'agent/depart', agentId: alice.id })
+      await expect(booted.service.openDirectRoom(booted.service.snapshot().revision, alice.id))
         .rejects.toMatchObject({ code: 'agent-departed', details: { agentId: alice.id } })
     } finally {
       await booted.dispose()

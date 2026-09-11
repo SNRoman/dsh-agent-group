@@ -51,6 +51,30 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 describe('non-blocking browser workspace dispatch', () => {
+  test('a cancelled Browser post never reaches durable recording or wake scheduling', async () => {
+    const built = oneAgentRoom()
+    let posts = 0
+    const controller = new AbortController()
+    controller.abort()
+    const handler = createWorkspaceRpcHandler({
+      snapshot: () => structuredClone(built.state),
+      postHumanMessage: async () => {
+        posts++
+        throw new Error('cancelled post reached the dispatcher')
+      },
+    } as never)
+
+    const result = await handler('room/post', {
+      expectedRevision: built.state.revision,
+      roomId: built.roomId,
+      text: 'do not wake',
+      mentions: [built.agentId],
+    }, controller.signal)
+
+    expect(result).toMatchObject({ ok: false, error: { kind: 'cancelled' } })
+    expect(posts).toBe(0)
+  })
+
   test('persists the human message before returning a separately awaitable agent chain', async () => {
     const built = oneAgentRoom()
     const gate = deferred()

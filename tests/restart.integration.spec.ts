@@ -101,7 +101,7 @@ describe('agent workspace persistence', () => {
 
     const first = await boot(root)
     expect(first.service.snapshot()).toEqual(stored.tables.workspaces.local)
-    await first.service.execute({ type: 'room/create', kind: 'group', name: 'release follow-up' })
+    await first.service.executeInternal({ type: 'room/create', kind: 'group', name: 'release follow-up' })
     const afterMutation = first.service.snapshot()
     expect(afterMutation.revision).toBe(6)
     await first.dispose()
@@ -114,7 +114,7 @@ describe('agent workspace persistence', () => {
   test('restores the committed aggregate after teardown and reboot', async () => {
     const root = await freshRoot()
     const first = await boot(root)
-    await first.service.execute({
+    await first.service.executeInternal({
       type: 'definition/create',
       name: 'Java engineer',
       description: 'Build Java services',
@@ -122,14 +122,14 @@ describe('agent workspace persistence', () => {
     })
     let snapshot = first.service.snapshot()
     const definition = Object.values(snapshot.definitions)[0]!
-    await first.service.execute({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+    await first.service.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
     snapshot = first.service.snapshot()
     const agent = Object.values(snapshot.agents)[0]!
-    await first.service.execute({ type: 'room/create', kind: 'group', name: 'engineering' })
+    await first.service.executeInternal({ type: 'room/create', kind: 'group', name: 'engineering' })
     snapshot = first.service.snapshot()
     const room = Object.values(snapshot.rooms)[0]!
-    await first.service.execute({ type: 'room/join', roomId: room.id, agentId: agent.id, memoryStart: { type: 'new-events' } })
-    await first.service.execute({
+    await first.service.executeInternal({ type: 'room/join', roomId: room.id, agentId: agent.id, memoryStart: { type: 'new-events' } })
+    await first.service.executeInternal({
       type: 'room/message',
       roomId: room.id,
       actor: { type: 'human', id: HumanId('owner') },
@@ -140,7 +140,7 @@ describe('agent workspace persistence', () => {
     expect(after.revision).toBe(5)
     const beforeRestartMemory = queryAgentMemory(after, { agentId: agent.id, snapshotRevision: after.revision, limit: 10 })
     expect(beforeRestartMemory.items).toHaveLength(1)
-    await first.service.execute({ type: 'agent/depart', agentId: agent.id })
+    await first.service.executeInternal({ type: 'agent/depart', agentId: agent.id })
     const departed = first.service.snapshot()
     await first.dispose()
 
@@ -173,7 +173,7 @@ describe('agent workspace persistence', () => {
     const root = await freshRoot()
     const booted = await boot(root)
     const before = booted.service.snapshot()
-    await expect(booted.service.execute({ type: 'agent/depart', agentId: AgentId('missing') })).rejects.toThrow(/does not exist/)
+    await expect(booted.service.executeInternal({ type: 'agent/depart', agentId: AgentId('missing') })).rejects.toThrow(/does not exist/)
     const after = booted.service.snapshot()
     expect(after.revision).toBe(before.revision)
     expect(after.events).toEqual(before.events)
@@ -183,10 +183,10 @@ describe('agent workspace persistence', () => {
   test('restarts after a failed wake and retries the same durable task', async () => {
     const root = await freshRoot()
     const first = await boot(root)
-    await first.service.execute({ type: 'definition/create', name: 'Worker', description: 'work', instructions: 'reply' })
+    await first.service.executeInternal({ type: 'definition/create', name: 'Worker', description: 'work', instructions: 'reply' })
     let snapshot = first.service.snapshot()
     const definition = Object.values(snapshot.definitions)[0]!
-    await first.service.execute({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+    await first.service.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
     snapshot = first.service.snapshot()
     const agent = Object.values(snapshot.agents)[0]!
     let taskId: WorkspaceTaskId | undefined
@@ -234,7 +234,7 @@ describe('agent workspace persistence', () => {
     const root = await freshRoot()
     const booted = await boot(root)
 
-    await expect(booted.service.retryTaskDelivery(TaskId('missing'))).rejects.toThrow(/coordinator is not available/)
+    await expect(booted.service.retryTaskDelivery(booted.service.snapshot().revision, TaskId('missing'))).rejects.toThrow(/coordinator is not available/)
 
     await booted.dispose()
   })
@@ -242,10 +242,10 @@ describe('agent workspace persistence', () => {
   test('repairs a durable running child before the restarted Host accepts work', async () => {
     const root = await freshRoot()
     const first = await boot(root)
-    await first.service.execute({ type: 'definition/create', name: 'Worker', description: 'work', instructions: 'reply' })
+    await first.service.executeInternal({ type: 'definition/create', name: 'Worker', description: 'work', instructions: 'reply' })
     let snapshot = first.service.snapshot()
     const definition = Object.values(snapshot.definitions)[0]!
-    await first.service.execute({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
+    await first.service.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Alice' })
     snapshot = first.service.snapshot()
     const agent = Object.values(snapshot.agents)[0]!
     let childRunId: ReturnType<typeof recordChildRunStarted>['childRunId'] | undefined
