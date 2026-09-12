@@ -17,8 +17,10 @@ import {
   terminalizeTask,
 } from './task-delivery.ts'
 
-/** Durable callbacks observed while one tracked delivery enters its turn. */
+/** Lifecycle callbacks observed while one tracked delivery enters its turn. */
 export interface WorkspaceDeliveryHooks {
+  /** Reject a new inbox admission synchronously when its owning work was cancelled. */
+  beforeAdmission?(): void
   /** Persist that the exact inbox message entered its owning turn. */
   onClaim?(definitionRevisionId?: DefinitionRevisionId): void | Promise<void>
 }
@@ -60,6 +62,7 @@ export interface TaskDeliveryRecoveryOutcome {
 interface TaskFlight {
   readonly owner: object
   readonly promise: Promise<string>
+  readonly cancellation: AbortController
   ownedAttemptId?: TaskDeliveryAttemptId
 }
 
@@ -119,6 +122,14 @@ export class TaskDeliveryCoordinator {
   }
 
   /**
+   * Prevent one exact live task flight from entering or publishing more work.
+   * @param taskId - Durable task whose cancellation already committed.
+   */
+  cancelTaskDelivery(taskId: TaskId): void {
+    this.taskFlights.get(taskId)?.cancellation.abort()
+  }
+
+  /**
    * Start a retry in the caller's serialized aggregate update.
    * @param state - Aggregate current in the caller's revision-checked update slot.
    * @param taskId - Open task whose previous delivery attempt is terminal.
@@ -150,7 +161,7 @@ export class TaskDeliveryCoordinator {
     const owner = {}
     const completion = Promise.withResolvers<string>()
     void completion.promise.catch(() => {})
-    const flight: TaskFlight = { owner, promise: completion.promise }
+    const flight: TaskFlight = { owner, promise: completion.promise, cancellation: new AbortController() }
     this.taskFlights.set(taskId, flight)
     let phase: 'reserved' | 'committed' | 'rolled-back' = 'reserved'
     return {
@@ -171,7 +182,7 @@ export class TaskDeliveryCoordinator {
         phase = 'committed'
         void (async () => {
           try {
-            completion.resolve(await this.runPrepared(prepared, owner, true))
+            completion.resolve(await this.runPrepared(prepared, owner, true, flight.cancellation.signal))
           } catch (error) {
             completion.reject(error)
           } finally {
@@ -212,8 +223,9 @@ export class TaskDeliveryCoordinator {
     const existing = this.taskFlights.get(taskId)
     if (existing !== undefined) return await existing.promise
     const owner = {}
-    const promise = Promise.resolve().then(() => this.run(taskId, owner))
-    const flight = { owner, promise }
+    const cancellation = new AbortController()
+    const promise = Promise.resolve().then(() => this.run(taskId, owner, cancellation.signal))
+    const flight = { owner, promise, cancellation }
     this.taskFlights.set(taskId, flight)
     try {
       return await promise
@@ -222,12 +234,14 @@ export class TaskDeliveryCoordinator {
     }
   }
 
-  private async run(taskId: TaskId, owner: object): Promise<string> {
+  private async run(taskId: TaskId, owner: object, signal: AbortSignal): Promise<string> {
+    throwIfTaskDeliveryCancelled(signal, taskId)
     const before = this.host.snapshot()
     const assignment = assignmentFor(before, taskId)
     const agent = before.agents[assignment.assigneeAgentId]
     if (agent === undefined) throw new Error(`task '${taskId}' assignee does not exist`)
     await this.host.ensureEmployee(agent.id)
+    throwIfTaskDeliveryCancelled(signal, taskId)
     const recovered = this.taskFlights.get(taskId)
     if (recovered !== undefined && recovered.owner !== owner) return await recovered.promise
 
@@ -237,11 +251,17 @@ export class TaskDeliveryCoordinator {
       return prepared.state
     })
     if (prepared === undefined) throw new Error(`task '${taskId}' delivery start did not publish an attempt`)
-    return await this.runPrepared(prepared, owner, false)
+    return await this.runPrepared(prepared, owner, false, signal)
   }
 
-  private async runPrepared(prepared: PreparedTaskDelivery, owner: object, ensureEmployee: boolean): Promise<string> {
+  private async runPrepared(
+    prepared: PreparedTaskDelivery,
+    owner: object,
+    ensureEmployee: boolean,
+    signal: AbortSignal,
+  ): Promise<string> {
     const { assignment, agentId, definitionRevisionId, taskId, attemptId, message } = prepared
+    throwIfTaskDeliveryCancelled(signal, taskId)
     const recovered = this.taskFlights.get(taskId)
     if (recovered !== undefined && recovered.owner !== owner) return await recovered.promise
     const identity = { taskId, attemptId, messageId: message.id }
@@ -250,13 +270,16 @@ export class TaskDeliveryCoordinator {
     let outcome: WorkspaceTurnOutcome
     try {
       if (ensureEmployee) await this.host.ensureEmployee(agentId)
+      throwIfTaskDeliveryCancelled(signal, taskId)
       outcome = await this.host.deliver(
         agentId,
         message,
         undefined,
         { kind: 'task', taskId, attemptId },
         {
+          beforeAdmission: () => throwIfTaskDeliveryCancelled(signal, taskId),
           onClaim: async definitionRevisionId => {
+            throwIfTaskDeliveryCancelled(signal, taskId)
             claimed = true
             await this.host.apply(current => acceptTaskDelivery(current, {
               ...identity,
@@ -266,6 +289,7 @@ export class TaskDeliveryCoordinator {
         },
       )
     } catch (error) {
+      throwIfTaskDeliveryCancelled(signal, taskId)
       const inspection = inspectTaskDelivery(this.host.snapshot(), taskId)
       const accepted = inspection.attemptId === attemptId && inspection.phase === 'accepted'
       await this.failIfOpen(
@@ -276,6 +300,7 @@ export class TaskDeliveryCoordinator {
       throw error
     }
 
+    throwIfTaskDeliveryCancelled(signal, taskId)
     const toolResult = completedTaskResult(this.host.snapshot(), identity)
     if (toolResult !== undefined) return toolResult
     const result = completedText(outcome)
@@ -312,6 +337,7 @@ export class TaskDeliveryCoordinator {
           outcomes.push({ taskId: assignment.taskId, status: 'interrupted' })
           continue
         }
+        const cancellation = new AbortController()
         const completion = this.finishRecovered(
           assignment,
           identity,
@@ -331,8 +357,9 @@ export class TaskDeliveryCoordinator {
               ),
             },
           ),
+          cancellation.signal,
         )
-        this.publishRecoveredFlight(assignment.taskId, completion)
+        this.publishRecoveredFlight(assignment.taskId, completion, cancellation)
         outcomes.push({ taskId: assignment.taskId, status: 'pending' })
         continue
       }
@@ -360,9 +387,9 @@ export class TaskDeliveryCoordinator {
     return outcomes
   }
 
-  private publishRecoveredFlight(taskId: TaskId, promise: Promise<string>): void {
+  private publishRecoveredFlight(taskId: TaskId, promise: Promise<string>, cancellation: AbortController): void {
     const displaced = this.taskFlights.get(taskId)
-    const recovered = { owner: {}, promise }
+    const recovered = { owner: {}, promise, cancellation }
     this.taskFlights.set(taskId, recovered)
     void this.releaseRecoveredFlight(taskId, recovered, displaced)
   }
@@ -389,6 +416,7 @@ export class TaskDeliveryCoordinator {
     capturedRevisionId: DefinitionRevisionId | undefined,
     acceptedBeforeRecovery: boolean,
     pending: Promise<WorkspaceTurnOutcome>,
+    signal: AbortSignal,
   ): Promise<string> {
     let outcome: WorkspaceTurnOutcome
     try {
@@ -397,6 +425,7 @@ export class TaskDeliveryCoordinator {
       await this.failIfOpen(identity, 'interrupted', 'Delivery was interrupted before a terminal result.')
       throw error
     }
+    throwIfTaskDeliveryCancelled(signal, identity.taskId)
     const toolResult = completedTaskResult(this.host.snapshot(), identity)
     if (toolResult !== undefined) return toolResult
     const result = completedText(outcome)
@@ -523,6 +552,10 @@ function assignmentFor(state: WorkspaceState, taskId: TaskId): TaskAssignment {
   const assignment = Object.values(state.taskAssignments).find(candidate => candidate.taskId === taskId)
   if (assignment === undefined) throw new Error(`task '${taskId}' has no assignment`)
   return assignment
+}
+
+function throwIfTaskDeliveryCancelled(signal: AbortSignal, taskId: TaskId): void {
+  if (signal.aborted) throw new Error(`task '${taskId}' delivery was cancelled`)
 }
 
 type RecoveredDeliveryEvidence =

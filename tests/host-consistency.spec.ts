@@ -301,6 +301,28 @@ async function boot(): Promise<Booted> {
   }
 }
 
+async function seedRetryableTask(service: AgentWorkspaceDomainService): Promise<{ agentId: AgentId; taskId: ReturnType<typeof assignHumanTask>['taskId'] }> {
+  let agentId: AgentId | undefined
+  let taskId: ReturnType<typeof assignHumanTask>['taskId'] | undefined
+  await service.apply(current => {
+    const definition = mutateWorkspace(current, { type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+    const agent = mutateWorkspace(definition.state, { type: 'agent/create', definitionId: definition.definitionId, name: 'Alice' })
+    const assigned = assignHumanTask(agent.state, { humanId: HumanId('owner'), assigneeAgentId: agent.agentId, title: 'root' })
+    const started = startTaskDelivery(assigned.state, { taskId: assigned.taskId })
+    agentId = agent.agentId
+    taskId = assigned.taskId
+    return failTaskDelivery(started.state, {
+      taskId: assigned.taskId,
+      attemptId: started.attemptId,
+      messageId: started.message.id,
+      failureCode: 'test',
+      failureSummary: 'retryable',
+    }).state
+  })
+  if (agentId === undefined || taskId === undefined) throw new Error('retry setup did not publish durable ids')
+  return { agentId, taskId }
+}
+
 describe('durable service boundary', () => {
   test('a converged runtime stop validates CAS without changing durable revision', async () => {
     const booted = await boot()
@@ -662,6 +684,219 @@ describe('durable service boundary', () => {
     }
   })
 
+  test('task cancellation invalidates a committed retry before reservation adoption', async () => {
+    const booted = await boot()
+    let taskId: ReturnType<typeof assignHumanTask>['taskId'] | undefined
+    await booted.service.apply(current => {
+      const definition = mutateWorkspace(current, { type: 'definition/create', name: 'Worker', description: '', instructions: '' })
+      const agent = mutateWorkspace(definition.state, { type: 'agent/create', definitionId: definition.definitionId, name: 'Alice' })
+      const assigned = assignHumanTask(agent.state, { humanId: HumanId('owner'), assigneeAgentId: agent.agentId, title: 'root' })
+      const started = startTaskDelivery(assigned.state, { taskId: assigned.taskId })
+      taskId = assigned.taskId
+      return failTaskDelivery(started.state, {
+        taskId: assigned.taskId,
+        attemptId: started.attemptId,
+        messageId: started.message.id,
+        failureCode: 'test',
+        failureSummary: 'retryable',
+      }).state
+    })
+    if (taskId === undefined) throw new Error('retry cancellation setup did not publish a task')
+
+    const deliveries: UserMessage[] = []
+    const coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => booted.service.snapshot(),
+      apply: async mutation => await booted.service.apply(mutation),
+      ensureEmployee: async () => handle(),
+      deliver: async (_agentId, message, _recall, _source, hooks) => {
+        deliveries.push(message)
+        await hooks?.onClaim?.()
+        return { output: [{ type: 'text', text: 'must not run' }], stopReason: { kind: 'completed' }, interrupted: false }
+      },
+    })
+    ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator | undefined }).taskDelivery = coordinator
+    type TestTable = {
+      get(key: WorkspaceId): WorkspaceState | undefined
+      update(key: WorkspaceId, mutation: (current: WorkspaceState | undefined) => WorkspaceState): Promise<WorkspaceState>
+    }
+    const table = (booted.service as unknown as { table: TestTable }).table
+    const update = table.update.bind(table)
+    const retryCommitted = Promise.withResolvers<void>()
+    const allowAdoption = Promise.withResolvers<void>()
+    let pauseRetryCommit = true
+    table.update = async (key, mutation) => {
+      const committed = await update(key, mutation)
+      if (pauseRetryCommit) {
+        pauseRetryCommit = false
+        retryCommitted.resolve()
+        await allowAdoption.promise
+      }
+      return committed
+    }
+    const before = booted.service.snapshot()
+    const retry = booted.service.retryTaskDelivery(before.revision, taskId)
+
+    try {
+      await retryCommitted.promise
+      const cancellation = await booted.service.cancelTask(
+        booted.service.snapshot().revision,
+        HumanId('web-user'),
+        taskId,
+      )
+      allowAdoption.resolve()
+      await expect(retry).rejects.toThrow(/cancel/i)
+
+      expect(cancellation.value.tasks[taskId]?.status).toBe('cancelled')
+      expect(deliveries).toHaveLength(0)
+      expect(booted.service.snapshot().events.some(event => (
+        (event.type === 'task/result' || event.type === 'task/result-after-cancel') && event.taskId === taskId
+      ))).toBe(false)
+      const released = coordinator.reserveTaskDelivery(taskId)
+      released.rollback()
+      await expect(released.result()).rejects.toThrow(/rolled back/)
+    } finally {
+      allowAdoption.resolve()
+      table.update = update
+      ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator | undefined }).taskDelivery = undefined
+      await Promise.allSettled([retry])
+      await booted.dispose()
+    }
+  })
+
+  test('task cancellation during employee admission prevents retry delivery', async () => {
+    const booted = await boot()
+    const { taskId } = await seedRetryableTask(booted.service)
+    const ensureEntered = Promise.withResolvers<void>()
+    const releaseEnsure = Promise.withResolvers<void>()
+    const deliveries: UserMessage[] = []
+    const coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => booted.service.snapshot(),
+      apply: async mutation => await booted.service.apply(mutation),
+      ensureEmployee: async () => {
+        ensureEntered.resolve()
+        await releaseEnsure.promise
+        return handle()
+      },
+      deliver: async (_agentId, message, _recall, _source, hooks) => {
+        deliveries.push(message)
+        await hooks?.onClaim?.()
+        return { output: [{ type: 'text', text: 'must not run' }], stopReason: { kind: 'completed' }, interrupted: false }
+      },
+    })
+    ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator | undefined }).taskDelivery = coordinator
+    const retry = booted.service.retryTaskDelivery(booted.service.snapshot().revision, taskId)
+
+    try {
+      await ensureEntered.promise
+      await booted.service.cancelTask(booted.service.snapshot().revision, HumanId('web-user'), taskId)
+      releaseEnsure.resolve()
+      await expect(retry).rejects.toThrow(/cancel/i)
+      expect(deliveries).toHaveLength(0)
+      expect(booted.service.snapshot().events.some(event => (
+        (event.type === 'task/result' || event.type === 'task/result-after-cancel') && event.taskId === taskId
+      ))).toBe(false)
+    } finally {
+      releaseEnsure.resolve()
+      ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator | undefined }).taskDelivery = undefined
+      await Promise.allSettled([retry])
+      await booted.dispose()
+    }
+  })
+
+  test('task cancellation at the Host admission gate prevents tracker registration', async () => {
+    const booted = await boot()
+    const { agentId, taskId } = await seedRetryableTask(booted.service)
+    const deliveryReady = Promise.withResolvers<void>()
+    const releaseDelivery = Promise.withResolvers<void>()
+    const trackerDeliver = vi.fn(async () => { throw new Error('tracker admitted after cancellation') })
+    const employee = {
+      agent: {
+        id: SessionId('admission-gate'),
+        inbox: { remove: vi.fn(() => false) },
+      } as unknown as Agent,
+      dispose: vi.fn(async () => {}),
+    }
+    const pool = {
+      roleRevisionFor: () => undefined,
+      handleFor: () => employee,
+      runDelivery: async <T>(_agentId: AgentId, run: (handle: AgentHandle) => Promise<T>): Promise<T> => {
+        deliveryReady.resolve()
+        await releaseDelivery.promise
+        return await run(employee)
+      },
+    }
+    const coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => booted.service.snapshot(),
+      apply: async mutation => await booted.service.apply(mutation),
+      ensureEmployee: async () => employee,
+      deliver: async (deliveryAgentId, message, recall, source, hooks) => (
+        await booted.service.deliver(deliveryAgentId, message, recall, source, hooks)
+      ),
+    })
+    const internals = booted.service as unknown as {
+      pool: typeof pool | undefined
+      taskDelivery: TaskDeliveryCoordinator | undefined
+      trackers: Map<AgentId, { deliver: typeof trackerDeliver }>
+    }
+    internals.pool = pool
+    internals.taskDelivery = coordinator
+    internals.trackers.set(agentId, { deliver: trackerDeliver })
+    const retry = booted.service.retryTaskDelivery(booted.service.snapshot().revision, taskId)
+
+    try {
+      await deliveryReady.promise
+      await booted.service.cancelTask(booted.service.snapshot().revision, HumanId('web-user'), taskId)
+      releaseDelivery.resolve()
+      await expect(retry).rejects.toThrow(/cancel/i)
+      expect(trackerDeliver).not.toHaveBeenCalled()
+      expect(booted.service.snapshot().events.some(event => (
+        (event.type === 'task/result' || event.type === 'task/result-after-cancel') && event.taskId === taskId
+      ))).toBe(false)
+    } finally {
+      releaseDelivery.resolve()
+      internals.trackers.delete(agentId)
+      internals.pool = undefined
+      internals.taskDelivery = undefined
+      await Promise.allSettled([retry])
+      await booted.dispose()
+    }
+  })
+
+  test('task cancellation after retry claim suppresses its completed output', async () => {
+    const booted = await boot()
+    const { taskId } = await seedRetryableTask(booted.service)
+    const claimed = Promise.withResolvers<void>()
+    const releaseTurn = Promise.withResolvers<void>()
+    const coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => booted.service.snapshot(),
+      apply: async mutation => await booted.service.apply(mutation),
+      ensureEmployee: async () => handle(),
+      deliver: async (_agentId, _message, _recall, _source, hooks) => {
+        await hooks?.onClaim?.()
+        claimed.resolve()
+        await releaseTurn.promise
+        return { output: [{ type: 'text', text: 'cancelled output' }], stopReason: { kind: 'completed' }, interrupted: false }
+      },
+    })
+    ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator | undefined }).taskDelivery = coordinator
+    const retry = booted.service.retryTaskDelivery(booted.service.snapshot().revision, taskId)
+
+    try {
+      await claimed.promise
+      await booted.service.cancelTask(booted.service.snapshot().revision, HumanId('web-user'), taskId)
+      releaseTurn.resolve()
+      await expect(retry).rejects.toThrow(/cancel/i)
+      expect(booted.service.snapshot().events.some(event => (
+        (event.type === 'task/result' || event.type === 'task/result-after-cancel') && event.taskId === taskId
+      ))).toBe(false)
+    } finally {
+      releaseTurn.resolve()
+      ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator | undefined }).taskDelivery = undefined
+      await Promise.allSettled([retry])
+      await booted.dispose()
+    }
+  })
+
   test('task cancellation returns its own final child-cleanup commit during unrelated work', async () => {
     const booted = await boot()
     let childRunId: ChildRunId | undefined
@@ -944,8 +1179,9 @@ describe('durable service boundary', () => {
     const definition = Object.values(booted.service.snapshot().definitions)[0]!
     await booted.service.execute(1, { type: 'agent/create', definitionId: definition.id, name: 'Alice' })
     const alice = Object.values(booted.service.snapshot().agents)[0]!
-    ;(booted.service as unknown as { taskDelivery: Pick<TaskDeliveryCoordinator, 'deliver'> }).taskDelivery = {
+    ;(booted.service as unknown as { taskDelivery: Pick<TaskDeliveryCoordinator, 'deliver' | 'cancelTaskDelivery'> }).taskDelivery = {
       deliver: vi.fn(async () => 'not started by this transport assertion'),
+      cancelTaskDelivery: vi.fn(),
     }
     const handler = createWorkspaceRpcHandler(booted.service)
 

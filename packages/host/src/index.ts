@@ -357,10 +357,12 @@ export class AgentWorkspaceDomainService extends Service {
     signal?: AbortSignal,
   ): Promise<WorkspaceMutationResult<WorkspaceState>> {
     let cancellation: CancelTaskResult | undefined
+    let taskDelivery: TaskDeliveryCoordinator | undefined
     const childStops: PreparedChildStop[] = []
     let committed: WorkspaceMutationResult<WorkspaceState>
     try {
       committed = await this.mutateMaybeRevisioned(expectedRevision, current => {
+        taskDelivery = this.taskDelivery
         const changed = cancelWorkspaceTask(current, { humanId, taskId })
         cancellation = changed
         let state = changed.state
@@ -375,9 +377,10 @@ export class AgentWorkspaceDomainService extends Service {
       for (const prepared of childStops.toReversed()) prepared.rollback()
       throw error
     }
+    if (cancellation === undefined) throw new Error(`task '${taskId}' cancellation did not publish its affected work`)
+    for (const cancelledTaskId of cancellation.cancelledTaskIds) taskDelivery?.cancelTaskDelivery(cancelledTaskId)
     for (const prepared of childStops) prepared.commit()
     const next = committed.value
-    if (cancellation === undefined) throw new Error(`task '${taskId}' cancellation did not publish its affected work`)
 
     const cancelledTaskIds = new Set(cancellation.cancelledTaskIds)
     const active = this.activityStream.snapshot().activities.flatMap(activity => {
@@ -643,6 +646,7 @@ export class AgentWorkspaceDomainService extends Service {
         const handle = await this.ensureEmployee(agentId)
         const tracker = this.trackers.get(agentId)
         if (tracker === undefined) throw new Error(`agent '${agentId}' has no turn tracker`)
+        hooks?.beforeAdmission?.()
         const outcome = await tracker.deliver(handle.agent, delivery, recall, source, hooks)
         await this.flushEmployeeSession(agentId, handle.agent.session)
         return outcome
@@ -670,6 +674,7 @@ export class AgentWorkspaceDomainService extends Service {
       const capturedHooks = hooks?.onClaim === undefined
         ? hooks
         : { ...hooks, onClaim: async () => await hooks.onClaim?.(definitionRevisionId) }
+      capturedHooks?.beforeAdmission?.()
       const outcome = await tracker.deliver(handle.agent, delivery, recall, source, capturedHooks)
       await this.flushEmployeeSession(agentId, handle.agent.session)
       return { ...outcome, definitionRevisionId }
