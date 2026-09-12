@@ -10,13 +10,19 @@ export const zh = {
   'workspace.title': '智能体工作区',
   'workspace.open': '打开智能体工作区',
   'workspace.views': '工作区视图',
-  'workspace.chat': '聊天',
-  'workspace.agents': '智能体',
+  'workspace.conversations': '会话',
+  'workspace.colleagues': '同事',
+  'workspace.tasks': '任务',
+  'workspace.memory': '记忆',
+  'workspace.tasksEmpty': '任务中心将在此显示。',
+  'workspace.memoryEmpty': '统一记忆将在此显示。',
   'workspace.loading': '正在读取智能体工作区…',
   'workspace.processing': '处理中…',
   'workspace.agentsProcessing': '智能体处理中…',
   'workspace.refresh': '刷新',
   'workspace.close': '关闭',
+  'workspace.retry': '重试',
+  'workspace.staleRetry': '工作区已更新。请检查保留的输入后重试。',
   'workspace.requestFailed': '工作区请求失败：{detail}',
   'workspace.streamFailed': '实时状态连接失败：{detail}',
   'room.conversations': '会话',
@@ -88,18 +94,24 @@ export const zh = {
   'error.agentDeparted': '智能体 {agentId} 已离职。',
   'error.duplicateMembership': '智能体 {agentId} 已在会话 {roomId} 中。',
   'error.staleRevision': '定义 {definitionId} 的修订 {revisionId} 已过期。',
+  'error.staleWorkspaceRevision': '工作区版本已从 {expectedRevision} 更新到 {actualRevision}。',
   'error.invalidTaskAuthority': '智能体 {agentId} 无权处理任务 {taskId}。',
+  'error.taskNotOpen': '任务 {taskId} 已处于 {status} 状态。',
+  'error.taskNotAssigned': '任务 {taskId} 未分配给智能体 {agentId}。',
+  'error.delegationGrantMissingById': '找不到委派授权 {delegationGrantId}。',
+  'error.delegationGrantMissingByTask': '任务 {rootTaskId} 没有授予智能体 {agentId} 委派权限。',
+  'error.delegationGrantInactive': '委派授权 {delegationGrantId} 已失效。',
 } as const
 
 /** Complete English dictionary aligned with the Simplified Chinese key set. */
 export type AgentWorkspaceLocaleKey = keyof typeof zh
 
 export const en = {
-  'workspace.title': 'Agent Workspace', 'workspace.open': 'Open Agent Workspace', 'workspace.views': 'Workspace views', 'workspace.chat': 'Chat', 'workspace.agents': 'Agents', 'workspace.loading': 'Loading Agent Workspace…', 'workspace.processing': 'Working…', 'workspace.agentsProcessing': 'Agents working…', 'workspace.refresh': 'Refresh', 'workspace.close': 'Close', 'workspace.requestFailed': 'Workspace request failed: {detail}', 'workspace.streamFailed': 'Live status connection failed: {detail}',
+  'workspace.title': 'Agent Workspace', 'workspace.open': 'Open Agent Workspace', 'workspace.views': 'Workspace views', 'workspace.conversations': 'Conversations', 'workspace.colleagues': 'Colleagues', 'workspace.tasks': 'Tasks', 'workspace.memory': 'Memory', 'workspace.tasksEmpty': 'The task center will appear here.', 'workspace.memoryEmpty': 'Unified memory will appear here.', 'workspace.loading': 'Loading Agent Workspace…', 'workspace.processing': 'Working…', 'workspace.agentsProcessing': 'Agents working…', 'workspace.refresh': 'Refresh', 'workspace.close': 'Close', 'workspace.retry': 'Retry', 'workspace.staleRetry': 'The workspace changed. Review the preserved input and retry.', 'workspace.requestFailed': 'Workspace request failed: {detail}', 'workspace.streamFailed': 'Live status connection failed: {detail}',
   'room.conversations': 'Conversations', 'room.newGroup': 'New group', 'room.name': 'Group name', 'room.create': 'Create', 'room.cancel': 'Cancel', 'room.direct': 'Direct', 'room.empty': 'No conversations yet. Create a group or start a direct conversation from an agent instance.', 'room.select': 'Select a conversation to begin collaborating.', 'room.members': '{count} members', 'room.noMessages': 'No messages in this conversation yet.', 'room.groupPlaceholder': 'Write a message; use @all or @member, Ctrl/⌘ + Enter to send', 'room.directPlaceholder': 'Write a direct message, Ctrl/⌘ + Enter to send', 'room.send': 'Send', 'room.directTarget': 'Direct participant', 'room.groupMembers': 'Group members', 'room.addAgent': 'Add agent', 'room.memoryStart': 'Memory start', 'room.selectMemoryStart': 'Select memory start', 'room.memoryNewEvents': 'New events only', 'room.memoryEventRange': 'Historical event range', 'room.startSequence': 'Start event sequence', 'room.endSequence': 'End event sequence', 'room.join': 'Join group', 'room.remove': 'Remove',
   'agent.definitions': 'Agent definitions', 'agent.newDefinition': 'New definition', 'agent.noDefinitions': 'Create an agent definition first, such as a Java engineer, product manager, or architect.', 'agent.newDefinitionTitle': 'New agent definition', 'agent.fallbackTitle': 'Agent', 'agent.selectDefinition': 'Select a definition from the left.', 'agent.name': 'Name', 'agent.description': 'Responsibilities', 'agent.instructions': 'Instructions', 'agent.namePlaceholder': 'For example: Java engineer', 'agent.descriptionPlaceholder': 'What is this role responsible for?', 'agent.instructionsPlaceholder': 'Instructions for the agent role', 'agent.createDefinition': 'Create definition', 'agent.syncExisting': 'Synchronize existing instances after saving the new revision', 'agent.saveRevision': 'Save new revision', 'agent.revision': 'Revision {number}', 'agent.instances': 'Instances', 'agent.instancesHint': 'Each instance has an independent session, memory, and group membership', 'agent.instanceNamePlaceholder': 'Instance name, for example: backend-Alice', 'agent.createInstance': 'Create instance', 'agent.employed': 'Employed', 'agent.departed': 'Departed', 'agent.depart': 'Depart', 'agent.reemploy': 'Re-employ',
   'turn.replying': 'Replying…', 'turn.saving': 'Saving…', 'turn.thinking': 'Thinking…', 'turn.reasoning': 'Reasoning', 'turn.generating': 'Generating', 'turn.completed': 'Completed', 'turn.toolCall': 'Tool call', 'turn.toolNamed': 'Tool: {name}', 'turn.running': 'Running', 'turn.failed': 'Failed', 'turn.arguments': 'Arguments', 'turn.result': 'Result', 'turn.error': 'Error', 'turn.extensionOutput': 'Extension output',
-  'actor.system': 'System', 'actor.me': 'Me', 'error.reservedDirectRouting': 'Direct room {roomId} cannot use reserved route {token}.', 'error.agentMissing': 'Agent {agentId} was not found.', 'error.agentDeparted': 'Agent {agentId} has departed.', 'error.duplicateMembership': 'Agent {agentId} is already in room {roomId}.', 'error.staleRevision': 'Revision {revisionId} for definition {definitionId} is stale.', 'error.invalidTaskAuthority': 'Agent {agentId} is not authorized for task {taskId}.',
+  'actor.system': 'System', 'actor.me': 'Me', 'error.reservedDirectRouting': 'Direct room {roomId} cannot use reserved route {token}.', 'error.agentMissing': 'Agent {agentId} was not found.', 'error.agentDeparted': 'Agent {agentId} has departed.', 'error.duplicateMembership': 'Agent {agentId} is already in room {roomId}.', 'error.staleRevision': 'Revision {revisionId} for definition {definitionId} is stale.', 'error.staleWorkspaceRevision': 'Workspace revision changed from {expectedRevision} to {actualRevision}.', 'error.invalidTaskAuthority': 'Agent {agentId} is not authorized for task {taskId}.', 'error.taskNotOpen': 'Task {taskId} is already {status}.', 'error.taskNotAssigned': 'Task {taskId} is not assigned to agent {agentId}.', 'error.delegationGrantMissingById': 'Delegation grant {delegationGrantId} was not found.', 'error.delegationGrantMissingByTask': 'Task {rootTaskId} grants no delegation authority to agent {agentId}.', 'error.delegationGrantInactive': 'Delegation grant {delegationGrantId} is inactive.',
 } satisfies Record<AgentWorkspaceLocaleKey, string>
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {

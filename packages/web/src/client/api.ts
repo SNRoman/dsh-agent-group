@@ -2,20 +2,12 @@
 
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import type {
-  AgentDefinitionId,
-  AgentId,
-  CreateDefinitionInput,
-  MembershipMemoryStart,
-  MembershipId,
-  ReviseDefinitionInput,
-  RoomId,
-  WorkspaceDirectRoomResult,
-  WorkspaceRuntimeStatus,
-  WorkspaceRpcError,
-  WorkspaceSnapshot,
-  WorkspaceTurnBlock,
-  WorkspaceTurnProjection,
-  WorkspaceTurnStreamSnapshot,
+  AgentDefinitionId, AgentId, AssignHumanTaskResultView, ChildRunId, CreateDefinitionInput,
+  DefinitionHistoryItem, DefinitionRevisionId, DelegationGrantId, GrantTaskDelegationResultView,
+  MembershipId, MembershipMemoryStart, MemoryPage, MemoryQuery, ReviseDefinitionInput, RoomId,
+  TaskId, WorkspaceActivityIdentity, WorkspaceActivitySnapshot, WorkspaceDirectRoomResult,
+  WorkspaceDirectRoomValue, WorkspaceMutationResult, WorkspaceRpcError, WorkspaceRuntimeStatus,
+  WorkspaceSnapshot, WorkspaceStopResult,
 } from './contracts.ts'
 
 const CHANNEL = '/agent-workspace'
@@ -23,16 +15,12 @@ const CHANNEL = '/agent-workspace'
 /** Typed RPC failure retained for Browser presentation and locale mapping. */
 export class WorkspaceApiError extends Error {
   override readonly name = 'WorkspaceApiError'
-  /** Correlated RPC payload for exhaustive kind/code/details narrowing. */
   readonly error: WorkspaceRpcError
   readonly kind: WorkspaceRpcError['kind']
   readonly code: WorkspaceRpcError['code']
   readonly details: WorkspaceRpcError['details']
 
-  /**
-   * Preserve the machine-readable Host failure.
-   * @param error RPC failure returned by the Agent Workspace Host.
-   */
+  /** @param error Machine-readable Host failure. */
   constructor(error: WorkspaceRpcError) {
     super(error.message)
     this.error = structuredClone(error)
@@ -42,160 +30,223 @@ export class WorkspaceApiError extends Error {
   }
 }
 
-/** Narrow client used only by the Agent Workspace overlay. */
-export class WorkspaceApiClient {
+/** Strict Browser client for Agent Workspace reads and CAS mutations. */
+export class WorkspaceApi {
   constructor(private readonly connection: Pick<ConnectionHandle, 'rpc'>) {}
 
   snapshot(signal?: AbortSignal): Promise<WorkspaceSnapshot> {
-    return this.callSnapshot('snapshot', {}, signal)
+    return this.invoke('snapshot', {}, signal).then(assertWorkspaceSnapshot)
   }
 
   runtimeStatus(signal?: AbortSignal): Promise<WorkspaceRuntimeStatus> {
     return this.invoke('runtime/status', {}, signal).then(assertWorkspaceRuntimeStatus)
   }
 
-  streamSnapshot(signal?: AbortSignal): Promise<WorkspaceTurnStreamSnapshot> {
-    return this.invoke('stream/snapshot', {}, signal).then(assertWorkspaceTurnStreamSnapshot)
+  activitySnapshot(signal?: AbortSignal): Promise<WorkspaceActivitySnapshot> {
+    return this.invoke('runtime/activity/snapshot', {}, signal).then(assertWorkspaceActivitySnapshot)
   }
 
-  waitForStream(afterVersion: number, signal?: AbortSignal): Promise<WorkspaceTurnStreamSnapshot> {
-    return this.invoke('stream/wait', { afterVersion }, signal).then(assertWorkspaceTurnStreamSnapshot)
+  waitForActivity(afterVersion: number, signal?: AbortSignal): Promise<WorkspaceActivitySnapshot> {
+    requireNonNegativeInteger('activity version', afterVersion)
+    return this.invoke('runtime/activity/wait', { afterVersion }, signal).then(assertWorkspaceActivitySnapshot)
   }
 
-  createDefinition(input: CreateDefinitionInput, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
-    return this.callSnapshot('definition/create', input, signal)
+  queryMemory(query: MemoryQuery, signal?: AbortSignal): Promise<MemoryPage> {
+    return this.invoke('memory/query', query, signal).then(assertMemoryPage)
   }
 
-  reviseDefinition(input: ReviseDefinitionInput, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
-    return this.callSnapshot('definition/revise', input, signal)
+  definitionHistory(definitionId: AgentDefinitionId, signal?: AbortSignal): Promise<readonly DefinitionHistoryItem[]> {
+    return this.invoke('definition/history', { definitionId }, signal).then(assertDefinitionHistory)
   }
 
-  createAgent(definitionId: AgentDefinitionId, name: string, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
-    return this.callSnapshot('agent/create', { definitionId, name }, signal)
-  }
-
-  setEmployment(agentId: AgentId, employed: boolean, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
-    return this.callSnapshot(employed ? 'agent/employ' : 'agent/depart', { agentId }, signal)
-  }
-
-  createGroup(name: string, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
-    return this.callSnapshot('room/create', { kind: 'group', name }, signal)
-  }
-
-  async openDirect(agentId: AgentId, signal?: AbortSignal): Promise<WorkspaceDirectRoomResult> {
-    const value = await this.invoke('room/direct/open', { agentId }, signal)
-    if (!isRecord(value) || typeof value['roomId'] !== 'string') {
-      throw new Error('Agent Workspace returned an invalid direct-room result')
+  /** Add the aggregate CAS revision and return the validated committed result. */
+  async mutate<Value>(endpoint: string, payload: object, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceMutationResult<Value>> {
+    requireNonNegativeInteger('expected revision', expectedRevision)
+    if ('expectedRevision' in payload || 'actorAgentId' in payload || 'humanId' in payload || 'actor' in payload) {
+      throw new Error('Agent Workspace mutation payload contains a client-owned actor or revision field')
     }
-    return {
-      snapshot: assertWorkspaceSnapshot(value['state']),
-      roomId: value['roomId'],
-    }
+    return assertMutationResult(await this.invoke(endpoint, { expectedRevision, ...payload }, signal)) as WorkspaceMutationResult<Value>
   }
 
-  joinRoom(roomId: RoomId, agentId: AgentId, memoryStart: MembershipMemoryStart, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
-    return this.callSnapshot('room/join', { roomId, agentId, memoryStart }, signal)
+  createDefinition(input: CreateDefinitionInput, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return this.mutate('definition/create', input, expectedRevision, signal).then(result => assertWorkspaceSnapshot(result.value))
   }
 
-  leaveRoom(membershipId: MembershipId, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
-    return this.callSnapshot('room/leave', { membershipId }, signal)
+  reviseDefinition(input: ReviseDefinitionInput, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return this.mutate('definition/revise', input, expectedRevision, signal).then(result => assertWorkspaceSnapshot(result.value))
   }
 
-  postMessage(roomId: RoomId, text: string, mentions: readonly AgentId[], signal?: AbortSignal): Promise<WorkspaceSnapshot> {
-    return this.callSnapshot('room/post', { roomId, text, mentions }, signal)
+  synchronizeDefinition(definitionId: AgentDefinitionId, definitionRevisionId: DefinitionRevisionId, agentIds: readonly AgentId[], expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return this.mutate('definition/synchronize', { definitionId, definitionRevisionId, agentIds }, expectedRevision, signal).then(result => assertWorkspaceSnapshot(result.value))
   }
 
-  private async callSnapshot(endpoint: string, payload: unknown, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
-    return assertWorkspaceSnapshot(await this.invoke(endpoint, payload, signal))
+  createAgent(definitionId: AgentDefinitionId, name: string, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return this.mutate('agent/create', { definitionId, name }, expectedRevision, signal).then(result => assertWorkspaceSnapshot(result.value))
+  }
+
+  setEmployment(agentId: AgentId, employed: boolean, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return this.mutate(employed ? 'agent/employ' : 'agent/depart', { agentId }, expectedRevision, signal).then(result => assertWorkspaceSnapshot(result.value))
+  }
+
+  createGroup(name: string, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return this.mutate('room/create', { kind: 'group', name }, expectedRevision, signal).then(result => assertWorkspaceSnapshot(result.value))
+  }
+
+  async openDirect(agentId: AgentId, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceDirectRoomResult> {
+    const { value } = await this.mutate<WorkspaceDirectRoomValue>('room/direct/open', { agentId }, expectedRevision, signal)
+    if (!isRecord(value) || typeof value['roomId'] !== 'string') throw invalid('direct-room result')
+    return { snapshot: assertWorkspaceSnapshot(value['state']), roomId: value['roomId'] }
+  }
+
+  async joinRoom(roomId: RoomId, agentId: AgentId, memoryStart: MembershipMemoryStart, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    assertMemoryStart(memoryStart)
+    const result = await this.mutate('room/join', { roomId, agentId, memoryStart }, expectedRevision, signal)
+    return assertWorkspaceSnapshot(result.value)
+  }
+
+  leaveRoom(membershipId: MembershipId, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return this.mutate('room/leave', { membershipId }, expectedRevision, signal).then(result => assertWorkspaceSnapshot(result.value))
+  }
+
+  postMessage(roomId: RoomId, text: string, mentions: readonly AgentId[], expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return this.mutate('room/post', { roomId, text, mentions }, expectedRevision, signal).then(result => assertWorkspaceSnapshot(result.value))
+  }
+
+  assignTask(assigneeAgentId: AgentId, title: string, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceMutationResult<AssignHumanTaskResultView>> {
+    return this.mutate('task/assign', { assigneeAgentId, title }, expectedRevision, signal).then(result => ({ ...result, value: assertAssignTaskResult(result.value) }))
+  }
+
+  grantTask(granteeAgentId: AgentId, rootTaskId: TaskId, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceMutationResult<GrantTaskDelegationResultView>> {
+    return this.mutate('task/grant', { granteeAgentId, rootTaskId }, expectedRevision, signal).then(result => ({ ...result, value: assertGrantTaskResult(result.value) }))
+  }
+
+  revokeTask(delegationGrantId: DelegationGrantId, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return this.mutate('task/revoke', { delegationGrantId }, expectedRevision, signal).then(result => assertWorkspaceSnapshot(result.value))
+  }
+
+  cancelTask(taskId: TaskId, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return this.mutate('task/cancel', { taskId }, expectedRevision, signal).then(result => assertWorkspaceSnapshot(result.value))
+  }
+
+  retryTaskDelivery(taskId: TaskId, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceMutationResult<string>> {
+    return this.mutate('task/retry-delivery', { taskId }, expectedRevision, signal).then(result => {
+      if (typeof result.value !== 'string') throw invalid('task retry result')
+      return result as WorkspaceMutationResult<string>
+    })
+  }
+
+  stopActivity(identity: WorkspaceActivityIdentity, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceMutationResult<WorkspaceStopResult>> {
+    return this.mutate('runtime/activity/stop', identity, expectedRevision, signal).then(result => ({ ...result, value: assertStopResult(result.value) }))
+  }
+
+  stopChildRun(childRunId: ChildRunId, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceMutationResult<WorkspaceStopResult>> {
+    return this.mutate('runtime/child/stop', { childRunId }, expectedRevision, signal).then(result => ({ ...result, value: assertStopResult(result.value) }))
+  }
+
+  acknowledgeAgentFailure(agentId: AgentId, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceMutationResult<void>> {
+    return this.mutate('runtime/failure/acknowledge', { agentId }, expectedRevision, signal).then(value => {
+      if (value.value !== undefined) throw invalid('failure acknowledgement result')
+      return value as WorkspaceMutationResult<void>
+    })
   }
 
   private async invoke(endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown> {
     const result = await this.connection.rpc.call(CHANNEL, endpoint, payload, signal)
-    if (!result.ok) throw new WorkspaceApiError(result.error as WorkspaceRpcError)
+    if (!result.ok) throw new WorkspaceApiError(assertWorkspaceRpcError(result.error))
     return result.value
   }
 }
 
-function assertWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {
-  if (typeof value !== 'object' || value === null) throw new Error('Agent Workspace returned an invalid snapshot')
-  const record = value as Record<string, unknown>
-  if (typeof record['workspaceId'] !== 'string'
-    || typeof record['revision'] !== 'number'
-    || !isRecord(record['definitions'])
-    || !isRecord(record['definitionRevisions'])
-    || !isRecord(record['agents'])
-    || !isRecord(record['rooms'])
-    || !isRecord(record['memberships'])
-    || !Array.isArray(record['events'])) {
-    throw new Error('Agent Workspace returned an invalid snapshot')
+/** Compatibility name retained for existing Browser registration imports. */
+export class WorkspaceApiClient extends WorkspaceApi {}
+
+function assertMutationResult(value: unknown): WorkspaceMutationResult<unknown> {
+  if (!isRecord(value) || !hasExactKeys(value, ['revision', 'value']) || !isNonNegativeInteger(value['revision']) || !('value' in value)) {
+    throw invalid('mutation result')
   }
-  return value as WorkspaceSnapshot
+  return value as unknown as WorkspaceMutationResult<unknown>
+}
+
+function assertWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {
+  if (!isRecord(value)
+    || !hasKeys(value, ['workspaceId', 'revision', 'nextId', 'nextSequence', 'definitions', 'definitionRevisions', 'agents', 'rooms', 'memberships', 'events', 'memoryEntries', 'tasks', 'taskAssignments', 'delegationGrants', 'childRuns', 'sessionBindings'])
+    || typeof value['workspaceId'] !== 'string' || !isNonNegativeInteger(value['revision'])
+    || !isPositiveInteger(value['nextId']) || !isPositiveInteger(value['nextSequence'])
+    || !['definitions', 'definitionRevisions', 'agents', 'rooms', 'memberships', 'tasks', 'taskAssignments', 'delegationGrants', 'childRuns', 'sessionBindings'].every(key => isRecord(value[key]))
+    || !Array.isArray(value['events']) || !Array.isArray(value['memoryEntries'])) throw invalid('snapshot')
+  return structuredClone(value) as unknown as WorkspaceSnapshot
 }
 
 function assertWorkspaceRuntimeStatus(value: unknown): WorkspaceRuntimeStatus {
-  if (!isRecord(value) || !isRecord(value['rooms'])) {
-    throw new Error('Agent Workspace returned an invalid runtime status')
-  }
+  if (!isRecord(value) || !isRecord(value['rooms'])) throw invalid('runtime status')
   for (const room of Object.values(value['rooms'])) {
-    if (!isRecord(room) || typeof room['pending'] !== 'number' || room['pending'] < 0
-      || (room['error'] !== undefined && typeof room['error'] !== 'string')) {
-      throw new Error('Agent Workspace returned an invalid runtime status')
-    }
+    if (!isRecord(room) || !isNonNegativeInteger(room['pending']) || (room['error'] !== undefined && typeof room['error'] !== 'string')) throw invalid('runtime status')
   }
-  return value as unknown as WorkspaceRuntimeStatus
+  return structuredClone(value) as unknown as WorkspaceRuntimeStatus
 }
 
-function assertWorkspaceTurnStreamSnapshot(value: unknown): WorkspaceTurnStreamSnapshot {
-  if (!isRecord(value)
-    || !isNonNegativeInteger(value['version'])
-    || !isNonNegativeInteger(value['workspaceRevision'])
-    || !Array.isArray(value['turns'])
-    || !value['turns'].every(isWorkspaceTurnProjection)) {
-    throw new Error('Agent Workspace returned an invalid turn stream')
+function assertWorkspaceActivitySnapshot(value: unknown): WorkspaceActivitySnapshot {
+  if (!isRecord(value) || !isNonNegativeInteger(value['version']) || !isNonNegativeInteger(value['workspaceRevision'])
+    || !Array.isArray(value['activities']) || !Array.isArray(value['agents'])) throw invalid('activity snapshot')
+  const activityIds = new Set<string>()
+  for (const activity of value['activities']) {
+    if (!isRecord(activity) || typeof activity['activityId'] !== 'string' || activityIds.has(activity['activityId'])
+      || typeof activity['agentId'] !== 'string' || !isRecord(activity['source']) || typeof activity['messageId'] !== 'string'
+      || !isPositiveInteger(activity['startOrder']) || !['queued', 'responding', 'stopping', 'settled'].includes(String(activity['status']))
+      || !Array.isArray(activity['blocks'])) throw invalid('activity snapshot')
+    activityIds.add(activity['activityId'])
   }
-  return value as unknown as WorkspaceTurnStreamSnapshot
+  return structuredClone(value) as unknown as WorkspaceActivitySnapshot
 }
 
-function isWorkspaceTurnProjection(value: unknown): value is WorkspaceTurnProjection {
-  if (!isRecord(value)
-    || typeof value['roomId'] !== 'string'
-    || typeof value['agentId'] !== 'string'
-    || typeof value['sessionId'] !== 'string'
-    || !isNonNegativeInteger(value['turn'])
-    || (value['status'] !== 'running' && value['status'] !== 'settled')
-    || !Array.isArray(value['blocks'])
-    || !value['blocks'].every(isWorkspaceTurnBlock)
-    || (value['stopReason'] !== undefined && typeof value['stopReason'] !== 'string')
-    || (value['error'] !== undefined && typeof value['error'] !== 'string')) {
-    return false
-  }
-  return true
+function assertMemoryPage(value: unknown): MemoryPage {
+  if (!isRecord(value) || !isNonNegativeInteger(value['snapshotRevision']) || !Array.isArray(value['items'])
+    || (value['nextCursor'] !== undefined && typeof value['nextCursor'] !== 'string')) throw invalid('memory page')
+  return structuredClone(value) as unknown as MemoryPage
 }
 
-function isWorkspaceTurnBlock(value: unknown): value is WorkspaceTurnBlock {
-  if (!isRecord(value) || !isNonNegativeInteger(value['index']) || typeof value['kind'] !== 'string') return false
-  switch (value['kind']) {
-    case 'text':
-    case 'reasoning':
-      return typeof value['text'] === 'string'
-    case 'tool':
-      return typeof value['callId'] === 'string'
-        && typeof value['name'] === 'string'
-        && typeof value['arguments'] === 'string'
-        && (value['status'] === 'running' || value['status'] === 'completed' || value['status'] === 'failed')
-        && (value['resultText'] === undefined || typeof value['resultText'] === 'string')
-        && (value['error'] === undefined || typeof value['error'] === 'string')
-    case 'unknown':
-      return typeof value['label'] === 'string'
-    default:
-      return false
+function assertDefinitionHistory(value: unknown): readonly DefinitionHistoryItem[] {
+  if (!Array.isArray(value) || !value.every(item => isRecord(item) && typeof item['id'] === 'string'
+    && (item['status'] === 'current' || item['status'] === 'previous') && isRecord(item['creationEvent']) && Array.isArray(item['agentIds']))) throw invalid('definition history')
+  return structuredClone(value) as readonly DefinitionHistoryItem[]
+}
+
+function assertAssignTaskResult(value: unknown): AssignHumanTaskResultView {
+  if (!isRecord(value) || typeof value['taskId'] !== 'string' || typeof value['taskAssignmentId'] !== 'string') throw invalid('task assignment result')
+  return { ...value, state: assertWorkspaceSnapshot(value['state']) } as AssignHumanTaskResultView
+}
+
+function assertGrantTaskResult(value: unknown): GrantTaskDelegationResultView {
+  if (!isRecord(value) || typeof value['delegationGrantId'] !== 'string') throw invalid('task delegation result')
+  return { ...value, state: assertWorkspaceSnapshot(value['state']) } as GrantTaskDelegationResultView
+}
+
+function assertStopResult(value: unknown): WorkspaceStopResult {
+  if (!isRecord(value) || !hasExactKeys(value, ['status']) || !['stopping', 'already-stopping', 'not-active'].includes(String(value['status']))) throw invalid('stop result')
+  return structuredClone(value) as unknown as WorkspaceStopResult
+}
+
+function assertMemoryStart(value: MembershipMemoryStart): void {
+  if (value.type === 'new-events') return
+  if (!isPositiveInteger(value.startSequence) || !isPositiveInteger(value.endSequence) || value.endSequence < value.startSequence) {
+    throw new Error('Agent Workspace membership event range must be a bounded ascending range')
   }
 }
 
-function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+function assertWorkspaceRpcError(value: unknown): WorkspaceRpcError {
+  if (!isRecord(value) || typeof value['kind'] !== 'string' || typeof value['code'] !== 'string'
+    || typeof value['message'] !== 'string' || !isRecord(value['details'])) {
+    return { kind: 'internal', code: 'internal', message: 'Agent Workspace request failed', details: {} }
+  }
+  return structuredClone(value) as WorkspaceRpcError
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+function requireNonNegativeInteger(name: string, value: number): void {
+  if (!isNonNegativeInteger(value)) throw new Error(`Agent Workspace ${name} must be a non-negative safe integer`)
 }
+function invalid(subject: string): Error { return new Error(`Agent Workspace returned an invalid ${subject}`) }
+function isPositiveInteger(value: unknown): value is number { return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 }
+function isNonNegativeInteger(value: unknown): value is number { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 }
+function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
+function hasKeys(value: Record<string, unknown>, keys: readonly string[]): boolean { return keys.every(key => key in value) }
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean { const actual = Object.keys(value).toSorted(); return actual.length === keys.length && actual.every((key, index) => key === [...keys].toSorted()[index]) }

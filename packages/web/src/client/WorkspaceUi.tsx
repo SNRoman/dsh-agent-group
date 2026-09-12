@@ -14,7 +14,9 @@ import type {
   MembershipId,
   RoomId,
   WorkspaceSnapshot,
+  WorkspaceActivitySnapshot,
   WorkspaceTurnProjection,
+  WorkspaceTurnBlock,
   WorkspaceTurnStreamSnapshot,
 } from './contracts.ts'
 import type { createWorkspaceUiStore, WorkspaceUiError } from './store.ts'
@@ -35,6 +37,7 @@ export type WorkspaceFooterActionProps = PropsRuntime<'sidebar.footer.action'> &
 export type WorkspaceOverlayProps = PropsRuntime<'shell.overlay'> & WorkspaceStoreProps & PropsLocale<'agentWorkspace'> & { readonly api: WorkspaceApiClient }
 
 const EMPTY_TURN_STREAM: WorkspaceTurnStreamSnapshot = { version: 0, workspaceRevision: 0, turns: [] }
+type MutationOperation = (expectedRevision: number) => Promise<WorkspaceSnapshot>
 
 /** Additive sidebar footer action. It owns no DSH navigation state. */
 export function WorkspaceFooterAction({ wide, actions, t }: WorkspaceFooterActionProps) {
@@ -69,6 +72,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
   const [syncExisting, setSyncExisting] = useState(true)
   const [turnStream, setTurnStream] = useState<WorkspaceTurnStreamSnapshot>(EMPTY_TURN_STREAM)
   const [streamError, setStreamError] = useState<WorkspaceUiError | undefined>()
+  const [pendingMutation, setPendingMutation] = useState<MutationOperation | undefined>()
 
   // One cancellation-aware long-poll subscription replaces the former timer
   // polling. Stream versions wake the Browser only when authoritative Session
@@ -86,7 +90,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
       try {
         let [initialSnapshot, initialStream] = await Promise.all([
           api.snapshot(controller.signal),
-          api.streamSnapshot(controller.signal),
+          api.activitySnapshot(controller.signal),
         ])
         if (controller.signal.aborted) return
         if (initialStream.workspaceRevision > initialSnapshot.revision) {
@@ -94,17 +98,17 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
           if (controller.signal.aborted) return
         }
         actions.setSnapshot(initialSnapshot)
-        setTurnStream(initialStream)
+        setTurnStream(activityTurnStream(initialStream))
         setStreamError(undefined)
         actions.setBusy(false)
 
         let durableRevision = initialSnapshot.revision
         let currentVersion = initialStream.version
         while (!controller.signal.aborted) {
-          const next = await api.waitForStream(currentVersion, controller.signal)
+          const next = await api.waitForActivity(currentVersion, controller.signal)
           if (controller.signal.aborted) return
           currentVersion = next.version
-          setTurnStream(next)
+          setTurnStream(activityTurnStream(next))
           setStreamError(undefined)
           if (next.workspaceRevision > durableRevision) {
             const durable = await api.snapshot(controller.signal)
@@ -163,14 +167,23 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
 
   if (!ui.open) return null
 
-  const commit = async (operation: () => Promise<WorkspaceSnapshot>): Promise<boolean> => {
+  const commit = async (operation: MutationOperation, revision = snapshot?.revision): Promise<boolean> => {
+    if (revision === undefined) return false
     actions.setBusy(true)
     actions.setError(undefined)
     try {
-      actions.setSnapshot(await operation())
+      actions.setSnapshot(await operation(revision))
+      actions.setRetry(undefined)
+      setPendingMutation(undefined)
       return true
     } catch (error) {
       actions.setError(toUiError(error))
+      if (isStaleRevision(error)) {
+        const authoritative = await api.snapshot()
+        actions.setSnapshot(authoritative)
+        actions.setRetry({ stale: true })
+        setPendingMutation(() => operation)
+      }
       return false
     } finally {
       actions.setBusy(false)
@@ -178,18 +191,12 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
   }
 
   const openDirect = async (agentId: AgentId): Promise<void> => {
-    actions.setBusy(true)
-    actions.setError(undefined)
-    try {
-      const result = await api.openDirect(agentId)
-      actions.setSnapshot(result.snapshot)
+    await commit(async revision => {
+      const result = await api.openDirect(agentId, revision)
       actions.selectRoom(result.roomId)
-      actions.setMode('chat')
-    } catch (error) {
-      actions.setError(toUiError(error))
-    } finally {
-      actions.setBusy(false)
-    }
+      actions.setMode('conversations')
+      return result.snapshot
+    })
   }
 
   return (
@@ -199,8 +206,10 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
           <WorkspaceIcon />
           <span className="dsh-agent-group-title">{t('workspace.title')}</span>
           <nav className="dsh-agent-group-tabs" aria-label={t('workspace.views')}>
-            <button type="button" className="dsh-agent-group-tab" data-active={ui.mode === 'chat'} onClick={() => actions.setMode('chat')}>{t('workspace.chat')}</button>
-            <button type="button" className="dsh-agent-group-tab" data-active={ui.mode === 'agents'} onClick={() => actions.setMode('agents')}>{t('workspace.agents')}</button>
+            <button type="button" className="dsh-agent-group-tab" aria-label={t('workspace.conversations')} data-active={ui.mode === 'conversations'} onClick={() => actions.setMode('conversations')}>{t('workspace.conversations')}</button>
+            <button type="button" className="dsh-agent-group-tab" aria-label={t('workspace.colleagues')} data-active={ui.mode === 'colleagues'} onClick={() => actions.setMode('colleagues')}>{t('workspace.colleagues')}</button>
+            <button type="button" className="dsh-agent-group-tab" aria-label={t('workspace.tasks')} data-active={ui.mode === 'tasks'} onClick={() => actions.setMode('tasks')}>{t('workspace.tasks')}</button>
+            <button type="button" className="dsh-agent-group-tab" aria-label={t('workspace.memory')} data-active={ui.mode === 'memory'} onClick={() => actions.setMode('memory')}>{t('workspace.memory')}</button>
           </nav>
           <span className="dsh-agent-group-spacer" />
           {ui.busy
@@ -213,10 +222,13 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
         </header>
 
         {ui.error !== undefined ? <div className="dsh-agent-group-error">{errorMessage(ui.error, t)}</div> : null}
+        {ui.retry !== undefined && pendingMutation !== undefined && snapshot !== undefined
+          ? <div className="dsh-agent-group-retry" role="status"><span>{t('workspace.staleRetry')}</span><button type="button" className="dsh-agent-group-button" onClick={() => void commit(pendingMutation, snapshot.revision)}>{t('workspace.retry')}</button></div>
+          : null}
         {streamError !== undefined ? <div className="dsh-agent-group-error">{errorMessage(streamError, t, 'workspace.streamFailed')}</div> : null}
         {snapshot === undefined
           ? <div className="dsh-agent-group-empty">{t('workspace.loading')}</div>
-          : ui.mode === 'chat'
+          : ui.mode === 'conversations'
             ? <ChatWorkspace
                 key={ui.selectedRoomId ?? 'no-room'}
                 snapshot={snapshot}
@@ -233,7 +245,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                 onCreateRoom={async () => {
                   const name = roomName.trim()
                   if (name === '') return
-                  if (await commit(() => api.createGroup(name))) {
+                  if (await commit(revision => api.createGroup(name, revision))) {
                     setRoomName('')
                     setCreatingRoom(false)
                   }
@@ -242,14 +254,14 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                   const text = draft.trim()
                   if (ui.selectedRoomId === undefined || text === '') return
                   const roomId = ui.selectedRoomId as RoomId
-                  if (await commit(() => api.postMessage(roomId, text, parseRoomMentionIds(snapshot, roomId, text)))) setDraft('')
+                  if (await commit(revision => api.postMessage(roomId, text, parseRoomMentionIds(snapshot, roomId, text), revision))) setDraft('')
                 }}
-                onJoin={(agentId, memoryStart) => ui.selectedRoomId === undefined ? Promise.resolve() : commit(() => api.joinRoom(ui.selectedRoomId as RoomId, agentId, memoryStart)).then(() => undefined)}
-                onLeave={membershipId => commit(() => api.leaveRoom(membershipId)).then(() => undefined)}
+                onJoin={(agentId, memoryStart) => ui.selectedRoomId === undefined ? Promise.resolve() : commit(revision => api.joinRoom(ui.selectedRoomId as RoomId, agentId, memoryStart, revision)).then(() => undefined)}
+                onLeave={membershipId => commit(revision => api.leaveRoom(membershipId, revision)).then(() => undefined)}
                 onOpenDirect={openDirect}
                 t={t}
               />
-            : <AgentWorkspace
+            : ui.mode === 'colleagues' ? <AgentWorkspace
                 snapshot={snapshot}
                 selectedDefinitionId={ui.selectedDefinitionId}
                 busy={ui.busy}
@@ -275,11 +287,11 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                 onAgentNameChange={setAgentName}
                 onCreateDefinition={async () => {
                   if (definitionName.trim() === '') return
-                  if (await commit(() => api.createDefinition({
+                  if (await commit(revision => api.createDefinition({
                     name: definitionName.trim(),
                     description: definitionDescription,
                     instructions: definitionInstructions,
-                  }))) {
+                  }, revision))) {
                     setDefinitionName('')
                     setDefinitionDescription('')
                     setDefinitionInstructions('')
@@ -290,22 +302,22 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                   const agentIds = Object.values(snapshot.agents)
                     .filter(agent => agent.definitionId === definitionId)
                     .map(agent => agent.id)
-                  await commit(() => api.reviseDefinition({
+                  await commit(revision => api.reviseDefinition({
                     definitionId,
                     description: revisionDescription,
                     instructions: revisionInstructions,
                     ...(syncExisting ? { synchronizeAgentIds: agentIds } : {}),
-                  }))
+                  }, revision))
                 }}
                 onCreateAgent={async definitionId => {
                   const name = agentName.trim()
                   if (name === '') return
-                  if (await commit(() => api.createAgent(definitionId, name))) setAgentName('')
+                  if (await commit(revision => api.createAgent(definitionId, name, revision))) setAgentName('')
                 }}
-                onSetEmployment={(agentId, employed) => commit(() => api.setEmployment(agentId, employed)).then(() => undefined)}
+                onSetEmployment={(agentId, employed) => commit(revision => api.setEmployment(agentId, employed, revision)).then(() => undefined)}
                 onOpenDirect={openDirect}
                 t={t}
-              />}
+              /> : <WorkspaceFoundationView mode={ui.mode} t={t} />}
       </section>
     </div>
   )
@@ -388,7 +400,7 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
   }
 
   return (
-    <div className="dsh-agent-group-body" data-mode="chat">
+    <div className="dsh-agent-group-body" data-mode="conversations">
       <aside className="dsh-agent-group-panel">
         <div className="dsh-agent-group-section-head">
           <span className="dsh-agent-group-section-title">{props.t('room.conversations')}</span>
@@ -572,7 +584,7 @@ function AgentWorkspace(props: AgentWorkspaceProps) {
   const agents = selected === undefined ? [] : Object.values(props.snapshot.agents).filter(agent => agent.definitionId === selected.id)
 
   return (
-    <div className="dsh-agent-group-body" data-mode="agents">
+    <div className="dsh-agent-group-body" data-mode="colleagues">
       <aside className="dsh-agent-group-panel">
         <div className="dsh-agent-group-section-head">
           <span className="dsh-agent-group-section-title">{props.t('agent.definitions')}</span>
@@ -655,6 +667,45 @@ function Field({ label, children }: { readonly label: string; readonly children:
   return <div className="dsh-agent-group-field"><label>{label}</label>{children}</div>
 }
 
+function WorkspaceFoundationView({ mode, t }: {
+  readonly mode: 'tasks' | 'memory'
+  readonly t: TranslateNS<'agentWorkspace'>
+}) {
+  return <div className="dsh-agent-group-body dsh-agent-group-foundation" data-mode={mode} aria-label={t(`workspace.${mode}`)}>
+    <div className="dsh-agent-group-empty">{t(mode === 'tasks' ? 'workspace.tasksEmpty' : 'workspace.memoryEmpty')}</div>
+  </div>
+}
+
+function activityTurnStream(activity: WorkspaceActivitySnapshot): WorkspaceTurnStreamSnapshot {
+  return {
+    version: activity.version,
+    workspaceRevision: activity.workspaceRevision,
+    turns: activity.activities.flatMap(item => {
+      if (item.source.kind !== 'room' || item.claimed === undefined) return []
+      return [{
+        roomId: item.source.roomId,
+        agentId: item.agentId,
+        sessionId: item.claimed.sessionId,
+        turn: item.claimed.turn,
+        status: item.status === 'settled' ? 'settled' as const : 'running' as const,
+        blocks: item.blocks.map(activityTurnBlock),
+        ...(item.terminalReason === undefined ? {} : { stopReason: item.terminalReason }),
+        ...(item.error === undefined ? {} : { error: item.error.summary }),
+      }]
+    }),
+  }
+}
+
+function activityTurnBlock(block: WorkspaceActivitySnapshot['activities'][number]['blocks'][number]): WorkspaceTurnBlock {
+  if (block.kind !== 'tool') return block
+  return {
+    kind: 'tool', index: block.index, callId: block.callId, name: block.name,
+    arguments: block.arguments, status: block.status,
+    ...(block.resultText === undefined ? {} : { resultText: block.resultText }),
+    ...(block.error === undefined ? {} : { error: block.error.summary }),
+  }
+}
+
 function visibleWorkspaceTurns(
   durableRevision: number,
   stream: WorkspaceTurnStreamSnapshot,
@@ -671,14 +722,18 @@ async function refresh(
   actions.setBusy(true)
   actions.setError(undefined)
   try {
-    const [snapshot, stream] = await Promise.all([api.snapshot(), api.streamSnapshot()])
+    const [snapshot, stream] = await Promise.all([api.snapshot(), api.activitySnapshot()])
     actions.setSnapshot(snapshot)
-    setTurnStream(stream)
+    setTurnStream(activityTurnStream(stream))
   } catch (error) {
     actions.setError(toUiError(error))
   } finally {
     actions.setBusy(false)
   }
+}
+
+function isStaleRevision(error: unknown): error is WorkspaceApiError {
+  return error instanceof WorkspaceApiError && error.kind === 'business' && error.code === 'stale-revision'
 }
 
 function toUiError(error: unknown): WorkspaceUiError {
@@ -692,14 +747,23 @@ function errorMessage(
   t: TranslateNS<'agentWorkspace'>,
   fallback: 'workspace.requestFailed' | 'workspace.streamFailed' = 'workspace.requestFailed',
 ): string {
-  if (error instanceof WorkspaceApiError && error.kind === 'business') {
-    switch (error.code) {
-      case 'reserved-direct-routing': return t('error.reservedDirectRouting', error.details)
-      case 'agent-missing': return t('error.agentMissing', error.details)
-      case 'agent-departed': return t('error.agentDeparted', error.details)
-      case 'duplicate-membership': return t('error.duplicateMembership', error.details)
-      case 'stale-revision': return t('error.staleRevision', error.details)
-      case 'invalid-task-authority': return t('error.invalidTaskAuthority', error.details)
+  if (error instanceof WorkspaceApiError && error.error.kind === 'business') {
+    const failure = error.error
+    switch (failure.code) {
+      case 'reserved-direct-routing': return t('error.reservedDirectRouting', failure.details)
+      case 'agent-missing': return t('error.agentMissing', failure.details)
+      case 'agent-departed': return t('error.agentDeparted', failure.details)
+      case 'duplicate-membership': return t('error.duplicateMembership', failure.details)
+      case 'stale-revision': return 'expectedRevision' in failure.details
+        ? t('error.staleWorkspaceRevision', failure.details)
+        : t('error.staleRevision', failure.details)
+      case 'invalid-task-authority': return t('error.invalidTaskAuthority', failure.details)
+      case 'task-not-open': return t('error.taskNotOpen', failure.details)
+      case 'task-not-assigned': return t('error.taskNotAssigned', failure.details)
+      case 'delegation-grant-missing': return failure.details.lookup === 'id'
+        ? t('error.delegationGrantMissingById', failure.details)
+        : t('error.delegationGrantMissingByTask', failure.details)
+      case 'delegation-grant-inactive': return t('error.delegationGrantInactive', failure.details)
     }
   }
   return t(fallback, { detail: error instanceof Error ? error.message : String(error) })

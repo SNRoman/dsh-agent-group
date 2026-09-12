@@ -157,8 +157,8 @@ const liveTurn: WorkspaceTurnProjection = {
 
 describe('Agent Workspace locale runtime', () => {
   it.each([
-    ['zh', ['智能体工作区', '打开智能体工作区', '正在读取智能体工作区…', '正在回复…', '正在思考…', '工作区请求失败：upstream detail']],
-    ['en', ['Agent Workspace', 'Open Agent Workspace', 'Loading Agent Workspace…', 'Replying…', 'Thinking…', 'Workspace request failed: upstream detail']],
+    ['zh', ['智能体工作区', '打开智能体工作区', '会话', '同事', '任务', '记忆', '正在读取智能体工作区…', '正在回复…', '正在思考…', '工作区请求失败：upstream detail']],
+    ['en', ['Agent Workspace', 'Open Agent Workspace', 'Conversations', 'Colleagues', 'Tasks', 'Memory', 'Loading Agent Workspace…', 'Replying…', 'Thinking…', 'Workspace request failed: upstream detail']],
   ] as const)('renders footer, overlay, live, empty, error and accessibility copy in %s', (localeId, expected) => {
     const locale = new LocaleRuntime(new Context())
     locale.setLocale(localeId)
@@ -168,7 +168,7 @@ describe('Agent Workspace locale runtime', () => {
     const actions = { open: vi.fn(), close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn() }
     const footer = WorkspaceFooterAction({ wide: true, actions, t } as never)
     const overlay = render(WorkspaceOverlay as unknown as TestComponent, {
-      useStore: (select: (state: unknown) => unknown) => select({ open: true, mode: 'chat', busy: false, error: new Error('upstream detail') }),
+      useStore: (select: (state: unknown) => unknown) => select({ open: true, mode: 'conversations', busy: false, error: new Error('upstream detail') }),
       actions,
       api: {},
       t,
@@ -197,7 +197,7 @@ describe('Agent Workspace locale runtime', () => {
       details: { roomId: 'room-direct', token: '@all' },
     })
     const overlay = render(WorkspaceOverlay as unknown as TestComponent, {
-      useStore: (select: (state: unknown) => unknown) => select({ open: true, mode: 'chat', busy: false, error }),
+      useStore: (select: (state: unknown) => unknown) => select({ open: true, mode: 'conversations', busy: false, error }),
       actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn() },
       api: {},
       t,

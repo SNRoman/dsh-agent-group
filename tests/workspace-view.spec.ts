@@ -230,9 +230,9 @@ describe('workspace UI view model', () => {
       selectDefinition: vi.fn(),
       setSnapshot: vi.fn(),
       setBusy: vi.fn(),
-      setError: vi.fn(),
+      setError: vi.fn(), setRetry: vi.fn(),
     }
-    const renderMode = (mode: 'chat' | 'agents') => {
+    const renderMode = (mode: 'conversations' | 'colleagues') => {
       const harness = componentHarness()
       const tree = harness.render(WorkspaceOverlay as unknown as TestComponent, {
         useStore: (selector: (state: unknown) => unknown) => selector({
@@ -250,8 +250,8 @@ describe('workspace UI view model', () => {
       return harness.findAll(tree, element => element.props['role'] === 'group')
     }
 
-    expect(renderMode('chat').map(element => element.props['aria-label'])).toEqual(['Alice', 'Bob'])
-    expect(renderMode('agents').map(element => element.props['aria-label'])).toEqual(['Alice', 'Bob'])
+    expect(renderMode('conversations').map(element => element.props['aria-label'])).toEqual(['Alice', 'Bob'])
+    expect(renderMode('colleagues').map(element => element.props['aria-label'])).toEqual(['Alice', 'Bob'])
   })
 
   it('names the member panel and its candidate combobox for browser automation', () => {
@@ -265,14 +265,14 @@ describe('workspace UI view model', () => {
     const tree = harness.render(WorkspaceOverlay as unknown as TestComponent, {
       useStore: (selector: (state: unknown) => unknown) => selector({
         open: true,
-        mode: 'chat',
+        mode: 'conversations',
         selectedRoomId: fixture.roomId,
         selectedDefinitionId: undefined,
         snapshot: withCandidate,
         busy: false,
       }),
       actions: {
-        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(),
+        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
       },
       api: {},
       t,
@@ -296,14 +296,14 @@ describe('workspace UI view model', () => {
     const tree = harness.render(WorkspaceOverlay as unknown as TestComponent, {
       useStore: (selector: (state: unknown) => unknown) => selector({
         open: true,
-        mode: 'chat',
+        mode: 'conversations',
         selectedRoomId: fixture.roomId,
         selectedDefinitionId: undefined,
         snapshot: withCandidate,
         busy: false,
       }),
       actions: {
-        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(),
+        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
       },
       api: {},
       t,
@@ -333,7 +333,7 @@ describe('workspace UI view model', () => {
     expect(carolId).toBeDefined()
     const ui: Record<string, unknown> = {
       open: true,
-      mode: 'chat',
+      mode: 'conversations',
       selectedRoomId: fixture.roomId,
       selectedDefinitionId: undefined,
       snapshot: withCandidate,
@@ -346,7 +346,7 @@ describe('workspace UI view model', () => {
       selectDefinition: vi.fn(),
       setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
       setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
-      setError: vi.fn(),
+      setError: vi.fn(), setRetry: vi.fn(),
     }
     const api = { joinRoom: vi.fn(async () => withCandidate) }
     const harness = componentHarness()
@@ -396,6 +396,7 @@ describe('workspace UI view model', () => {
       fixture.roomId,
       carolId,
       { type: 'event-range', startSequence: 4, endSequence: 5 },
+      withCandidate.revision,
     ))
   })
 
@@ -413,14 +414,14 @@ describe('workspace UI view model', () => {
     const props = {
       useStore: (selector: (state: unknown) => unknown) => selector({
         open: true,
-        mode: 'chat',
+        mode: 'conversations',
         selectedRoomId: fixture.roomId,
         selectedDefinitionId: undefined,
         snapshot: dave.state,
         busy: false,
       }),
       actions: {
-        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(),
+        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
       },
       api: {},
       t,
@@ -448,7 +449,7 @@ describe('workspace UI view model', () => {
     const { fixture, beforeSettlement, afterSettlement, laggingStream, retiredStream } = settlementFixture()
     const ui = {
       open: true,
-      mode: 'chat' as const,
+      mode: 'conversations' as const,
       selectedRoomId: fixture.roomId,
       snapshot: afterSettlement,
       busy: false,
@@ -460,7 +461,7 @@ describe('workspace UI view model', () => {
       selectDefinition: vi.fn(),
       setSnapshot: vi.fn(),
       setBusy: vi.fn(),
-      setError: vi.fn(),
+      setError: vi.fn(), setRetry: vi.fn(),
     }
     const props = { useStore: (selector: (state: unknown) => unknown) => selector(ui), actions, api: {}, t }
     const isMessageRow = (element: TestElement): boolean => element.props['className'] === 'dsh-agent-group-message'
@@ -486,7 +487,7 @@ describe('workspace UI view model', () => {
     const { fixture, beforeSettlement, afterSettlement, retiredStream } = settlementFixture()
     const ui = {
       open: true,
-      mode: 'chat' as const,
+      mode: 'conversations' as const,
       selectedRoomId: fixture.roomId,
       snapshot: beforeSettlement,
       busy: false,
@@ -498,7 +499,7 @@ describe('workspace UI view model', () => {
       selectDefinition: vi.fn(),
       setSnapshot: vi.fn(),
       setBusy: vi.fn(),
-      setError: vi.fn(),
+      setError: vi.fn(), setRetry: vi.fn(),
     }
     const waitStarted = Promise.withResolvers<void>()
     const pendingWait = pendingPromise<WorkspaceTurnStreamSnapshot>()
@@ -507,8 +508,13 @@ describe('workspace UI view model', () => {
       snapshot: vi.fn()
         .mockResolvedValueOnce(beforeSettlement)
         .mockResolvedValueOnce(afterSettlement),
-      streamSnapshot: vi.fn(async () => retiredStream),
-      waitForStream: vi.fn((_version: number, signal: AbortSignal) => {
+      activitySnapshot: vi.fn(async () => ({
+        version: retiredStream.version,
+        workspaceRevision: retiredStream.workspaceRevision,
+        activities: [],
+        agents: [],
+      })),
+      waitForActivity: vi.fn((_version: number, signal: AbortSignal) => {
         signal.addEventListener('abort', () => pendingWait.reject(controllerRejected), { once: true })
         waitStarted.resolve()
         return pendingWait.promise
@@ -527,6 +533,7 @@ describe('workspace UI view model', () => {
     await waitStarted.promise
     expect(reconnectApi.snapshot).toHaveBeenCalledTimes(2)
     expect(actions.setSnapshot).toHaveBeenLastCalledWith(afterSettlement)
+    expect(actions.setMode).not.toHaveBeenCalled()
     if (typeof cleanup === 'function') cleanup()
     await Promise.resolve()
   })
@@ -535,7 +542,7 @@ describe('workspace UI view model', () => {
     const fixture = workspaceFixture()
     const ui: Record<string, unknown> = {
       open: true,
-      mode: 'chat',
+      mode: 'conversations',
       selectedRoomId: fixture.roomId,
       snapshot: fixture.state,
       busy: false,
@@ -549,11 +556,11 @@ describe('workspace UI view model', () => {
       setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
       setError: vi.fn((error: unknown) => { ui['error'] = error }),
     }
-    const stream = { version: 0, workspaceRevision: fixture.state.revision, turns: [] }
+    const stream = { version: 0, workspaceRevision: fixture.state.revision, activities: [], agents: [] }
     const api = {
       snapshot: vi.fn(async () => fixture.state),
-      streamSnapshot: vi.fn(async () => stream),
-      waitForStream: vi.fn(async () => { throw new Error('upstream detail') }),
+      activitySnapshot: vi.fn(async () => stream),
+      waitForActivity: vi.fn(async () => { throw new Error('upstream detail') }),
     }
     const harness = componentHarness()
     harness.render(WorkspaceOverlay as unknown as TestComponent, {
@@ -565,7 +572,7 @@ describe('workspace UI view model', () => {
     const subscription = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[0]
     if (subscription === undefined) throw new Error('expected stream subscription effect')
     const cleanup = subscription()
-    await vi.waitFor(() => expect(api.waitForStream).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(api.waitForActivity).toHaveBeenCalledOnce())
 
     const rerendered = harness.render(WorkspaceOverlay as unknown as TestComponent, {
       useStore: (selector: (state: unknown) => unknown) => selector(ui),
@@ -596,7 +603,7 @@ describe('workspace UI view model', () => {
 
     let caught: unknown
     try {
-      await client.postMessage('room-direct', '@all hello', [])
+      await client.postMessage('room-direct', '@all hello', [], 1)
     } catch (error) {
       caught = error
     }
@@ -616,7 +623,7 @@ describe('workspace UI view model', () => {
     }).state
     const ui: Record<string, unknown> = {
       open: true,
-      mode: 'chat',
+      mode: 'conversations',
       selectedRoomId: direct.roomId,
       snapshot: joined,
       busy: false,
@@ -661,12 +668,65 @@ describe('workspace UI view model', () => {
     expect(send).toBeDefined()
     ;(send!.props['onClick'] as () => void)()
     await vi.waitFor(() => expect(ui['error']).toBeInstanceOf(WorkspaceApiError))
-    expect(api.postMessage).toHaveBeenCalledWith(direct.roomId, '@all hello', [])
+    expect(api.postMessage).toHaveBeenCalledWith(direct.roomId, '@all hello', [], joined.revision)
     expect(actions.setSnapshot).not.toHaveBeenCalled()
 
     tree = renderOverlay()
     const retained = harness.find(tree, element => element.type === 'textarea')
     expect(retained?.props['value']).toBe('@all hello')
+  })
+
+  it('refreshes once after a stale write and retries only after the user asks', async () => {
+    const fixture = workspaceFixture()
+    const refreshed = { ...fixture.state, revision: fixture.state.revision + 1 }
+    const ui: Record<string, unknown> = {
+      open: true,
+      mode: 'conversations',
+      selectedRoomId: fixture.roomId,
+      snapshot: fixture.state,
+      busy: false,
+    }
+    const actions = {
+      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(),
+      setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
+      setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
+      setError: vi.fn((error: unknown) => { ui['error'] = error }),
+      setRetry: vi.fn((retry: unknown) => { ui['retry'] = retry }),
+    }
+    const stale = new WorkspaceApiError({
+      kind: 'business', code: 'stale-revision', message: 'stale',
+      details: { expectedRevision: fixture.state.revision, actualRevision: refreshed.revision },
+    })
+    const api = {
+      snapshot: vi.fn(async () => refreshed),
+      postMessage: vi.fn()
+        .mockRejectedValueOnce(stale)
+        .mockResolvedValueOnce(refreshed),
+    }
+    const harness = componentHarness()
+    const render = (): unknown => harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector(ui), actions, api, t,
+    })
+
+    let tree = render()
+    const draft = harness.find(tree, element => element.type === 'textarea')!
+    ;(draft.props['onChange'] as (event: unknown) => void)({ target: { value: 'keep this draft' } })
+    tree = render()
+    const composer = harness.find(tree, element => element.props['className'] === 'dsh-agent-group-compose-row')!
+    ;(harness.find(composer, element => element.type === 'button')!.props['onClick'] as () => void)()
+
+    await vi.waitFor(() => expect(api.snapshot).toHaveBeenCalledOnce())
+    expect(api.postMessage).toHaveBeenCalledTimes(1)
+    tree = render()
+    expect(harness.find(tree, element => element.type === 'textarea')?.props['value']).toBe('keep this draft')
+    const retry = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'workspace.retry')
+    expect(retry).toBeDefined()
+    ;(retry!.props['onClick'] as () => void)()
+    await vi.waitFor(() => expect(api.postMessage).toHaveBeenCalledTimes(2))
+    expect(api.postMessage.mock.calls.map(call => call[3])).toEqual([
+      fixture.state.revision,
+      refreshed.revision,
+    ])
   })
 
   it('projects only active memberships for the selected room', () => {

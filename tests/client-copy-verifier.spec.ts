@@ -10,6 +10,11 @@ function verify(fixture: 'failing.tsx' | 'passing.tsx') {
   return spawnSync(process.execPath, [script, '--root', root], { encoding: 'utf8' })
 }
 
+function verifyWorkspaceClient() {
+  const root = fileURLToPath(new URL('../packages/web/src/client', import.meta.url))
+  return spawnSync(process.execPath, [script, '--root', root], { encoding: 'utf8' })
+}
+
 describe('client copy AST verifier', () => {
   it('reports every guarded display-literal category with source coordinates', () => {
     const result = verify('failing.tsx')
@@ -26,6 +31,11 @@ describe('client copy AST verifier', () => {
 
   it('accepts translations, technical attributes and user data expressions', () => {
     const result = verify('passing.tsx')
+    expect(result).toMatchObject({ status: 0, stderr: '' })
+  }, CONCURRENT_LANE_TEST_TIMEOUT_MS)
+
+  it('accepts the four-view workspace shell and its accessibility copy', () => {
+    const result = verifyWorkspaceClient()
     expect(result).toMatchObject({ status: 0, stderr: '' })
   }, CONCURRENT_LANE_TEST_TIMEOUT_MS)
 })

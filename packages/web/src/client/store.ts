@@ -4,7 +4,7 @@ import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-run
 import type { WorkspaceApiError } from './api.ts'
 import type { AgentDefinitionId, RoomId, WorkspaceSnapshot } from './contracts.ts'
 
-export type WorkspaceViewMode = 'chat' | 'agents'
+export type WorkspaceViewMode = 'conversations' | 'colleagues' | 'tasks' | 'memory'
 
 export interface WorkspaceUiState {
   open: boolean
@@ -14,7 +14,11 @@ export interface WorkspaceUiState {
   snapshot?: WorkspaceSnapshot
   busy: boolean
   error?: WorkspaceUiError
+  retry?: WorkspaceRetryState
 }
+
+/** A stale write is retained for an explicit user retry after refresh. */
+export interface WorkspaceRetryState { readonly stale: true }
 
 /** Display-safe failure retained until the locale-owning overlay renders it. */
 export type WorkspaceUiError = WorkspaceApiError | Error | string
@@ -28,12 +32,13 @@ type WorkspaceUiActions = {
   setSnapshot: (draft: WorkspaceUiState, snapshot: WorkspaceSnapshot) => void
   setBusy: (draft: WorkspaceUiState, busy: boolean) => void
   setError: (draft: WorkspaceUiState, error: WorkspaceUiError | undefined) => void
+  setRetry: (draft: WorkspaceUiState, retry: WorkspaceRetryState | undefined) => void
 }
 
 /** One handle is created inside apply and shared by the two additive slot entries. */
 export function createWorkspaceUiStore(): EngineStoreHandle<WorkspaceUiState, WorkspaceUiActions> {
   return defineStore({
-    init: (): WorkspaceUiState => ({ open: false, mode: 'chat', busy: false }),
+    init: (): WorkspaceUiState => ({ open: false, mode: 'conversations', busy: false }),
     actions: {
       open: draft => { draft.open = true },
       close: draft => { draft.open = false },
@@ -46,11 +51,15 @@ export function createWorkspaceUiStore(): EngineStoreHandle<WorkspaceUiState, Wo
         if (definitionId === undefined) delete draft.selectedDefinitionId
         else draft.selectedDefinitionId = definitionId
       },
-      setSnapshot: (draft, snapshot) => { draft.snapshot = snapshot },
+      setSnapshot: (draft, snapshot) => { draft.snapshot = structuredClone(snapshot) },
       setBusy: (draft, busy) => { draft.busy = busy },
       setError: (draft, error) => {
         if (error === undefined) delete draft.error
         else draft.error = error
+      },
+      setRetry: (draft, retry) => {
+        if (retry === undefined) delete draft.retry
+        else draft.retry = retry
       },
     },
   })
