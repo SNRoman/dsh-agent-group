@@ -260,3 +260,47 @@ Round-four files changed:
 
 - `packages/host/src/task-delivery-coordinator.ts`
 - `tests/host-consistency.spec.ts`
+
+## Review fix round 5
+
+Review-fix commit: `bbac95c14761dd7efb552cc798676930aa6eb501` (`fix(host): stop cancelled task delivery flights`).
+
+Every task flight owns an `AbortController`. After a task cancellation commits, the Host synchronously signals each exact cancelled task on the coordinator captured in the serialized update, then continues child, inbox, and activity cleanup. A reserved retry therefore observes cancellation even when its durable start committed before reservation adoption. Delivery checks the signal before and after employee admission, at a synchronous Host callback immediately before tracker registration and inbox insertion, and after the terminal turn outcome before result persistence.
+
+Recovered deliveries use the same flight cancellation signal. Direct aggregate-only cancellation does not signal a coordinator, so existing explicit completion-after-cancel evidence remains available outside the Host cancellation path. Reservation rollback, genuine orphan recovery, and employee teardown retain their existing ownership and settlement behavior.
+
+Review-fix RED evidence:
+
+```text
+pnpm vitest run tests/host-consistency.spec.ts -t "task cancellation (invalidates|during|at the Host|after retry)"
+# exit 1; 4 tests failed and 49 skipped
+# post-commit adoption and employee-admission retries fulfilled, the Host tracker was entered after cancellation, and claimed output was returned
+```
+
+Review-fix GREEN evidence:
+
+```text
+pnpm vitest run tests/host-consistency.spec.ts -t "task cancellation (invalidates|during|at the Host|after retry)"
+# 4 tests passed and 49 skipped
+
+pnpm vitest run tests/host-consistency.spec.ts tests/task-delivery-coordinator.spec.ts tests/restart.integration.spec.ts tests/runtime.spec.ts
+# 4 files passed; 124 tests passed
+
+pnpm vitest run tests/workspace-rpc.spec.ts tests/host-consistency.spec.ts tests/workspace-direct-room.spec.ts tests/workspace-async-dispatch.spec.ts tests/tasks.spec.ts tests/task-delivery.spec.ts tests/task-delivery-coordinator.spec.ts tests/activity-controller.spec.ts tests/child-runs.spec.ts tests/memory-query.spec.ts tests/definition-history.spec.ts tests/workspace-activity-stream.spec.ts tests/dispatcher.spec.ts tests/runtime.spec.ts tests/restart.integration.spec.ts tests/task-tools.spec.ts
+# 16 files passed; 324 tests passed
+
+pnpm test
+# 29 files passed; 493 tests passed
+
+pnpm exec tsc -p tests/types/tsconfig.json --noEmit
+pnpm run typecheck
+pnpm run build:host
+git diff --check
+# all exit 0
+```
+
+Round-five files changed:
+
+- `packages/host/src/index.ts`
+- `packages/host/src/task-delivery-coordinator.ts`
+- `tests/host-consistency.spec.ts`
