@@ -60,6 +60,31 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
       .rejects.toThrow('invalid mutation result')
   })
 
+  it('normalizes the JSON acknowledgement envelope that omits its void value', async () => {
+    const transported = JSON.parse(JSON.stringify({ revision: 2, value: undefined })) as unknown
+    expect(transported).toEqual({ revision: 2 })
+    const { api, calls } = apiFixture({ 'runtime/failure/acknowledge': transported })
+
+    await expect(api.acknowledgeAgentFailure('agent-1', 1)).resolves.toEqual({ revision: 2, value: undefined })
+    expect(calls).toEqual([expect.objectContaining({
+      endpoint: 'runtime/failure/acknowledge',
+      payload: { expectedRevision: 1, agentId: 'agent-1' },
+    })])
+  })
+
+  it.each([
+    ['missing revision', {}],
+    ['extra field', { revision: 2, extra: true }],
+  ] as const)('rejects an acknowledgement envelope with %s', async (_name, response) => {
+    const { api } = apiFixture({ 'runtime/failure/acknowledge': response })
+    await expect(api.acknowledgeAgentFailure('agent-1', 1)).rejects.toThrow('invalid mutation result')
+  })
+
+  it('does not allow another mutation endpoint to omit its value', async () => {
+    const { api } = apiFixture({ 'task/cancel': { revision: 2 } })
+    await expect(api.cancelTask('task-1', 1)).rejects.toThrow('invalid mutation result')
+  })
+
   it.each([
     ['snapshot event', 'snapshot', { ...workspaceSnapshot(), events: [{ id: 'event-1', sequence: 1, type: 'invented/event' }] }],
     ['activity source', 'runtime/activity/snapshot', { version: 1, workspaceRevision: 1, activities: [{ activityId: 'activity-1', agentId: 'agent-1', source: { kind: 'invented' }, messageId: 'message-1', startOrder: 1, status: 'queued', blocks: [] }], agents: [] }],
@@ -247,7 +272,7 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
     ['task/retry-delivery', { taskId: 'task-1' }, { revision: 2, value: 'retried' }, (api: WorkspaceApiClient) => api.retryTaskDelivery('task-1', 1)],
     ['runtime/activity/stop', { activityId: 'activity-1', agentId: 'agent-1', messageId: 'message-1', sessionId: 'session-1', turn: 1 }, { revision: 2, value: { status: 'stopping' } }, (api: WorkspaceApiClient) => api.stopActivity({ activityId: 'activity-1', agentId: 'agent-1', messageId: 'message-1', sessionId: 'session-1', turn: 1 }, 1)],
     ['runtime/child/stop', { childRunId: 'child-1' }, { revision: 2, value: { status: 'already-stopping' } }, (api: WorkspaceApiClient) => api.stopChildRun('child-1', 1)],
-    ['runtime/failure/acknowledge', { agentId: 'agent-1' }, { revision: 2, value: undefined }, (api: WorkspaceApiClient) => api.acknowledgeAgentFailure('agent-1', 1)],
+    ['runtime/failure/acknowledge', { agentId: 'agent-1' }, JSON.parse(JSON.stringify({ revision: 2, value: undefined })) as unknown, (api: WorkspaceApiClient) => api.acknowledgeAgentFailure('agent-1', 1)],
   ] as const)('routes %s with the exact revisioned payload and committed value', async (endpoint, payload, response, invoke) => {
     const { api, calls } = apiFixture({ [endpoint]: response })
     await expect(invoke(api)).resolves.toBeDefined()

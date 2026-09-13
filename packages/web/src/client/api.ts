@@ -164,7 +164,10 @@ function assertMutationResult<Endpoint extends WorkspaceMutationEndpoint>(
   endpoint: Endpoint,
   value: unknown,
 ): WorkspaceMutationResult<WorkspaceMutationValueMap[Endpoint]> {
-  if (!isRecord(value) || !hasExactKeys(value, ['revision', 'value']) || !isNonNegativeInteger(value['revision'])) {
+  if (!isRecord(value) || !isNonNegativeInteger(value['revision'])
+    || (endpoint === 'runtime/failure/acknowledge'
+      ? !hasExactKeys(value, ['revision'])
+      : !hasExactKeys(value, ['revision', 'value']))) {
     throw invalid('mutation result')
   }
   const revision = value['revision']
