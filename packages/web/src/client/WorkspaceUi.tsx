@@ -177,12 +177,18 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
       setPendingMutation(undefined)
       return true
     } catch (error) {
-      actions.setError(toUiError(error))
       if (isStaleRevision(error)) {
-        const authoritative = await api.snapshot()
-        actions.setSnapshot(authoritative)
-        actions.setRetry({ stale: true })
         setPendingMutation(() => operation)
+        try {
+          const authoritative = await api.snapshot()
+          actions.setSnapshot(authoritative)
+          actions.setRetry({ stale: true, refreshed: true })
+        } catch (refreshError) {
+          actions.setError(toUiError(refreshError))
+          actions.setRetry({ stale: true, refreshed: false })
+        }
+      } else {
+        actions.setError(toUiError(error))
       }
       return false
     } finally {
@@ -206,10 +212,10 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
           <WorkspaceIcon />
           <span className="dsh-agent-group-title">{t('workspace.title')}</span>
           <nav className="dsh-agent-group-tabs" aria-label={t('workspace.views')}>
-            <button type="button" className="dsh-agent-group-tab" aria-label={t('workspace.conversations')} data-active={ui.mode === 'conversations'} onClick={() => actions.setMode('conversations')}>{t('workspace.conversations')}</button>
-            <button type="button" className="dsh-agent-group-tab" aria-label={t('workspace.colleagues')} data-active={ui.mode === 'colleagues'} onClick={() => actions.setMode('colleagues')}>{t('workspace.colleagues')}</button>
-            <button type="button" className="dsh-agent-group-tab" aria-label={t('workspace.tasks')} data-active={ui.mode === 'tasks'} onClick={() => actions.setMode('tasks')}>{t('workspace.tasks')}</button>
-            <button type="button" className="dsh-agent-group-tab" aria-label={t('workspace.memory')} data-active={ui.mode === 'memory'} onClick={() => actions.setMode('memory')}>{t('workspace.memory')}</button>
+            <button type="button" className="dsh-agent-group-tab" aria-label={t('workspace.conversations')} aria-current={ui.mode === 'conversations' ? 'page' : undefined} data-active={ui.mode === 'conversations'} onClick={() => actions.setMode('conversations')}>{t('workspace.conversations')}</button>
+            <button type="button" className="dsh-agent-group-tab" aria-label={t('workspace.colleagues')} aria-current={ui.mode === 'colleagues' ? 'page' : undefined} data-active={ui.mode === 'colleagues'} onClick={() => actions.setMode('colleagues')}>{t('workspace.colleagues')}</button>
+            <button type="button" className="dsh-agent-group-tab" aria-label={t('workspace.tasks')} aria-current={ui.mode === 'tasks' ? 'page' : undefined} data-active={ui.mode === 'tasks'} onClick={() => actions.setMode('tasks')}>{t('workspace.tasks')}</button>
+            <button type="button" className="dsh-agent-group-tab" aria-label={t('workspace.memory')} aria-current={ui.mode === 'memory' ? 'page' : undefined} data-active={ui.mode === 'memory'} onClick={() => actions.setMode('memory')}>{t('workspace.memory')}</button>
           </nav>
           <span className="dsh-agent-group-spacer" />
           {ui.busy
@@ -223,7 +229,10 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
 
         {ui.error !== undefined ? <div className="dsh-agent-group-error">{errorMessage(ui.error, t)}</div> : null}
         {ui.retry !== undefined && pendingMutation !== undefined && snapshot !== undefined
-          ? <div className="dsh-agent-group-retry" role="status"><span>{t('workspace.staleRetry')}</span><button type="button" className="dsh-agent-group-button" onClick={() => void commit(pendingMutation, snapshot.revision)}>{t('workspace.retry')}</button></div>
+          ? <div className="dsh-agent-group-retry" role="status"><span>{t('workspace.staleRetry')}</span><button type="button" className="dsh-agent-group-button" onClick={() => {
+              if (ui.retry?.refreshed === true) void commit(pendingMutation, snapshot.revision)
+              else void refreshStale(api, actions)
+            }}>{t('workspace.retry')}</button></div>
           : null}
         {streamError !== undefined ? <div className="dsh-agent-group-error">{errorMessage(streamError, t, 'workspace.streamFailed')}</div> : null}
         {snapshot === undefined
@@ -451,7 +460,7 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
               })}
               {liveTurns.map(turn => (
                 <WorkspaceLiveTurn
-                  key={`${turn.sessionId}:${turn.turn}:${turn.roomId}:${turn.agentId}`}
+                  key={turn.activityId}
                   turn={turn}
                   agentName={snapshot.agents[turn.agentId]?.name ?? turn.agentId}
                   t={props.t}
@@ -683,6 +692,7 @@ function activityTurnStream(activity: WorkspaceActivitySnapshot): WorkspaceTurnS
     turns: activity.activities.flatMap(item => {
       if (item.source.kind !== 'room' || item.claimed === undefined) return []
       return [{
+        activityId: item.activityId,
         roomId: item.source.roomId,
         agentId: item.agentId,
         sessionId: item.claimed.sessionId,
@@ -737,9 +747,7 @@ function isStaleRevision(error: unknown): error is WorkspaceApiError {
 }
 
 function toUiError(error: unknown): WorkspaceUiError {
-  return error instanceof WorkspaceApiError || error instanceof Error || typeof error === 'string'
-    ? error
-    : String(error)
+  return error instanceof WorkspaceApiError ? error : { kind: 'unexpected' }
 }
 
 function errorMessage(
@@ -766,7 +774,21 @@ function errorMessage(
       case 'delegation-grant-inactive': return t('error.delegationGrantInactive', failure.details)
     }
   }
-  return t(fallback, { detail: error instanceof Error ? error.message : String(error) })
+  return t(fallback)
+}
+
+async function refreshStale(api: WorkspaceApiClient, actions: WorkspaceStoreProps['actions']): Promise<void> {
+  actions.setBusy(true)
+  actions.setError(undefined)
+  try {
+    actions.setSnapshot(await api.snapshot())
+    actions.setRetry({ stale: true, refreshed: true })
+  } catch (error) {
+    actions.setError(toUiError(error))
+    actions.setRetry({ stale: true, refreshed: false })
+  } finally {
+    actions.setBusy(false)
+  }
 }
 
 function WorkspaceIcon() {

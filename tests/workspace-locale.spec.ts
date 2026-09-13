@@ -147,6 +147,7 @@ function registerPlugin(locale: LocaleRuntimeInstance) {
 }
 
 const liveTurn: WorkspaceTurnProjection = {
+  activityId: 'activity-1',
   roomId: 'room-1',
   agentId: 'agent-1',
   sessionId: 'session-1',
@@ -157,8 +158,8 @@ const liveTurn: WorkspaceTurnProjection = {
 
 describe('Agent Workspace locale runtime', () => {
   it.each([
-    ['zh', ['智能体工作区', '打开智能体工作区', '会话', '同事', '任务', '记忆', '正在读取智能体工作区…', '正在回复…', '正在思考…', '工作区请求失败：upstream detail']],
-    ['en', ['Agent Workspace', 'Open Agent Workspace', 'Conversations', 'Colleagues', 'Tasks', 'Memory', 'Loading Agent Workspace…', 'Replying…', 'Thinking…', 'Workspace request failed: upstream detail']],
+    ['zh', ['智能体工作区', '打开智能体工作区', '会话', '同事', '任务', '记忆', '正在读取智能体工作区…', '正在回复…', '正在思考…', '工作区请求失败。']],
+    ['en', ['Agent Workspace', 'Open Agent Workspace', 'Conversations', 'Colleagues', 'Tasks', 'Memory', 'Loading Agent Workspace…', 'Replying…', 'Thinking…', 'Workspace request failed.']],
   ] as const)('renders footer, overlay, live, empty, error and accessibility copy in %s', (localeId, expected) => {
     const locale = new LocaleRuntime(new Context())
     locale.setLocale(localeId)

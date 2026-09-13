@@ -5,6 +5,7 @@ import { createInitialState, mutateWorkspace } from '../packages/host/src/state.
 import { WorkspaceApiClient, WorkspaceApiError } from '../packages/web/src/client/api.ts'
 import { en, zh } from '../packages/web/src/client/locales.ts'
 import { WorkspaceOverlay } from '../packages/web/src/client/WorkspaceUi.tsx'
+import { WorkspaceLiveTurn } from '../packages/web/src/client/WorkspaceTurn.tsx'
 import type { WorkspaceTurnStreamSnapshot } from '../packages/web/src/client/contracts.ts'
 import {
   activeRoomMembers,
@@ -81,6 +82,7 @@ function roleAliasFixture() {
 
 interface TestElement {
   readonly type: unknown
+  readonly key?: string | null
   readonly props: Readonly<Record<string, unknown>>
 }
 
@@ -159,7 +161,21 @@ function componentHarness(initialTurnStream?: WorkspaceTurnStreamSnapshot) {
     ]
   }
 
-  return { effectsFor: (component: TestComponent) => effects.get(component) ?? [], find, findAll, render }
+  const findRaw = (root: unknown, predicate: (element: TestElement) => boolean): TestElement | undefined => {
+    if (Array.isArray(root)) {
+      for (const child of root) {
+        const match = findRaw(child, predicate)
+        if (match !== undefined) return match
+      }
+      return undefined
+    }
+    if (!isTestElement(root)) return undefined
+    if (predicate(root)) return root
+    if (typeof root.type === 'function') return findRaw(render(root.type as TestComponent, root.props), predicate)
+    return findRaw(root.props['children'], predicate)
+  }
+
+  return { effectsFor: (component: TestComponent) => effects.get(component) ?? [], find, findAll, findRaw, render }
 }
 
 function isTestElement(value: unknown): value is TestElement {
@@ -218,6 +234,24 @@ function settlementFixture() {
 
 describe('workspace UI view model', () => {
   const t = (key: string) => key
+
+  it.each([
+    [zh, '会话'],
+    [en, 'Conversations'],
+  ] as const)('announces the selected navigation view in both locales', (dictionary, selectedLabel) => {
+    const fixture = workspaceFixture()
+    const harness = componentHarness()
+    const tree = harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector({ open: true, mode: 'conversations', snapshot: fixture.state, busy: false }),
+      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
+      api: {},
+      t: translate(dictionary),
+    })
+    const tabs = harness.findAll(tree, element => element.props['className'] === 'dsh-agent-group-tab')
+    expect(tabs).toHaveLength(4)
+    expect(tabs.find(tab => tab.props['aria-label'] === selectedLabel)?.props['aria-current']).toBe('page')
+    expect(tabs.filter(tab => tab.props['aria-current'] === 'page')).toHaveLength(1)
+  })
 
   it('labels agent rows as accessible groups in chat and definition views', () => {
     const fixture = workspaceFixture()
@@ -483,6 +517,26 @@ describe('workspace UI view model', () => {
     expect(retiredHarness.findAll(retiredTree, isMessageRow)).toHaveLength(2)
   })
 
+  it('uses the durable activity id as the live row key', () => {
+    const fixture = workspaceFixture()
+    const stream = {
+      version: 1,
+      workspaceRevision: fixture.state.revision,
+      turns: [{
+        activityId: 'activity-stable-1', roomId: fixture.roomId, agentId: fixture.aliceId,
+        sessionId: 'session-1', turn: 1, status: 'running' as const, blocks: [],
+      }],
+    }
+    const harness = componentHarness(stream)
+    const tree = harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector({ open: true, mode: 'conversations', selectedRoomId: fixture.roomId, snapshot: fixture.state, busy: false }),
+      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
+      api: {}, t,
+    })
+    const live = harness.findRaw(tree, element => element.type === WorkspaceLiveTurn)
+    expect(live?.key).toBe('activity-stable-1')
+  })
+
   it('refetches durable state when a reconnect observes stream retirement first', async () => {
     const { fixture, beforeSettlement, afterSettlement, retiredStream } = settlementFixture()
     const ui = {
@@ -581,7 +635,7 @@ describe('workspace UI view model', () => {
       t: translate(en),
     })
     const errors = harness.findAll(rerendered, element => element.props['className'] === 'dsh-agent-group-error')
-    expect(errors.map(error => error.props['children'])).toEqual(['Live status connection failed: upstream detail'])
+    expect(errors.map(error => error.props['children'])).toEqual(['Live status connection failed.'])
     expect(actions.setError).not.toHaveBeenCalledWith(expect.any(Error))
     if (typeof cleanup === 'function') cleanup()
   })
@@ -727,6 +781,55 @@ describe('workspace UI view model', () => {
       fixture.state.revision,
       refreshed.revision,
     ])
+  })
+
+  it('surfaces a safe refresh retry when stale recovery cannot fetch a snapshot', async () => {
+    const fixture = workspaceFixture()
+    const refreshed = { ...fixture.state, revision: fixture.state.revision + 1 }
+    const ui: Record<string, unknown> = {
+      open: true, mode: 'conversations', selectedRoomId: fixture.roomId, snapshot: fixture.state, busy: false,
+    }
+    const actions = {
+      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(),
+      setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
+      setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
+      setError: vi.fn((error: unknown) => { ui['error'] = error }),
+      setRetry: vi.fn((retry: unknown) => { ui['retry'] = retry }),
+    }
+    const stale = new WorkspaceApiError({
+      kind: 'business', code: 'stale-revision', message: 'stale',
+      details: { expectedRevision: fixture.state.revision, actualRevision: fixture.state.revision + 1 },
+    })
+    const api = {
+      snapshot: vi.fn().mockRejectedValueOnce(new Error('private transport detail')).mockResolvedValueOnce(refreshed),
+      postMessage: vi.fn().mockRejectedValueOnce(stale).mockResolvedValueOnce(refreshed),
+    }
+    const harness = componentHarness()
+    const render = (): unknown => harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector(ui), actions, api, t,
+    })
+    let tree = render()
+    ;(harness.find(tree, element => element.type === 'textarea')!.props['onChange'] as (event: unknown) => void)({ target: { value: 'preserve me' } })
+    tree = render()
+    const composer = harness.find(tree, element => element.props['className'] === 'dsh-agent-group-compose-row')!
+    ;(harness.find(composer, element => element.type === 'button')!.props['onClick'] as () => void)()
+
+    await vi.waitFor(() => expect(actions.setRetry).toHaveBeenCalledWith({ stale: true, refreshed: false }))
+    expect(api.snapshot).toHaveBeenCalledOnce()
+    expect(api.postMessage).toHaveBeenCalledOnce()
+    tree = render()
+    expect(harness.find(tree, element => element.type === 'textarea')?.props['value']).toBe('preserve me')
+    expect(harness.findAll(tree, element => element.props['className'] === 'dsh-agent-group-error').map(element => element.props['children']))
+      .toEqual(['workspace.requestFailed'])
+    let retry = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'workspace.retry')
+    ;(retry!.props['onClick'] as () => void)()
+    await vi.waitFor(() => expect(api.snapshot).toHaveBeenCalledTimes(2))
+    expect(api.postMessage).toHaveBeenCalledOnce()
+    tree = render()
+    retry = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'workspace.retry')
+    ;(retry!.props['onClick'] as () => void)()
+    await vi.waitFor(() => expect(api.postMessage).toHaveBeenCalledTimes(2))
+    expect(api.postMessage.mock.calls.map(call => call[3])).toEqual([fixture.state.revision, refreshed.revision])
   })
 
   it('projects only active memberships for the selected room', () => {

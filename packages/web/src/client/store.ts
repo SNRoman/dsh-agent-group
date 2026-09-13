@@ -18,10 +18,10 @@ export interface WorkspaceUiState {
 }
 
 /** A stale write is retained for an explicit user retry after refresh. */
-export interface WorkspaceRetryState { readonly stale: true }
+export interface WorkspaceRetryState { readonly stale: true; readonly refreshed: boolean }
 
 /** Display-safe failure retained until the locale-owning overlay renders it. */
-export type WorkspaceUiError = WorkspaceApiError | Error | string
+export type WorkspaceUiError = WorkspaceApiError | { readonly kind: 'unexpected' }
 
 type WorkspaceUiActions = {
   open: (draft: WorkspaceUiState) => void
