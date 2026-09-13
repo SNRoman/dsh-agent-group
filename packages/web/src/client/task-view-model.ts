@@ -28,6 +28,7 @@ export interface TaskAssignmentProjection {
 export interface TaskGrantProjection {
   readonly id: DelegationGrantId
   readonly status: 'active' | 'expired'
+  readonly expirationReason?: 'revoked' | 'root-terminal' | 'unavailable' | undefined
   readonly grantee: TaskParty
   readonly grantedBy: TaskParty
   readonly eventSequences: readonly number[]
@@ -64,6 +65,7 @@ export interface TaskProjection {
   readonly rootTaskId: TaskId
   readonly title: string
   readonly status: WorkspaceTaskView['status']
+  readonly cancellation?: { readonly scope: 'root-cascade' | 'derived-only'; readonly eventSequence: number } | undefined
   readonly firstEventSequence?: number | undefined
   readonly assignment?: TaskAssignmentProjection | undefined
   readonly delivery: TaskDeliveryProjection
@@ -117,6 +119,8 @@ export function projectTaskRoots(
     const assignmentEvent = assignment === undefined ? undefined : events.find(event => (
       (event.type === 'task/assigned' || event.type === 'task/delegated') && event.subjectId === assignment.id
     ))
+    const cancellationEvent = events.findLast(event => event.type === 'task/cancelled' && event.subjectId === task.id)
+    const root = snapshot.tasks[task.rootTaskId]
     const children = Object.values(snapshot.childRuns)
       .filter(child => child.taskId === task.id)
       .map(child => {
@@ -139,6 +143,12 @@ export function projectTaskRoots(
       rootTaskId: task.rootTaskId,
       title: task.title,
       status: task.status,
+      ...(cancellationEvent === undefined ? {} : {
+        cancellation: {
+          scope: task.id === task.rootTaskId || root?.status === 'cancelled' ? 'root-cascade' as const : 'derived-only' as const,
+          eventSequence: cancellationEvent.sequence,
+        },
+      }),
       ...(events[0] === undefined ? {} : { firstEventSequence: events[0].sequence }),
       ...(assignment === undefined ? {} : {
         assignment: {
@@ -164,13 +174,20 @@ export function projectTaskRoots(
     const projectedRoot = projectTask(root)
     const grants = Object.values(snapshot.delegationGrants)
       .filter(grant => grant.rootTaskId === rootTaskId)
-      .map(grant => ({
-        id: grant.id,
-        status: grant.status,
-        grantee: party(snapshot, grant.granteeAgentId),
-        grantedBy: { id: grant.grantedByHumanId, label: grant.grantedByHumanId },
-        eventSequences: ordered(eventsByGrant.get(grant.id) ?? []).map(event => event.sequence),
-      }))
+      .map(grant => {
+        const grantEvents = ordered(eventsByGrant.get(grant.id) ?? [])
+        const explicitlyRevoked = grantEvents.some(event => event.type === 'task/delegation-revoked')
+        return {
+          id: grant.id,
+          status: grant.status,
+          ...(grant.status === 'active' ? {} : {
+            expirationReason: explicitlyRevoked ? 'revoked' as const : root.status === 'open' ? 'unavailable' as const : 'root-terminal' as const,
+          }),
+          grantee: party(snapshot, grant.granteeAgentId),
+          grantedBy: { id: grant.grantedByHumanId, label: grant.grantedByHumanId },
+          eventSequences: grantEvents.map(event => event.sequence),
+        }
+      })
       .sort((left, right) => compareFirst(left.eventSequences[0], right.eventSequences[0], left.id, right.id))
     const derivedTasks = tasks.filter(task => task.id !== rootTaskId).map(projectTask)
       .sort((left, right) => compareFirst(left.firstEventSequence, right.firstEventSequence, left.id, right.id))
@@ -195,6 +212,14 @@ export function selectNewerActivitySnapshot(
   candidate: WorkspaceActivitySnapshot,
 ): WorkspaceActivitySnapshot {
   return candidate.version < current.version ? current : candidate
+}
+
+/** Keep the highest observed durable revision when reads and mutations race. */
+export function selectNewerWorkspaceSnapshot(
+  current: WorkspaceSnapshot | undefined,
+  candidate: WorkspaceSnapshot,
+): WorkspaceSnapshot {
+  return current !== undefined && candidate.revision < current.revision ? current : candidate
 }
 
 function projectDelivery(task: WorkspaceTaskView, events: readonly WorkspaceEventView[]): TaskDeliveryProjection {

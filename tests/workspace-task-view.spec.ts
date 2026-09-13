@@ -79,7 +79,7 @@ describe('task center projection', () => {
       id: 'root-late', status: 'open', firstEventSequence: 10,
       assignment: { id: 'assign-late', assignee: { id: 'alice', label: 'Alice' }, assigningActor: { type: 'human', id: 'human-1', label: 'human-1' } },
       grants: [
-        { id: 'grant-1', status: 'expired', grantee: { id: 'alice', label: 'Alice' }, grantedBy: { id: 'human-1', label: 'human-1' }, eventSequences: [11, 12] },
+        { id: 'grant-1', status: 'expired', expirationReason: 'revoked', grantee: { id: 'alice', label: 'Alice' }, grantedBy: { id: 'human-1', label: 'human-1' }, eventSequences: [11, 12] },
         { id: 'grant-active', status: 'active', grantee: { id: 'alice', label: 'Alice' }, grantedBy: { id: 'human-1', label: 'human-1' }, eventSequences: [13] },
       ],
       delivery: { attemptId: 'attempt-1', phase: 'interrupted', failure: { code: 'turn-interrupted', summary: 'Interrupted safely.' }, retryable: true },
@@ -87,6 +87,7 @@ describe('task center projection', () => {
     })
     expect(roots[1]?.derivedTasks[0]).toMatchObject({
       id: 'derived', status: 'cancelled', firstEventSequence: 14,
+      cancellation: { scope: 'derived-only', eventSequence: 21 },
       assignment: { id: 'assign-derived', assignee: { id: 'bob', label: 'Bob' }, assigningActor: { type: 'agent', id: 'alice', label: 'Alice' }, grantId: 'grant-1' },
       children: [{ id: 'child-done', status: 'completed', result: 'child result', eventSequences: [19, 20] }],
       activities: [{ activityId: 'activity-queued', status: 'queued' }],
@@ -155,6 +156,31 @@ describe('task center projection', () => {
     const older: WorkspaceActivitySnapshot = { ...current, version: current.version - 1, activities: [] }
     expect(selectNewerActivitySnapshot(current, older)).toBe(current)
     expect(selectNewerActivitySnapshot(older, current)).toBe(current)
+  })
+
+  it('distinguishes explicit grant revocation, terminal expiry, root cascade and derived-only cancellation', () => {
+    const source = snapshot()
+    const terminalGrant = { ...source.delegationGrants['grant-active']!, status: 'expired' as const }
+    const cascaded: WorkspaceSnapshot = {
+      ...source,
+      tasks: {
+        ...source.tasks,
+        'root-late': { ...source.tasks['root-late']!, status: 'cancelled' },
+      },
+      delegationGrants: { ...source.delegationGrants, 'grant-active': terminalGrant },
+      events: [
+        ...source.events,
+        { id: 'e22', sequence: 22, type: 'task/cancelled', subjectId: 'root-late', actor: { type: 'human', id: 'human-1' } },
+      ],
+    }
+
+    const root = projectTaskRoots(cascaded, activity()).find(item => item.id === 'root-late')!
+    expect(root.cancellation).toEqual({ scope: 'root-cascade', eventSequence: 22 })
+    expect(root.derivedTasks[0]?.cancellation).toEqual({ scope: 'root-cascade', eventSequence: 21 })
+    expect(root.grants.map(grant => [grant.id, grant.expirationReason])).toEqual([
+      ['grant-1', 'revoked'],
+      ['grant-active', 'root-terminal'],
+    ])
   })
 })
 

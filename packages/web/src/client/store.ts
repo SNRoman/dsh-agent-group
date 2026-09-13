@@ -3,6 +3,7 @@
 import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-runtime/client'
 import type { WorkspaceApiError } from './api.ts'
 import type { AgentDefinitionId, RoomId, WorkspaceSnapshot } from './contracts.ts'
+import { selectNewerWorkspaceSnapshot } from './task-view-model.ts'
 
 export type WorkspaceViewMode = 'conversations' | 'colleagues' | 'tasks' | 'memory'
 
@@ -51,7 +52,10 @@ export function createWorkspaceUiStore(): EngineStoreHandle<WorkspaceUiState, Wo
         if (definitionId === undefined) delete draft.selectedDefinitionId
         else draft.selectedDefinitionId = definitionId
       },
-      setSnapshot: (draft, snapshot) => { draft.snapshot = structuredClone(snapshot) },
+      setSnapshot: (draft, snapshot) => {
+        const selected = selectNewerWorkspaceSnapshot(draft.snapshot, snapshot)
+        if (selected !== draft.snapshot) draft.snapshot = structuredClone(selected)
+      },
       setBusy: (draft, busy) => { draft.busy = busy },
       setError: (draft, error) => {
         if (error === undefined) delete draft.error

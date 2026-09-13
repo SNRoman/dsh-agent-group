@@ -28,8 +28,9 @@ export function WorkspaceTasks(props: WorkspaceTasksProps) {
   const [assigneeId, setAssigneeId] = useState<AgentId | ''>('')
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set())
   const [error, setError] = useState<string | undefined>()
+  const [refreshFailed, setRefreshFailed] = useState(false)
   const [notice, setNotice] = useState<'stopping' | 'already-stopping' | undefined>()
-  const [retry, setRetry] = useState<RetryAction | undefined>()
+  const [retries, setRetries] = useState<ReadonlyMap<string, RetryAction>>(() => new Map())
 
   const refresh = async (): Promise<void> => {
     const [snapshot, activity] = await Promise.all([props.api.snapshot(), props.api.activitySnapshot()])
@@ -40,24 +41,30 @@ export function WorkspaceTasks(props: WorkspaceTasksProps) {
   const execute = async (key: string, run: RevisionedAction, clear?: () => void): Promise<void> => {
     setPending(current => new Set(current).add(key))
     setError(undefined)
+    setRefreshFailed(false)
     setNotice(undefined)
     try {
       const result = await run(props.snapshot.revision)
+      const committed = committedSnapshot(result)
+      if (committed !== undefined) props.onSnapshot(committed)
       if (isStopMutation(result)) {
         if (result.value.status === 'stopping' || result.value.status === 'already-stopping') setNotice(result.value.status)
       }
-      await refresh()
-      setRetry(undefined)
+      setRetries(current => withoutRetry(current, key))
       clear?.()
+      try {
+        await refresh()
+      } catch {
+        setRefreshFailed(true)
+      }
     } catch (cause) {
       if (cause instanceof WorkspaceApiError && cause.kind === 'business' && cause.code === 'stale-revision') {
         try {
           await refresh()
-          setRetry({ key, run, clear })
         } catch {
           setError(props.t('workspace.requestFailed'))
-          setRetry({ key, run, clear })
         }
+        setRetries(current => new Map(current).set(key, { key, run, clear }))
       } else {
         setError(taskErrorMessage(cause, props.t))
       }
@@ -70,8 +77,7 @@ export function WorkspaceTasks(props: WorkspaceTasksProps) {
     }
   }
 
-  const retryMutation = (): void => {
-    if (retry === undefined) return
+  const retryMutation = (retry: RetryAction): void => {
     void execute(retry.key, retry.run, retry.clear)
   }
 
@@ -94,7 +100,8 @@ export function WorkspaceTasks(props: WorkspaceTasksProps) {
     <main className="dsh-agent-group-panel">
       <div className="dsh-agent-group-section-head"><span className="dsh-agent-group-section-title">{props.t('task.roots')}</span><span className="dsh-agent-group-muted">{props.t('task.rootCount', { count: roots.length })}</span></div>
       {error !== undefined ? <div className="dsh-agent-group-error" role="alert">{error}</div> : null}
-      {retry ? <div className="dsh-agent-group-retry" role="status"><span>{props.t('workspace.staleRetry')}</span><button type="button" className="dsh-agent-group-button" disabled={pending.has(retry.key)} onClick={retryMutation}>{props.t('workspace.retry')}</button></div> : null}
+      {refreshFailed ? <div className="dsh-agent-group-retry" role="status">{props.t('workspace.streamFailed')}</div> : null}
+      {[...retries.values()].sort((left, right) => left.key.localeCompare(right.key)).map(retry => <div className="dsh-agent-group-retry" role="status" key={retry.key}><span>{props.t('workspace.staleRetry')}</span><button type="button" className="dsh-agent-group-button" aria-label={props.t('task.retryAction', { action: retry.key })} disabled={pending.has(retry.key)} onClick={() => retryMutation(retry)}>{props.t('workspace.retry')}</button></div>)}
       {notice ? <div className="dsh-agent-group-retry" role="status">{props.t(notice === 'stopping' ? 'task.stopRequested' : 'task.alreadyStopping')}</div> : null}
       <div className="dsh-agent-group-scroll dsh-agent-group-task-list">
         {roots.length === 0 ? <div className="dsh-agent-group-empty">{props.t('task.empty')}</div> : roots.map(root => <TaskRoot key={root.id} root={root} pending={pending} execute={execute} api={props.api} t={props.t} />)}
@@ -119,7 +126,7 @@ function TaskRoot({ root, pending, execute, api, t }: {
       {root.status === 'open' && root.assignment !== undefined && activeGrant === undefined ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={pending.has(`grant:${root.id}:${root.assignment.assignee.id}`)} onClick={() => void execute(`grant:${root.id}:${root.assignment!.assignee.id}`, revision => api.grantTask(root.assignment!.assignee.id as AgentId, root.id, revision))}>{t('task.grant')}</button> : null}
       {root.delivery.retryable ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={pending.has(`retry:${root.id}`)} onClick={() => void execute(`retry:${root.id}`, revision => api.retryTaskDelivery(root.id, revision))}>{t('task.retryDelivery')}</button> : null}
     </div>
-    {root.grants.length > 0 ? <section aria-label={t('task.grants')}><h4>{t('task.grants')}</h4>{root.grants.map(grant => <div className="dsh-agent-group-task-row" key={grant.id}><span>{grant.grantee.label}</span><TaskBadge value={t(grant.status === 'active' ? 'task.grantActive' : 'task.grantExpired')} />{grant.status === 'active' ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={pending.has(`revoke:${grant.id}`)} onClick={() => void execute(`revoke:${grant.id}`, revision => api.revokeTask(grant.id, revision))}>{t('task.revoke')}</button> : null}<EventTrace sequences={grant.eventSequences} t={t} /></div>)}</section> : null}
+    {root.grants.length > 0 ? <section aria-label={t('task.grants')}><h4>{t('task.grants')}</h4>{root.grants.map(grant => <div className="dsh-agent-group-task-row" key={grant.id}><span>{grant.grantee.label}</span><span>{t('task.grantedBy', { actor: grant.grantedBy.label })}</span><TaskBadge value={t(grant.status === 'active' ? 'task.grantActive' : grant.expirationReason === 'revoked' ? 'task.grantRevoked' : grant.expirationReason === 'root-terminal' ? 'task.grantTerminalExpiry' : 'task.grantExpiryUnavailable')} />{grant.status === 'active' ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={pending.has(`revoke:${grant.id}`)} onClick={() => void execute(`revoke:${grant.id}`, revision => api.revokeTask(grant.id, revision))}>{t('task.revoke')}</button> : null}<EventTrace sequences={grant.eventSequences} t={t} /></div>)}</section> : null}
     <TaskRuntime task={root} pending={pending} execute={execute} api={api} t={t} />
     {root.derivedTasks.length > 0 ? <section aria-label={t('task.derived')}><h4>{t('task.derived')}</h4>{root.derivedTasks.map(task => <article className="dsh-agent-group-card" key={task.id} data-task-id={task.id}><TaskHeader task={task} t={t} /><TaskFacts task={task} t={t} />{task.status === 'open' ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={pending.has(`cancel:${task.id}`)} onClick={() => void execute(`cancel:${task.id}`, revision => api.cancelTask(task.id, revision))}>{t('task.cancel')}</button> : null}<TaskRuntime task={task} pending={pending} execute={execute} api={api} t={t} /></article>)}</section> : null}
   </article>
@@ -131,7 +138,8 @@ function TaskHeader({ task, t }: { readonly task: TaskProjection; readonly t: Tr
 
 function TaskFacts({ task, t }: { readonly task: TaskProjection; readonly t: TranslateNS<'agentWorkspace'> }) {
   return <div className="dsh-agent-group-task-facts">
-    {task.assignment ? <span>{t('task.assignedBy', { actor: task.assignment.assigningActor?.label ?? t('actor.system'), assignee: task.assignment.assignee.label })}</span> : null}
+    {task.assignment ? <span>{t('task.assignedBy', { actor: task.assignment.assigningActor?.label ?? t('actor.unavailable'), assignee: task.assignment.assignee.label })}</span> : null}
+    {task.cancellation ? <span>{t(task.cancellation.scope === 'root-cascade' ? 'task.cancellation.rootCascade' : 'task.cancellation.derivedOnly', { sequence: task.cancellation.eventSequence })}</span> : null}
     <span>{t(`task.delivery.${task.delivery.phase}`)}</span>
     {task.delivery.failure ? <span>{task.delivery.failure.summary}</span> : null}
     {task.delivery.result ? <details><summary>{t('task.result')}</summary><p>{task.delivery.result}</p></details> : null}
@@ -148,7 +156,7 @@ function TaskRuntime({ task, pending, execute, api, t }: {
 }) {
   return <>
     {task.activities.map(item => <div className="dsh-agent-group-task-row" key={item.activityId}><span>{item.agentLabel}</span><TaskBadge value={t(`task.activity.${item.status}`)} />{item.stopIdentity !== undefined && item.status !== 'settled' ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={item.status === 'stopping' || pending.has(`stop-activity:${item.activityId}`)} onClick={() => void execute(`stop-activity:${item.activityId}`, revision => api.stopActivity(item.stopIdentity!, revision))}>{t('task.stopTurn')}</button> : null}</div>)}
-    {task.children.map(child => <details className="dsh-agent-group-task-child" key={child.id}><summary>{t('task.childNamed', { id: child.id })} <TaskBadge value={t(`task.child.${child.status}`)} /></summary>{child.result !== undefined ? <p>{child.result}</p> : null}{child.status === 'running' ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={pending.has(`stop-child:${child.id}`)} onClick={() => void execute(`stop-child:${child.id}`, revision => api.stopChildRun(child.id, revision))}>{t('task.stopChild')}</button> : null}<EventTrace sequences={child.eventSequences} t={t} /></details>)}
+    {task.children.map(child => <details className="dsh-agent-group-task-child" key={child.id}><summary>{t('task.childNamed', { id: child.id })} <TaskBadge value={t(`task.child.${child.status}`)} /></summary><p>{t('task.childParent', { parent: child.parent.label })}</p>{child.result !== undefined ? <p>{child.result}</p> : null}{child.status === 'running' ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={pending.has(`stop-child:${child.id}`)} onClick={() => void execute(`stop-child:${child.id}`, revision => api.stopChildRun(child.id, revision))}>{t('task.stopChild')}</button> : null}<EventTrace sequences={child.eventSequences} t={t} /></details>)}
   </>
 }
 
@@ -158,6 +166,28 @@ function EventTrace({ sequences, t }: { readonly sequences: readonly number[]; r
 
 function TaskBadge({ value }: { readonly value: string }) {
   return <span className="dsh-agent-group-task-badge">{value}</span>
+}
+
+function withoutRetry(current: ReadonlyMap<string, RetryAction>, key: string): ReadonlyMap<string, RetryAction> {
+  if (!current.has(key)) return current
+  const next = new Map(current)
+  next.delete(key)
+  return next
+}
+
+function committedSnapshot(value: unknown): WorkspaceSnapshot | undefined {
+  if (isWorkspaceSnapshot(value)) return value
+  if (typeof value !== 'object' || value === null || !('value' in value)) return undefined
+  const result = value.value
+  if (typeof result !== 'object' || result === null || !('state' in result)) return undefined
+  return isWorkspaceSnapshot(result.state) ? result.state : undefined
+}
+
+function isWorkspaceSnapshot(value: unknown): value is WorkspaceSnapshot {
+  return typeof value === 'object' && value !== null
+    && 'revision' in value && typeof value.revision === 'number'
+    && 'tasks' in value && typeof value.tasks === 'object' && value.tasks !== null
+    && 'events' in value && Array.isArray(value.events)
 }
 
 function isStopMutation(value: unknown): value is { readonly value: { readonly status: 'stopping' | 'already-stopping' | 'not-active' } } {
