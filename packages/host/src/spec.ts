@@ -114,6 +114,7 @@ const workspaceEvent = z.discriminatedUnion('type', [
     ...workspaceEventBase,
     type: z.literal('task/cancelled'),
     subjectId: taskId,
+    cancellationScope: z.enum(['root-cascade', 'derived-only']).optional(),
   }).strict(),
   z.object({
     ...workspaceEventBase,

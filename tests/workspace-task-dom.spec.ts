@@ -122,10 +122,25 @@ function button(container: HTMLElement, name: string): HTMLButtonElement {
   return found
 }
 
-function taskButton(container: HTMLElement, taskId: string, name: string): HTMLButtonElement {
-  const task = container.querySelector(`[data-task-id="${taskId}"]`)
-  if (!(task instanceof HTMLElement)) throw new Error(`task '${taskId}' not found`)
-  return button(task, name)
+function field(container: HTMLElement, name: string): HTMLInputElement | HTMLSelectElement {
+  const label = [...container.querySelectorAll('label')].find(item => item.querySelector(':scope > span')?.textContent?.trim() === name)
+  const control = label?.querySelector('input, select')
+  if (!(control instanceof HTMLInputElement) && !(control instanceof HTMLSelectElement)) throw new Error(`field '${name}' not found`)
+  return control
+}
+
+function actionNames(dictionary: Dictionary = en) {
+  const t = translate(dictionary)
+  return {
+    cancelRoot: t('task.cancelNamed', { task: 'Root work', id: 'root' }),
+    cancelDerived: t('task.cancelNamed', { task: 'Derived work', id: 'derived' }),
+    cancelOther: t('task.cancelNamed', { task: 'Other work', id: 'other' }),
+    grantOther: t('task.grantNamed', { task: 'Other work', grantee: 'Bob', id: 'other' }),
+    revokeAlice: t('task.revokeNamed', { task: 'Root work', grantee: 'Alice', grant: 'grant-active' }),
+    retryRoot: t('task.retryDeliveryNamed', { task: 'Root work', id: 'root' }),
+    stopTurn: t('task.stopTurnNamed', { task: 'Root work', agent: 'Alice', activity: 'activity' }),
+    stopChild: t('task.stopChildNamed', { task: 'Root work', child: 'child' }),
+  }
 }
 
 async function click(element: HTMLButtonElement): Promise<void> {
@@ -165,19 +180,18 @@ describe('task center real DOM interactions', () => {
   it('dispatches all seven named actions through rendered accessible controls', async () => {
     const api = createApi()
     const { container } = await mount(api)
-    const title = container.querySelector('input')!
-    const assignee = container.querySelector('select')!
-    expect(title.labels?.[0]?.textContent).toContain('Task title')
-    expect(assignee.labels?.[0]?.textContent).toContain('Assignee')
+    const title = field(container, 'Task title') as HTMLInputElement
+    const assignee = field(container, 'Assignee') as HTMLSelectElement
+    const names = actionNames()
     await change(title, 'New root')
     await change(assignee, 'alice')
     await click(button(container, 'Assign task'))
-    await click(taskButton(container, 'other', 'Grant delegation'))
-    await click(button(container, 'Revoke delegation'))
-    await click(taskButton(container, 'derived', 'Cancel task'))
-    await click(taskButton(container, 'root', 'Retry delivery'))
-    await click(taskButton(container, 'root', 'Stop current task turn'))
-    await click(taskButton(container, 'root', 'Stop child agent'))
+    await click(button(container, names.grantOther))
+    await click(button(container, names.revokeAlice))
+    await click(button(container, names.cancelDerived))
+    await click(button(container, names.retryRoot))
+    await click(button(container, names.stopTurn))
+    await click(button(container, names.stopChild))
 
     expect(api.assignTask).toHaveBeenCalledWith('alice', 'New root', 12)
     expect(api.grantTask).toHaveBeenCalledWith('bob', 'other', 12)
@@ -196,13 +210,13 @@ describe('task center real DOM interactions', () => {
       activitySnapshot: failedRead === 'activity' ? vi.fn().mockRejectedValue(new Error('stream unavailable')) : vi.fn().mockResolvedValue(activity()),
     })
     const { container, snapshots } = await mount(api)
-    await change(container.querySelector('input')!, 'Committed root')
-    await change(container.querySelector('select')!, 'alice')
+    await change(field(container, 'Task title'), 'Committed root')
+    await change(field(container, 'Assignee'), 'alice')
     await click(button(container, 'Assign task'))
 
     expect(snapshots).toContain(committed)
-    expect((container.querySelector('input') as HTMLInputElement).value).toBe('')
-    expect(container.textContent).toContain('Live status connection failed.')
+    expect((field(container, 'Task title') as HTMLInputElement).value).toBe('')
+    expect(container.textContent).toContain('Refresh failed. Use Refresh to reconcile current task controls.')
     expect([...container.querySelectorAll('button')].some(item => item.textContent === 'Retry')).toBe(false)
   })
 
@@ -218,15 +232,16 @@ describe('task center real DOM interactions', () => {
       }),
     })
     const { container } = await mount(api)
-    await click(taskButton(container, 'root', 'Cancel task'))
-    await click(taskButton(container, 'other', 'Cancel task'))
+    const names = actionNames()
+    await click(button(container, names.cancelRoot))
+    await click(button(container, names.cancelOther))
     await act(async () => waits[first].reject(stale()))
     await act(async () => waits[second].reject(stale()))
 
-    expect(button(container, 'Retry action cancel:root').disabled).toBe(false)
-    expect(button(container, 'Retry action cancel:other').disabled).toBe(false)
-    await click(button(container, 'Retry action cancel:root'))
-    expect(button(container, 'Retry action cancel:other').disabled).toBe(false)
+    expect(button(container, `Retry action ${names.cancelRoot}`).disabled).toBe(false)
+    expect(button(container, `Retry action ${names.cancelOther}`).disabled).toBe(false)
+    await click(button(container, `Retry action ${names.cancelRoot}`))
+    expect(button(container, `Retry action ${names.cancelOther}`).disabled).toBe(false)
     expect(api.cancelTask).toHaveBeenLastCalledWith('root', 13)
   })
 
@@ -239,8 +254,9 @@ describe('task center real DOM interactions', () => {
       cancelTask: vi.fn((taskId: string) => taskId === 'root' ? staleWait.promise : successWait.promise),
     })
     const { container } = await mount(api)
-    await click(taskButton(container, 'root', 'Cancel task'))
-    await click(taskButton(container, 'other', 'Cancel task'))
+    const names = actionNames()
+    await click(button(container, names.cancelRoot))
+    await click(button(container, names.cancelOther))
     if (order === 'stale-first') {
       await act(async () => staleWait.reject(stale()))
       await act(async () => successWait.resolve(refreshed))
@@ -248,7 +264,7 @@ describe('task center real DOM interactions', () => {
       await act(async () => successWait.resolve(refreshed))
       await act(async () => staleWait.reject(stale()))
     }
-    expect(button(container, 'Retry action cancel:root').disabled).toBe(false)
+    expect(button(container, `Retry action ${names.cancelRoot}`).disabled).toBe(false)
   })
 
   it('disables only the exact pending control and treats not-active as refreshed convergence', async () => {
@@ -258,23 +274,140 @@ describe('task center real DOM interactions', () => {
       stopActivity: vi.fn().mockResolvedValue({ revision: 12, value: { status: 'not-active' } }),
     })
     const { container } = await mount(api)
-    const rootCancel = taskButton(container, 'root', 'Cancel task')
-    const otherCancel = taskButton(container, 'other', 'Cancel task')
+    const names = actionNames()
+    const rootCancel = button(container, names.cancelRoot)
+    const otherCancel = button(container, names.cancelOther)
     await click(rootCancel)
     expect(rootCancel.disabled).toBe(true)
     expect(otherCancel.disabled).toBe(false)
-    await click(taskButton(container, 'root', 'Stop current task turn'))
+    await click(button(container, names.stopTurn))
     expect(api.snapshot).toHaveBeenCalled()
     expect(container.querySelector('[role="alert"]')).toBeNull()
     await act(async () => wait.resolve(snapshot()))
   })
 
-  it.each([[zh, ['任务标题', '负责人', '分配任务', '授予委派权', '撤销委派权', '取消任务', '重试投递', '停止当前任务轮次', '停止子智能体']], [en, ['Task title', 'Assignee', 'Assign task', 'Grant delegation', 'Revoke delegation', 'Cancel task', 'Retry delivery', 'Stop current task turn', 'Stop child agent']]] as const)(
-    'exposes bilingual accessible labels and authoritative provenance', async (dictionary, names) => {
+  it('adopts a newer durable snapshot and retries at its revision when only activity refresh fails', async () => {
+    const refreshed = { ...snapshot(), revision: 13 }
+    const api = createApi({
+      cancelTask: vi.fn().mockRejectedValueOnce(stale()).mockResolvedValueOnce(refreshed),
+      snapshot: vi.fn().mockResolvedValue(refreshed),
+      activitySnapshot: vi.fn().mockRejectedValue(new Error('activity unavailable')),
+    })
+    const { container, snapshots } = await mount(api)
+    const names = actionNames()
+
+    await click(button(container, names.cancelOther))
+    expect(snapshots).toContain(refreshed)
+    expect(container.textContent).toContain('Refresh failed. Use Refresh to reconcile current task controls.')
+    await click(button(container, `Retry action ${names.cancelOther}`))
+
+    expect(api.cancelTask).toHaveBeenLastCalledWith('other', 13)
+  })
+
+  it.each(['snapshot', 'activity'] as const)('adopts the successful %s refresh leg independently', async successfulRead => {
+    const refreshed = { ...snapshot(), revision: 13 }
+    const refreshedActivity = { ...activity(), version: 3, activities: [] }
+    const api = createApi({
+      cancelTask: vi.fn().mockRejectedValue(stale()),
+      snapshot: successfulRead === 'snapshot' ? vi.fn().mockResolvedValue(refreshed) : vi.fn().mockRejectedValue(new Error('snapshot unavailable')),
+      activitySnapshot: successfulRead === 'activity' ? vi.fn().mockResolvedValue(refreshedActivity) : vi.fn().mockRejectedValue(new Error('activity unavailable')),
+    })
+    const { container, snapshots, activities } = await mount(api)
+
+    await click(button(container, actionNames().cancelOther))
+
+    if (successfulRead === 'snapshot') expect(snapshots).toContain(refreshed)
+    else expect(activities).toContain(refreshedActivity)
+    expect(container.textContent).toContain('Refresh failed. Use Refresh to reconcile current task controls.')
+  })
+
+  it.each(['snapshot', 'activity'] as const)('prevents replay after delivery retry succeeds while %s refresh fails', async failedRead => {
+    const source = snapshot()
+    const committed: WorkspaceSnapshot = {
+      ...source,
+      revision: 13,
+      events: [...source.events, { id: 'e10', sequence: 10, type: 'task/delivery-started', taskId: 'root', taskDeliveryAttemptId: 'attempt-2', messageId: 'message-2' }],
+    }
+    const api = createApi({
+      retryTaskDelivery: vi.fn().mockResolvedValue({ revision: 13, value: 'attempt-2' }),
+      snapshot: failedRead === 'snapshot' ? vi.fn().mockRejectedValue(new Error('snapshot unavailable')) : vi.fn().mockResolvedValue(committed),
+      activitySnapshot: failedRead === 'activity' ? vi.fn().mockRejectedValue(new Error('activity unavailable')) : vi.fn().mockResolvedValue(activity()),
+    })
+    const { container } = await mount(api)
+    const label = actionNames().retryRoot
+
+    await click(button(container, label))
+
+    const replay = [...container.querySelectorAll('button')].find(item => item.getAttribute('aria-label') === label)
+    expect(replay === undefined || replay.disabled).toBe(true)
+    expect(api.retryTaskDelivery).toHaveBeenCalledTimes(1)
+    expect(container.textContent).toContain('Refresh failed. Use Refresh to reconcile current task controls.')
+  })
+
+  it('prevents replay of a converged not-active stop while activity refresh is unavailable', async () => {
+    const api = createApi({
+      stopActivity: vi.fn().mockResolvedValue({ revision: 12, value: { status: 'not-active' } }),
+      activitySnapshot: vi.fn().mockRejectedValue(new Error('activity unavailable')),
+    })
+    const { container } = await mount(api)
+    const label = actionNames().stopTurn
+
+    await click(button(container, label))
+
+    expect(button(container, label).disabled).toBe(true)
+    await click(button(container, label))
+    expect(api.stopActivity).toHaveBeenCalledTimes(1)
+  })
+
+  it('prevents replay after child stop succeeds while its durable refresh is unavailable', async () => {
+    const api = createApi({
+      stopChildRun: vi.fn().mockResolvedValue({ revision: 12, value: { status: 'stopping' } }),
+      snapshot: vi.fn().mockRejectedValue(new Error('snapshot unavailable')),
+    })
+    const { container } = await mount(api)
+    const label = actionNames().stopChild
+
+    await click(button(container, label))
+
+    expect(button(container, label).disabled).toBe(true)
+    await click(button(container, label))
+    expect(api.stopChildRun).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([en, zh] as const)('distinguishes repeated result disclosures by their localized task names', async dictionary => {
+    const source = snapshot()
+    const completed: WorkspaceSnapshot = {
+      ...source,
+      tasks: {
+        ...source.tasks,
+        root: { ...source.tasks.root!, status: 'completed' },
+        other: { ...source.tasks.other!, status: 'completed' },
+      },
+      events: [
+        ...source.events,
+        { id: 'e10', sequence: 10, type: 'task/result', taskId: 'root', taskDeliveryAttemptId: 'attempt', definitionRevisionId: 'rev', text: 'root result' },
+        { id: 'e11', sequence: 11, type: 'task/result', taskId: 'other', taskDeliveryAttemptId: 'other-attempt', definitionRevisionId: 'rev', text: 'other result' },
+      ],
+    }
+    const { container } = await mount(createApi(), dictionary, completed)
+    const t = translate(dictionary)
+    const names = [
+      t('task.resultNamed', { task: 'Root work', id: 'root' }),
+      t('task.resultNamed', { task: 'Other work', id: 'other' }),
+    ]
+
+    for (const name of names) {
+      expect([...container.querySelectorAll('summary')].some(summary => summary.getAttribute('aria-label') === name)).toBe(true)
+    }
+  })
+
+  it.each([[zh, ['任务标题', '负责人', '分配任务']], [en, ['Task title', 'Assignee', 'Assign task']]] as const)(
+    'exposes distinguishable bilingual accessible labels and authoritative provenance', async (dictionary, names) => {
       const { container } = await mount(createApi(), dictionary)
-      expect(container.querySelector('input')?.labels?.[0]?.textContent).toContain(names[0])
-      expect(container.querySelector('select')?.labels?.[0]?.textContent).toContain(names[1])
-      for (const name of names.slice(2)) expect(button(container, name)).toBeInstanceOf(HTMLButtonElement)
+      expect(field(container, names[0])).toBeInstanceOf(HTMLInputElement)
+      expect(field(container, names[1])).toBeInstanceOf(HTMLSelectElement)
+      expect(button(container, names[2])).toBeInstanceOf(HTMLButtonElement)
+      for (const name of Object.values(actionNames(dictionary))) expect(button(container, name)).toBeInstanceOf(HTMLButtonElement)
       expect(container.textContent).toContain(translate(dictionary)('task.grantedBy', { actor: 'owner' }))
       expect(container.textContent).toContain(translate(dictionary)('task.childParent', { parent: 'Alice' }))
       expect(container.textContent).toContain(translate(dictionary)('task.grantRevoked'))
@@ -294,8 +427,8 @@ describe('task center real DOM interactions', () => {
         },
         events: [
           ...source.events,
-          { id: 'e10', sequence: 10, type: 'task/cancelled', subjectId: 'derived', actor: { type: 'human', id: 'owner' } },
-          { id: 'e11', sequence: 11, type: 'task/cancelled', subjectId: 'root', actor: { type: 'human', id: 'owner' } },
+          { id: 'e10', sequence: 10, type: 'task/cancelled', subjectId: 'derived', actor: { type: 'human', id: 'owner' }, cancellationScope: 'root-cascade' },
+          { id: 'e11', sequence: 11, type: 'task/cancelled', subjectId: 'root', actor: { type: 'human', id: 'owner' }, cancellationScope: 'root-cascade' },
         ],
       }
       const cascadeView = await mount(createApi(), dictionary, cascade)
@@ -305,10 +438,18 @@ describe('task center real DOM interactions', () => {
       const derivedOnly: WorkspaceSnapshot = {
         ...source,
         tasks: { ...source.tasks, derived: { ...source.tasks.derived!, status: 'cancelled' } },
-        events: [...source.events, { id: 'e10', sequence: 10, type: 'task/cancelled', subjectId: 'derived', actor: { type: 'human', id: 'owner' } }],
+        events: [...source.events, { id: 'e10', sequence: 10, type: 'task/cancelled', subjectId: 'derived', actor: { type: 'human', id: 'owner' }, cancellationScope: 'derived-only' }],
       }
       const derivedView = await mount(createApi(), dictionary, derivedOnly)
       expect(derivedView.container.textContent).toContain(translate(dictionary)('task.cancellation.derivedOnly', { sequence: 10 }))
+
+      const legacy: WorkspaceSnapshot = {
+        ...source,
+        tasks: { ...source.tasks, derived: { ...source.tasks.derived!, status: 'cancelled' } },
+        events: [...source.events, { id: 'e10', sequence: 10, type: 'task/cancelled', subjectId: 'derived', actor: { type: 'human', id: 'owner' } }],
+      }
+      const legacyView = await mount(createApi(), dictionary, legacy)
+      expect(legacyView.container.textContent).toContain(translate(dictionary)('task.cancellation.unknown', { sequence: 10 }))
     },
   )
 })

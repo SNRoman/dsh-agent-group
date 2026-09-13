@@ -312,8 +312,9 @@ export function cancelTask(state: WorkspaceState, request: CancelTaskRequest): C
     .sort()
 
   let changed = beginWorkspaceMutation(state)
+  const cancellationScope = selected.id === selected.rootTaskId ? 'root-cascade' as const : 'derived-only' as const
   for (const taskId of cancelledTaskIds) {
-    ;[changed] = appendTaskCancelledEvent(changed, taskId, request.humanId)
+    ;[changed] = appendTaskCancelledEvent(changed, taskId, request.humanId, cancellationScope)
   }
   const tasks = { ...changed.tasks }
   for (const taskId of cancelledTaskIds) tasks[taskId] = { ...tasks[taskId]!, status: 'cancelled' }

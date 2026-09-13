@@ -477,6 +477,22 @@ function assertEventRelationships(state: WorkspaceState, event: WorkspaceEvent):
       }
       const count = state.events.filter(candidate => candidate.type === event.type && candidate.subjectId === event.subjectId).length
       if (count !== 1) throw new Error(`task '${task.id}' has duplicate cancellation events`)
+      if (event.cancellationScope === 'derived-only' && task.id === task.rootTaskId) {
+        throw new Error(`root task '${task.id}' cannot have derived-only cancellation scope`)
+      }
+      if (event.cancellationScope === 'root-cascade') {
+        const humanId = event.actor?.type === 'human' ? event.actor.id : undefined
+        const rootCancellation = state.events.find(candidate => (
+          candidate.type === 'task/cancelled'
+          && candidate.subjectId === task.rootTaskId
+          && candidate.cancellationScope === 'root-cascade'
+          && candidate.actor?.type === 'human'
+          && candidate.actor.id === humanId
+        ))
+        if (rootCancellation === undefined) {
+          throw new Error(`root-cascade cancellation '${event.id}' has no matching root cancellation`)
+        }
+      }
       return
     }
     case 'task/delivery-started':

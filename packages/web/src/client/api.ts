@@ -315,6 +315,8 @@ function isWorkspaceEvent(value: unknown): boolean {
       return hasRequiredAndOnlyKeys(value, ['id', 'sequence', 'type', 'taskId', 'taskDeliveryAttemptId', 'definitionRevisionId', 'text'], ['subjectId', 'actor', 'mentions'])
         && isNonEmptyString(value['taskId']) && isNonEmptyString(value['taskDeliveryAttemptId'])
     case 'task/cancelled':
+      return hasRequiredAndOnlyKeys(value, ['id', 'sequence', 'type', 'subjectId'], ['definitionRevisionId', 'actor', 'text', 'mentions', 'cancellationScope'])
+        && (value['cancellationScope'] === undefined || isOneOf(value['cancellationScope'], ['root-cascade', 'derived-only']))
     case 'task/delegation-revoked':
       return hasRequiredAndOnlyKeys(value, ['id', 'sequence', 'type', 'subjectId'], ['definitionRevisionId', 'actor', 'text', 'mentions'])
     default:

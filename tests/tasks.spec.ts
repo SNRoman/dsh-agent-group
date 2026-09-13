@@ -184,10 +184,10 @@ describe('formal task delegation', () => {
     expect(cancelled.runningChildRunIds).not.toContain(unrelatedRunning.childRunId)
     expect(cancelled.runningChildRunIds).not.toContain(rootTerminalStart.childRunId)
     expect(cancelled.runningChildRunIds).not.toContain(unrelatedTerminalStart.childRunId)
-    const cancellationSubjects = cancelled.state.events
-      .filter(event => event.type === 'task/cancelled')
-      .map(event => event.subjectId)
+    const cancellationEvents = cancelled.state.events.filter(event => event.type === 'task/cancelled')
+    const cancellationSubjects = cancellationEvents.map(event => event.subjectId)
     expect(cancellationSubjects).toEqual(cancelled.cancelledTaskIds)
+    expect(cancellationEvents.every(event => event.cancellationScope === 'root-cascade')).toBe(true)
   })
 
   test('derived cancellation leaves its root, sibling authority, and other tasks open', () => {
@@ -212,6 +212,7 @@ describe('formal task delegation', () => {
     expect(cancelled.state.tasks[root.taskId]?.status).toBe('open')
     expect(cancelled.state.tasks[second.taskId]?.status).toBe('open')
     expect(cancelled.state.delegationGrants[granted.delegationGrantId]?.status).toBe('active')
+    expect(cancelled.state.events.find(event => event.type === 'task/cancelled')?.cancellationScope).toBe('derived-only')
   })
 
   test('rejects child work by an unassigned agent and terminal task mutations without changing state', () => {

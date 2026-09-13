@@ -237,6 +237,9 @@ describe('assertWorkspaceInvariants', () => {
       tasks: { ...state.tasks, [derived.id]: { ...derived, status: 'cancelled' as const } },
     }
     expect(acceptsRawEvent(cancelledTask, {
+      type: 'task/cancelled', subjectId: derived.id, actor: { type: 'human', id: HumanId('owner') }, cancellationScope: 'derived-only',
+    })).toBe(true)
+    expect(acceptsRawEvent(cancelledTask, {
       type: 'task/cancelled', subjectId: derived.id, actor: { type: 'human', id: HumanId('owner') },
     })).toBe(true)
   })
@@ -249,6 +252,7 @@ describe('assertWorkspaceInvariants', () => {
     ['accepted delivery with failure fields', { type: 'task/delivery-accepted', taskId: 'task-1', taskDeliveryAttemptId: 'attempt-1', messageId: 'message-1', failureCode: 'unexpected', failureSummary: 'unexpected' }],
     ['result without definition revision', { type: 'task/result', taskId: 'task-1', taskDeliveryAttemptId: 'attempt-1', text: 'done' }],
     ['cancellation with a grant subject', { type: 'task/cancelled', subjectId: 'grant-1' }],
+    ['cancellation with an invalid scope', { type: 'task/cancelled', subjectId: 'task-1', cancellationScope: 'tree' }],
     ['revocation with a task subject', { type: 'task/delegation-revoked', subjectId: 'task-1' }],
   ])('rejects %s', (_name, event) => {
     expect(acceptsRawEvent(buildState(), event)).toBe(false)
@@ -379,6 +383,18 @@ describe('assertWorkspaceInvariants', () => {
     expect(() => assertWorkspaceInvariants(legacy, WorkspaceId('local'))).not.toThrow()
   })
 
+  test('accepts version-0 cancellation events without cancellation scope metadata', () => {
+    const state = buildState()
+    const task = Object.values(state.tasks).find(candidate => candidate.id !== candidate.rootTaskId)!
+    const legacy = {
+      ...state,
+      tasks: { ...state.tasks, [task.id]: { ...task, status: 'cancelled' as const } },
+    }
+    expect(acceptsRawEvent(legacy, {
+      type: 'task/cancelled', subjectId: task.id, actor: { type: 'human', id: HumanId('owner') },
+    })).toBe(true)
+  })
+
   test('rejects revocation events with a non-human actor, active record, or duplicate subject', () => {
     const state = buildState()
     const grant = Object.values(state.delegationGrants)[0]!
@@ -415,9 +431,29 @@ describe('assertWorkspaceInvariants', () => {
       type: 'task/cancelled', subjectId: task.id, actor: { type: 'human', id: HumanId('owner') },
     })).toBe(false)
     let withCancellation = cancelled
-    ;[withCancellation] = appendTaskCancelledEvent(withCancellation, task.id, HumanId('owner'))
+    ;[withCancellation] = appendTaskCancelledEvent(withCancellation, task.id, HumanId('owner'), 'derived-only')
     expect(acceptsRawEvent(withCancellation, {
       type: 'task/cancelled', subjectId: task.id, actor: { type: 'human', id: HumanId('owner') },
+    })).toBe(false)
+  })
+
+  test('rejects cancellation scope metadata inconsistent with the cancelled tree', () => {
+    const state = buildState()
+    const root = Object.values(state.tasks).find(candidate => candidate.id === candidate.rootTaskId)!
+    const derived = Object.values(state.tasks).find(candidate => candidate.id !== candidate.rootTaskId)!
+    const cancelledRoot = {
+      ...state,
+      tasks: { ...state.tasks, [root.id]: { ...root, status: 'cancelled' as const } },
+    }
+    expect(acceptsRawEvent(cancelledRoot, {
+      type: 'task/cancelled', subjectId: root.id, actor: { type: 'human', id: HumanId('owner') }, cancellationScope: 'derived-only',
+    })).toBe(false)
+    const cancelledDerived = {
+      ...state,
+      tasks: { ...state.tasks, [derived.id]: { ...derived, status: 'cancelled' as const } },
+    }
+    expect(acceptsRawEvent(cancelledDerived, {
+      type: 'task/cancelled', subjectId: derived.id, actor: { type: 'human', id: HumanId('owner') }, cancellationScope: 'root-cascade',
     })).toBe(false)
   })
 

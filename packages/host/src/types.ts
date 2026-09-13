@@ -188,10 +188,15 @@ export interface TaskResultEvent extends WorkspaceEventBase {
   readonly text: string
 }
 
+/** Durable provenance for a newly recorded human task cancellation. */
+export type TaskCancellationScope = 'root-cascade' | 'derived-only'
+
 /** A human cancellation of one durable task. */
 export interface TaskCancelledEvent extends WorkspaceEventBase {
   readonly type: 'task/cancelled'
   readonly subjectId: TaskId
+  /** Absent only on historical version-0 events written before cancellation provenance was recorded. */
+  readonly cancellationScope?: TaskCancellationScope | undefined
 }
 
 /** A human revocation of one durable delegation grant. */

@@ -11,6 +11,7 @@ import type {
   WorkspaceActivitySnapshot,
   WorkspaceActorView,
   WorkspaceEventView,
+  TaskCancelledEventView,
   WorkspaceSnapshot,
   WorkspaceTaskView,
 } from './contracts.ts'
@@ -65,7 +66,7 @@ export interface TaskProjection {
   readonly rootTaskId: TaskId
   readonly title: string
   readonly status: WorkspaceTaskView['status']
-  readonly cancellation?: { readonly scope: 'root-cascade' | 'derived-only'; readonly eventSequence: number } | undefined
+  readonly cancellation?: { readonly scope: 'root-cascade' | 'derived-only' | 'unknown'; readonly eventSequence: number } | undefined
   readonly firstEventSequence?: number | undefined
   readonly assignment?: TaskAssignmentProjection | undefined
   readonly delivery: TaskDeliveryProjection
@@ -119,8 +120,7 @@ export function projectTaskRoots(
     const assignmentEvent = assignment === undefined ? undefined : events.find(event => (
       (event.type === 'task/assigned' || event.type === 'task/delegated') && event.subjectId === assignment.id
     ))
-    const cancellationEvent = events.findLast(event => event.type === 'task/cancelled' && event.subjectId === task.id)
-    const root = snapshot.tasks[task.rootTaskId]
+    const cancellationEvent = events.findLast((event): event is TaskCancelledEventView => event.type === 'task/cancelled' && event.subjectId === task.id)
     const children = Object.values(snapshot.childRuns)
       .filter(child => child.taskId === task.id)
       .map(child => {
@@ -145,7 +145,7 @@ export function projectTaskRoots(
       status: task.status,
       ...(cancellationEvent === undefined ? {} : {
         cancellation: {
-          scope: task.id === task.rootTaskId || root?.status === 'cancelled' ? 'root-cascade' as const : 'derived-only' as const,
+          scope: cancellationEvent.cancellationScope ?? 'unknown',
           eventSequence: cancellationEvent.sequence,
         },
       }),

@@ -33,6 +33,7 @@ import type {
   RoomMembership,
   StopConversationCommand,
   SynchronizeDefinitionCommand,
+  TaskCancellationScope,
   TaskCancelledEvent,
   TaskDeliveryEvent,
   TaskDeliveryFailedEvent,
@@ -191,15 +192,22 @@ export function appendWorkspaceEvent(
  * @param state Immutable workspace state.
  * @param taskId Cancelled task identity.
  * @param humanId Human actor identity.
+ * @param cancellationScope Durable provenance for this cancellation event.
  * @returns State with the next sequence consumed and the appended event.
  */
-export function appendTaskCancelledEvent(state: WorkspaceState, taskId: TaskId, humanId: HumanId): readonly [WorkspaceState, TaskCancelledEvent] {
+export function appendTaskCancelledEvent(
+  state: WorkspaceState,
+  taskId: TaskId,
+  humanId: HumanId,
+  cancellationScope: TaskCancellationScope,
+): readonly [WorkspaceState, TaskCancelledEvent] {
   const event: TaskCancelledEvent = {
     id: WorkspaceEventId(`event-${state.nextSequence}`),
     sequence: state.nextSequence,
     type: 'task/cancelled',
     subjectId: taskId,
     actor: { type: 'human', id: humanId },
+    cancellationScope,
   }
   return [{ ...state, nextSequence: state.nextSequence + 1, events: [...state.events, event] }, event]
 }

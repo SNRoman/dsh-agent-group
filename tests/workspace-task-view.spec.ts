@@ -43,7 +43,7 @@ function snapshot(): WorkspaceSnapshot {
       { id: 'e18', sequence: 18, type: 'child/run-started', subjectId: 'child-running', actor: { type: 'agent', id: 'alice' } },
       { id: 'e19', sequence: 19, type: 'child/run-started', subjectId: 'child-done', actor: { type: 'agent', id: 'bob' } },
       { id: 'e20', sequence: 20, type: 'child/run-finished', subjectId: 'child-done', actor: { type: 'agent', id: 'bob' }, text: 'child result', childRunStatus: 'completed' },
-      { id: 'e21', sequence: 21, type: 'task/cancelled', subjectId: 'derived', actor: { type: 'human', id: 'human-1' } },
+      { id: 'e21', sequence: 21, type: 'task/cancelled', subjectId: 'derived', actor: { type: 'human', id: 'human-1' }, cancellationScope: 'derived-only' },
       { id: 'e3', sequence: 3, type: 'task/delivery-started', taskId: 'root-first', taskDeliveryAttemptId: 'attempt-done', messageId: 'message-done' },
       { id: 'e4', sequence: 4, type: 'task/delivery-accepted', taskId: 'root-first', taskDeliveryAttemptId: 'attempt-done', messageId: 'message-done' },
       { id: 'e5', sequence: 5, type: 'task/result', taskId: 'root-first', taskDeliveryAttemptId: 'attempt-done', definitionRevisionId: 'rev', text: 'done' },
@@ -158,7 +158,7 @@ describe('task center projection', () => {
     expect(selectNewerActivitySnapshot(older, current)).toBe(current)
   })
 
-  it('distinguishes explicit grant revocation, terminal expiry, root cascade and derived-only cancellation', () => {
+  it('uses durable cancellation scope without relabelling an earlier independent cancellation', () => {
     const source = snapshot()
     const terminalGrant = { ...source.delegationGrants['grant-active']!, status: 'expired' as const }
     const cascaded: WorkspaceSnapshot = {
@@ -170,17 +170,31 @@ describe('task center projection', () => {
       delegationGrants: { ...source.delegationGrants, 'grant-active': terminalGrant },
       events: [
         ...source.events,
-        { id: 'e22', sequence: 22, type: 'task/cancelled', subjectId: 'root-late', actor: { type: 'human', id: 'human-1' } },
+        { id: 'e22', sequence: 22, type: 'task/cancelled', subjectId: 'root-late', actor: { type: 'human', id: 'human-1' }, cancellationScope: 'root-cascade' },
       ],
     }
 
     const root = projectTaskRoots(cascaded, activity()).find(item => item.id === 'root-late')!
     expect(root.cancellation).toEqual({ scope: 'root-cascade', eventSequence: 22 })
-    expect(root.derivedTasks[0]?.cancellation).toEqual({ scope: 'root-cascade', eventSequence: 21 })
+    expect(root.derivedTasks[0]?.cancellation).toEqual({ scope: 'derived-only', eventSequence: 21 })
     expect(root.grants.map(grant => [grant.id, grant.expirationReason])).toEqual([
       ['grant-1', 'revoked'],
       ['grant-active', 'root-terminal'],
     ])
+  })
+
+  it('renders historical cancellation events without scope metadata as unknown', () => {
+    const source = snapshot()
+    const legacy: WorkspaceSnapshot = {
+      ...source,
+      events: source.events.map(event => event.id === 'e21' && event.type === 'task/cancelled'
+        ? { id: event.id, sequence: event.sequence, type: event.type, subjectId: event.subjectId, actor: event.actor }
+        : event),
+    }
+
+    expect(projectTaskRoots(legacy, activity())[1]?.derivedTasks[0]?.cancellation).toEqual({
+      scope: 'unknown', eventSequence: 21,
+    })
   })
 })
 
@@ -200,6 +214,7 @@ function componentHarness() {
       return [states[index], (next: unknown) => { states[index] = typeof next === 'function' ? (next as (value: unknown) => unknown)(states[index]) : next }]
     },
     useMemo(factory: () => unknown) { hook += 1; return factory() },
+    useEffect(effect: () => void) { hook += 1; effect() },
   }
   const render = (component: TestComponent, props: Readonly<Record<string, unknown>>) => { hook = 0; return component(props) }
   const all = (root: unknown, predicate: (element: TestElement) => boolean): TestElement[] => {

@@ -78,11 +78,11 @@ const deliverySource: MessageSourceMap['agent-workspace-delivery'] = {
 }
 
 declare const workspaceState: WorkspaceState
-appendTaskCancelledEvent(workspaceState, TaskId('task-1'), HumanId('owner'))
+appendTaskCancelledEvent(workspaceState, TaskId('task-1'), HumanId('owner'), 'derived-only')
 appendTaskDelegationRevokedEvent(workspaceState, DelegationGrantId('grant-1'), HumanId('owner'))
 
 // @ts-expect-error Cancellation helpers reject grant subjects at the typed boundary.
-appendTaskCancelledEvent(workspaceState, DelegationGrantId('grant-1'), HumanId('owner'))
+appendTaskCancelledEvent(workspaceState, DelegationGrantId('grant-1'), HumanId('owner'), 'derived-only')
 
 // @ts-expect-error Revocation helpers reject task subjects at the typed boundary.
 appendTaskDelegationRevokedEvent(workspaceState, TaskId('task-1'), HumanId('owner'))

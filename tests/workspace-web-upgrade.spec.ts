@@ -248,6 +248,23 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
     await expect(api.cancelTask('task-1', 1)).rejects.toThrow('invalid mutation result')
   })
 
+  it.each([undefined, 'root-cascade', 'derived-only'] as const)(
+    'accepts a task cancellation snapshot with backward-compatible scope %s', async cancellationScope => {
+      const event = {
+        id: 'event-1', sequence: 1, type: 'task/cancelled', subjectId: 'task-1', actor: { type: 'human', id: 'owner' },
+        ...(cancellationScope === undefined ? {} : { cancellationScope }),
+      }
+      const { api } = apiFixture({ snapshot: { ...workspaceSnapshot(), events: [event] } })
+      await expect(api.snapshot()).resolves.toMatchObject({ events: [event] })
+    },
+  )
+
+  it('rejects an invented task cancellation scope', async () => {
+    const event = { id: 'event-1', sequence: 1, type: 'task/cancelled', subjectId: 'task-1', cancellationScope: 'tree' }
+    const { api } = apiFixture({ snapshot: { ...workspaceSnapshot(), events: [event] } })
+    await expect(api.snapshot()).rejects.toThrow('invalid snapshot')
+  })
+
   it.each([
     ['snapshot event', 'snapshot', { ...workspaceSnapshot(), events: [{ id: 'event-1', sequence: 1, type: 'invented/event' }] }],
     ['activity source', 'runtime/activity/snapshot', { version: 1, workspaceRevision: 1, activities: [{ activityId: 'activity-1', agentId: 'agent-1', source: { kind: 'invented' }, messageId: 'message-1', startOrder: 1, status: 'queued', blocks: [] }], agents: [] }],
