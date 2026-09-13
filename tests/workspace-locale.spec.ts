@@ -7,6 +7,8 @@ import type { WorkspaceTurnProjection } from '../packages/web/src/client/contrac
 import { apply, inject } from '../packages/web/src/client/index.ts'
 import { WorkspaceFooterAction, WorkspaceOverlay } from '../packages/web/src/client/WorkspaceUi.tsx'
 import { WorkspaceLiveTurn } from '../packages/web/src/client/WorkspaceTurn.tsx'
+import { WorkspaceTasks } from '../packages/web/src/client/WorkspaceTasks.tsx'
+import type { WorkspaceActivitySnapshot, WorkspaceSnapshot } from '../packages/web/src/client/contracts.ts'
 
 const browserRuntime = vi.hoisted(() => {
   const publishedLocale: Record<string, unknown> = {}
@@ -179,6 +181,26 @@ describe('Agent Workspace locale runtime', () => {
     for (const value of expected) expect(rendered).toContain(value)
     expect(registered.entries).toHaveLength(2)
     expect(registered.entries.every(entry => entry.options['locale'] === 'agentWorkspace')).toBe(true)
+    registered.dispose()
+  })
+
+  it.each([
+    ['zh', ['任务中心', '分配根任务', '任务标题', '负责人', '分配任务', '还没有任务。为一名在职智能体分配根任务即可开始。']],
+    ['en', ['Task center', 'Assign root task', 'Task title', 'Assignee', 'Assign task', 'No tasks yet. Assign a root task to an employed agent to begin.']],
+  ] as const)('renders task empty-state, form and accessibility copy in %s', (localeId, expected) => {
+    const locale = new LocaleRuntime(new Context())
+    locale.setLocale(localeId)
+    const registered = registerPlugin(locale)
+    const t = locale.bind('agentWorkspace' as never)
+    const render = renderHarness()
+    const snapshot: WorkspaceSnapshot = {
+      workspaceId: 'workspace', revision: 0, nextId: 1, nextSequence: 1,
+      definitions: {}, definitionRevisions: {}, agents: {}, rooms: {}, memberships: {}, events: [], memoryEntries: [], tasks: {}, taskAssignments: {}, delegationGrants: {}, childRuns: {}, sessionBindings: {},
+    }
+    const activity: WorkspaceActivitySnapshot = { version: 0, workspaceRevision: 0, activities: [], agents: [] }
+    const taskView = render(WorkspaceTasks as unknown as TestComponent, { snapshot, activity, api: {}, onSnapshot: vi.fn(), onActivity: vi.fn(), t })
+    const rendered = strings(taskView)
+    for (const value of expected) expect(rendered).toContain(value)
     registered.dispose()
   })
 

@@ -1,7 +1,7 @@
 /** Additive Agent Workspace Browser surfaces. */
 
 import { useEffect, useMemo, useState } from 'react'
-import type { FormEvent, KeyboardEvent } from 'react'
+import type { Dispatch, FormEvent, KeyboardEvent, SetStateAction } from 'react'
 import type { PropsLocale, PropsRuntime, PropsStore, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
@@ -22,6 +22,8 @@ import type {
 } from './contracts.ts'
 import type { createWorkspaceUiStore, WorkspaceUiError } from './store.ts'
 import { WorkspaceLiveTurn, WorkspaceMarkdownMessage } from './WorkspaceTurn.tsx'
+import { WorkspaceTasks } from './WorkspaceTasks.tsx'
+import { selectNewerActivitySnapshot } from './task-view-model.ts'
 import {
   activeRoomMembers,
   actorLabel,
@@ -38,6 +40,7 @@ export type WorkspaceFooterActionProps = PropsRuntime<'sidebar.footer.action'> &
 export type WorkspaceOverlayProps = PropsRuntime<'shell.overlay'> & WorkspaceStoreProps & PropsLocale<'agentWorkspace'> & { readonly api: WorkspaceApiClient }
 
 const EMPTY_TURN_STREAM: WorkspaceTurnStreamSnapshot = { version: 0, workspaceRevision: 0, turns: [] }
+const EMPTY_ACTIVITY: WorkspaceActivitySnapshot = { version: 0, workspaceRevision: 0, activities: [], agents: [] }
 type MutationOperation = (expectedRevision: number) => Promise<WorkspaceSnapshot>
 type PendingMutation =
   | { readonly kind: 'operation'; readonly operation: MutationOperation }
@@ -78,6 +81,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
   const [revisionDraftDirty, setRevisionDraftDirty] = useState(false)
   const [syncExisting, setSyncExisting] = useState(true)
   const [turnStream, setTurnStream] = useState<WorkspaceTurnStreamSnapshot>(EMPTY_TURN_STREAM)
+  const [activitySnapshot, setActivitySnapshot] = useState<WorkspaceActivitySnapshot>(EMPTY_ACTIVITY)
   const [streamError, setStreamError] = useState<WorkspaceUiError | undefined>()
   const [pendingMutation, setPendingMutation] = useState<PendingMutation | undefined>()
 
@@ -87,6 +91,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
   useEffect(() => {
     if (!ui.open) {
       setTurnStream(EMPTY_TURN_STREAM)
+      setActivitySnapshot(EMPTY_ACTIVITY)
       setStreamError(undefined)
       return
     }
@@ -105,7 +110,8 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
           if (controller.signal.aborted) return
         }
         actions.setSnapshot(initialSnapshot)
-        setTurnStream(activityTurnStream(initialStream))
+        setTurnStream(current => initialStream.version < current.version ? current : activityTurnStream(initialStream))
+        setActivitySnapshot(current => selectNewerActivitySnapshot(current, initialStream))
         setStreamError(undefined)
         actions.setBusy(false)
 
@@ -115,7 +121,8 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
           const next = await api.waitForActivity(currentVersion, controller.signal)
           if (controller.signal.aborted) return
           currentVersion = next.version
-          setTurnStream(activityTurnStream(next))
+          setTurnStream(current => next.version < current.version ? current : activityTurnStream(next))
+          setActivitySnapshot(current => selectNewerActivitySnapshot(current, next))
           setStreamError(undefined)
           if (next.workspaceRevision > durableRevision) {
             const durable = await api.snapshot(controller.signal)
@@ -266,7 +273,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
             : pendingDispatches > 0
               ? <span className="dsh-agent-group-busy">{t('workspace.agentsProcessing')}</span>
               : null}
-          <button type="button" className="dsh-agent-group-icon-button" onClick={() => void refresh(api, actions, setTurnStream)} aria-label={t('workspace.refresh')} title={t('workspace.refresh')}><RefreshIcon /></button>
+          <button type="button" className="dsh-agent-group-icon-button" onClick={() => void refresh(api, actions, setTurnStream, setActivitySnapshot)} aria-label={t('workspace.refresh')} title={t('workspace.refresh')}><RefreshIcon /></button>
           <button type="button" className="dsh-agent-group-icon-button" onClick={() => actions.close()} aria-label={t('workspace.close')} title={t('workspace.close')}><CloseIcon /></button>
         </header>
 
@@ -381,7 +388,17 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                 onSetEmployment={(agentId, employed) => commit(revision => api.setEmployment(agentId, employed, revision)).then(() => undefined)}
                 onOpenDirect={openDirect}
                 t={t}
-              /> : <WorkspaceFoundationView mode={ui.mode} t={t} />}
+              /> : ui.mode === 'tasks' ? <WorkspaceTasks
+                snapshot={snapshot}
+                activity={activitySnapshot}
+                api={api}
+                onSnapshot={actions.setSnapshot}
+                onActivity={next => {
+                  setActivitySnapshot(current => selectNewerActivitySnapshot(current, next))
+                  setTurnStream(current => next.version < current.version ? current : activityTurnStream(next))
+                }}
+                t={t}
+              /> : <WorkspaceFoundationView mode="memory" t={t} />}
       </section>
     </div>
   )
@@ -786,14 +803,16 @@ function visibleWorkspaceTurns(
 async function refresh(
   api: WorkspaceApiClient,
   actions: WorkspaceStoreProps['actions'],
-  setTurnStream: (snapshot: WorkspaceTurnStreamSnapshot) => void,
+  setTurnStream: Dispatch<SetStateAction<WorkspaceTurnStreamSnapshot>>,
+  setActivitySnapshot: Dispatch<SetStateAction<WorkspaceActivitySnapshot>>,
 ): Promise<void> {
   actions.setBusy(true)
   actions.setError(undefined)
   try {
     const [snapshot, stream] = await Promise.all([api.snapshot(), api.activitySnapshot()])
     actions.setSnapshot(snapshot)
-    setTurnStream(activityTurnStream(stream))
+    setTurnStream(current => stream.version < current.version ? current : activityTurnStream(stream))
+    setActivitySnapshot(current => selectNewerActivitySnapshot(current, stream))
   } catch (error) {
     actions.setError(toUiError(error))
   } finally {

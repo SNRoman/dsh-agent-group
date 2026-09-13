@@ -259,6 +259,19 @@ describe('workspace UI view model', () => {
     expect(tabs.filter(tab => tab.props['aria-current'] === 'page')).toHaveLength(1)
   })
 
+  it('renders the task center in the Tasks view instead of the foundation placeholder', () => {
+    const fixture = workspaceFixture()
+    const harness = componentHarness()
+    const tree = harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector({ open: true, mode: 'tasks', snapshot: fixture.state, busy: false }),
+      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
+      api: {},
+      t,
+    })
+    expect(harness.find(tree, element => element.props['aria-label'] === 'task.center')).toBeDefined()
+    expect(harness.findAll(tree, element => element.props['children'] === 'workspace.tasksEmpty')).toEqual([])
+  })
+
   it('labels agent rows as accessible groups in chat and definition views', () => {
     const fixture = workspaceFixture()
     const definitionId = Object.keys(fixture.state.definitions)[0]
