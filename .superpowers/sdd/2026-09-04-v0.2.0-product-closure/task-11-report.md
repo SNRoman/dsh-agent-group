@@ -28,13 +28,15 @@ The Browser now mirrors the complete Task 10 wire model in `packages/web/src/cli
 
 The adapter rejects client-owned revision and actor fields before transport, adds the current non-negative aggregate revision, and validates the `{ revision, value }` response. Existing state-valued convenience methods unwrap the validated `value`. Task assignment, delegation grant, delivery retry, activity stop, child stop, and failure acknowledgement retain the wrapper because their non-state values do not otherwise carry the committed revision. Browser ids remain JSON wire strings; Task 10's strict RPC parsers convert them to branded Host ids before service invocation.
 
+The response adapter validates every required nested snapshot, activity, memory, definition-history, runtime-status, mutation-value, and RPC-error field before cloning it into client state. Closed event, source, block, status, provenance, history, stop-result, and business-error discriminants reject unknown variants. State-bearing mutation values must carry the same revision as their committed wrapper, so contradictory Host responses cannot install an obsolete snapshot.
+
 Read methods cover `snapshot`, `runtime/status`, `runtime/activity/snapshot`, `runtime/activity/wait`, `memory/query`, and `definition/history`. The Browser no longer calls the pre-Task-10 stream aliases or consumes unwrapped mutation responses.
 
 ## Navigation, stale writes, and reconnects
 
 The store's closed view union is exactly `conversations | colleagues | tasks | memory`, defaulting to conversations. Snapshot replacement clones only authoritative durable state and does not change the selected view, room, or definition. The overlay maintains one cancellation-aware snapshot/activity subscription, replaces each activity projection by version, and renders messages and activities with durable event/activity ids. Snapshot and reconnect replacement therefore converge without appending duplicate projected rows.
 
-A stale mutation is never replayed automatically. The overlay performs one authoritative snapshot refresh, preserves React-owned form values, records a retry state, and exposes a localized explicit retry control. That control invokes the retained operation with the refreshed revision. Non-stale typed errors retain their code and details for locale-owned presentation; unknown failures are rendered through display-safe fallback copy.
+A stale mutation is never replayed automatically. The overlay performs one authoritative snapshot refresh, preserves React-owned form values, records whether the refresh completed, and exposes a localized explicit retry control. A failed refresh is converted to display-safe state without rejecting its event handler; the first retry refreshes only, and a later explicit retry invokes the retained operation with the refreshed revision. Non-stale typed errors retain their code and details for locale-owned presentation; unknown failures are rendered through display-safe fallback copy without retaining raw transport exceptions.
 
 Group membership begins without a selected history policy. A join is enabled only after the user selects `new-events` or supplies a positive, ascending, bounded `event-range`; the API validates the range before transport. No client default opts an agent into historical events.
 
@@ -51,14 +53,26 @@ pnpm vitest run tests/workspace-web-upgrade.spec.ts tests/workspace-view.spec.ts
 
 The initial implementation reached 38/38 focused tests. The final API ambiguity regression added one test proving that the central mutation method returns the committed wrapper while state-valued convenience methods unwrap only their state value.
 
-Fresh takeover verification on implementation commit `eb3dfd501ce3945af8b3c36ac17108110b187760`:
+Review-fix RED evidence recorded before the production fixes:
 
 ```text
 pnpm vitest run tests/workspace-web-upgrade.spec.ts tests/workspace-view.spec.ts tests/workspace-locale.spec.ts tests/client-copy-verifier.spec.ts
-# 4 files passed; 39 tests passed
+# 73 tests: 17 failed, 56 passed; 1 unhandled stale-refresh rejection
+
+pnpm exec tsc -p tests/types/tsconfig.json --pretty false
+# 6 errors: four unused @ts-expect-error directives exposed the open mutation signature; two exact-optional mismatches exposed Host/client parity gaps
+```
+
+The takeover began after the endpoint-map implementation had been partially applied. Its reproducible checkpoint was 39 failed and 34 passed focused tests with one unhandled rejection, plus seven compile errors from the unfinished validator dispatch and the remaining event parity mismatch.
+
+Fresh review-fix verification on implementation commit `606262008cd51fd5fe7716845e44a9c453e46f91`:
+
+```text
+pnpm vitest run tests/workspace-web-upgrade.spec.ts tests/workspace-view.spec.ts tests/workspace-locale.spec.ts tests/client-copy-verifier.spec.ts
+# 4 files passed; 112 tests passed
 
 pnpm vitest run tests/workspace-web-upgrade.spec.ts tests/workspace-view.spec.ts tests/workspace-locale.spec.ts tests/client-copy-verifier.spec.ts tests/workspace-rpc.spec.ts tests/workspace-direct-room.spec.ts tests/workspace-activity-stream.spec.ts tests/workspace-async-dispatch.spec.ts tests/web-bundle-platform.spec.ts
-# 9 files passed; 165 tests passed
+# 9 files passed; 238 tests passed
 
 pnpm verify:client-copy
 pnpm run typecheck
@@ -78,15 +92,19 @@ The focused tests use deferred activity waits and explicit effect cleanup; they 
 - `packages/web/src/client/WorkspaceUi.tsx`
 - `packages/web/src/client/locales.ts`
 - `packages/web/src/client/styles.ts`
+- `tests/types/tsconfig.json`
+- `tests/types/workspace-client-contracts.ts`
 - `tests/workspace-web-upgrade.spec.ts`
 - `tests/workspace-view.spec.ts`
 - `tests/workspace-locale.spec.ts`
 - `tests/client-copy-verifier.spec.ts`
 
-No additional implementation or test/support files changed, and the implementation diff contains no `vendor/` path.
+The type fixture and its owning TypeScript configuration are the only review-fix support files added outside the original Task 11 list. They compile-check Host-to-client response parity, strict endpoint/request/value pairing, client-actor exclusion, and exhaustiveness for the closed wire unions. The implementation diff contains no `vendor/` path.
 
 ## Commit and remaining risks
 
-Implementation commit: `eb3dfd501ce3945af8b3c36ac17108110b187760` (`feat(web): add workspace product navigation`).
+Original implementation commit: `eb3dfd501ce3945af8b3c36ac17108110b187760` (`feat(web): add workspace product navigation`).
 
-The four-view foundation intentionally does not yet expose the Task 10 task, memory, definition-history, or runtime-control methods as full product workflows. Tasks 12–15 own those interfaces and their assembled Browser coverage. Task 11 verifies the shared state, contracts, revision handling, reconnect convergence, localization, and accessibility behavior on which those workflows depend.
+Review-fix implementation commit: `606262008cd51fd5fe7716845e44a9c453e46f91` (`fix(web): validate workspace client contracts`).
+
+The Browser validators intentionally duplicate the Task 10 response field lists because the Web package has no runtime schema dependency and the Host's Zod schemas validate requests rather than exported responses. This makes Task 10 response changes an explicit Host/client update, reinforced by the compile fixture and malformed-response tests. The four-view foundation intentionally does not yet expose the Task 10 task, memory, definition-history, or runtime-control methods as full product workflows. Tasks 12–15 own those interfaces and their assembled Browser coverage.
