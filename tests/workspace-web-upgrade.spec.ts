@@ -1,7 +1,165 @@
 import { existsSync, readFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
+import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
+import { createWorkspaceRpcHandler } from '../packages/host/src/rpc.ts'
 import { WorkspaceApi, WorkspaceApiClient } from '../packages/web/src/client/api.ts'
+
+interface RegisteredRoute {
+  readonly handler: (request: IncomingMessage, response: ServerResponse) => Promise<void>
+}
+
+interface BrowserConnectionHandle {
+  readonly rpc: {
+    call(channel: string, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown>
+  }
+}
+
+interface BrowserConnectionBundle {
+  readonly apply: (ctx: { provide(name: string, value: unknown): void }) => void
+}
+
+async function realConnectionApi(): Promise<{
+  readonly api: WorkspaceApiClient
+  readonly wireResponses: readonly unknown[]
+  readonly dispose: () => Promise<void>
+}> {
+  const cleanups: Array<() => Promise<void>> = []
+  const dispose = async (): Promise<void> => {
+    let failure: unknown
+    for (const cleanup of cleanups.splice(0).reverse()) {
+      try {
+        await cleanup()
+      } catch (error) {
+        failure ??= error
+      }
+    }
+    if (failure !== undefined) throw failure
+  }
+  let route: RegisteredRoute | undefined
+  const hostContext = new Context()
+  hostContext.provide('webServer', {
+    register(next: RegisteredRoute) {
+      route = next
+      return () => { route = undefined }
+    },
+  } as never)
+
+  const webRequire = createRequire(new URL('../packages/web/package.json', import.meta.url))
+  const connectionNodePath = webRequire.resolve('@deepseek-ai/dsh-client-connection')
+  const { HostConnectionService } = await import(connectionNodePath) as {
+    readonly HostConnectionService: new (ctx: Context, trustedHosts: readonly string[]) => {
+      readonly rpc: {
+        handle(
+          channel: string,
+          handler: ReturnType<typeof createWorkspaceRpcHandler>,
+          options: { readonly authority: 'trusted-host' },
+        ): () => Promise<void>
+      }
+    }
+  }
+  let hostConnection: InstanceType<typeof HostConnectionService> | undefined
+  const fiber = hostContext.plugin((pluginContext) => {
+    hostConnection = new HostConnectionService(pluginContext, [])
+  })
+  await fiber.await()
+  cleanups.push(() => fiber.dispose())
+  if (hostConnection === undefined) {
+    await dispose()
+    throw new Error('Connection Host service did not mount')
+  }
+  let disposeRoute: () => Promise<void>
+  try {
+    disposeRoute = hostConnection.rpc.handle('/agent-workspace', createWorkspaceRpcHandler({
+      acknowledgeAgentFailure: async () => ({ revision: 2, value: undefined }),
+    } as never), { authority: 'trusted-host' })
+  } catch (error) {
+    await dispose()
+    throw error
+  }
+  cleanups.push(disposeRoute)
+  if (route === undefined) {
+    await dispose()
+    throw new Error('Connection Host route did not register')
+  }
+
+  const server = createServer((request, response) => {
+    const activeRoute = route
+    if (activeRoute === undefined) {
+      response.writeHead(404)
+      response.end()
+      return
+    }
+    void activeRoute.handler(request, response).catch(error => {
+      response.destroy(error instanceof Error ? error : new Error(String(error)))
+    })
+  })
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen)
+      server.listen(0, '127.0.0.1', () => {
+        server.off('error', rejectListen)
+        resolveListen()
+      })
+    })
+    cleanups.push(() => new Promise<void>((resolveClose, rejectClose) => {
+      server.close(error => error === undefined ? resolveClose() : rejectClose(error))
+    }))
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('Connection test server has no TCP address')
+    const base = new URL(`http://127.0.0.1:${String(address.port)}`)
+
+    const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+    const transportDescriptor = Object.getOwnPropertyDescriptor(globalThis, '__DSH_TRANSPORT__')
+    const wireResponses: unknown[] = []
+    let bundle: BrowserConnectionBundle | undefined
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        value: {
+          __ModuleLoader__: {
+            load(module: { readonly factory: (require: (id: string) => unknown) => BrowserConnectionBundle }) {
+              bundle = module.factory(() => ({}))
+            },
+          },
+        },
+      })
+      new Function(readFileSync(webRequire.resolve('@deepseek-ai/dsh-client-connection/client'), 'utf8'))()
+      if (bundle === undefined) throw new Error('Connection Browser bundle did not publish')
+      Object.defineProperty(globalThis, '__DSH_TRANSPORT__', {
+        configurable: true,
+        value: {
+          createApiClient: () => ({}),
+          fetch: async (input: URL, init: RequestInit) => {
+            const target = new URL(input.pathname + input.search, base)
+            const response = await fetch(target, init)
+            wireResponses.push(await response.clone().json())
+            return response
+          },
+        },
+      })
+      let browserConnection: BrowserConnectionHandle | undefined
+      bundle.apply({
+        provide(name, value) {
+          if (name === 'connection') browserConnection = value as BrowserConnectionHandle
+        },
+      })
+      if (browserConnection === undefined) throw new Error('Connection Browser service did not mount')
+      return { api: new WorkspaceApiClient(browserConnection as never), wireResponses, dispose }
+    } finally {
+      if (windowDescriptor === undefined) Reflect.deleteProperty(globalThis, 'window')
+      else Object.defineProperty(globalThis, 'window', windowDescriptor)
+      if (transportDescriptor === undefined) Reflect.deleteProperty(globalThis, '__DSH_TRANSPORT__')
+      else Object.defineProperty(globalThis, '__DSH_TRANSPORT__', transportDescriptor)
+    }
+  } catch (error) {
+    await dispose()
+    throw error
+  }
+}
 
 function workspaceSnapshot(revision = 1) {
   return {
@@ -60,16 +218,21 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
       .rejects.toThrow('invalid mutation result')
   })
 
-  it('normalizes the JSON acknowledgement envelope that omits its void value', async () => {
-    const transported = JSON.parse(JSON.stringify({ revision: 2, value: undefined })) as unknown
-    expect(transported).toEqual({ revision: 2 })
-    const { api, calls } = apiFixture({ 'runtime/failure/acknowledge': transported })
-
-    await expect(api.acknowledgeAgentFailure('agent-1', 1)).resolves.toEqual({ revision: 2, value: undefined })
-    expect(calls).toEqual([expect.objectContaining({
-      endpoint: 'runtime/failure/acknowledge',
-      payload: { expectedRevision: 1, agentId: 'agent-1' },
-    })])
+  it('normalizes a void acknowledgement across the shipped Connection HTTP carrier', async () => {
+    const { api, wireResponses, dispose } = await realConnectionApi()
+    try {
+      await expect(api.acknowledgeAgentFailure('agent-1', 1))
+        .resolves.toEqual({ revision: 2, value: undefined })
+      expect(wireResponses).toHaveLength(1)
+      expect(wireResponses[0]).toMatchObject({
+        type: 'server-response',
+        result: { ok: true, value: { revision: 2 } },
+      })
+      expect((wireResponses[0] as { result: { value: object } }).result.value)
+        .not.toHaveProperty('value')
+    } finally {
+      await dispose()
+    }
   })
 
   it.each([
@@ -272,7 +435,7 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
     ['task/retry-delivery', { taskId: 'task-1' }, { revision: 2, value: 'retried' }, (api: WorkspaceApiClient) => api.retryTaskDelivery('task-1', 1)],
     ['runtime/activity/stop', { activityId: 'activity-1', agentId: 'agent-1', messageId: 'message-1', sessionId: 'session-1', turn: 1 }, { revision: 2, value: { status: 'stopping' } }, (api: WorkspaceApiClient) => api.stopActivity({ activityId: 'activity-1', agentId: 'agent-1', messageId: 'message-1', sessionId: 'session-1', turn: 1 }, 1)],
     ['runtime/child/stop', { childRunId: 'child-1' }, { revision: 2, value: { status: 'already-stopping' } }, (api: WorkspaceApiClient) => api.stopChildRun('child-1', 1)],
-    ['runtime/failure/acknowledge', { agentId: 'agent-1' }, JSON.parse(JSON.stringify({ revision: 2, value: undefined })) as unknown, (api: WorkspaceApiClient) => api.acknowledgeAgentFailure('agent-1', 1)],
+    ['runtime/failure/acknowledge', { agentId: 'agent-1' }, { revision: 2 }, (api: WorkspaceApiClient) => api.acknowledgeAgentFailure('agent-1', 1)],
   ] as const)('routes %s with the exact revisioned payload and committed value', async (endpoint, payload, response, invoke) => {
     const { api, calls } = apiFixture({ [endpoint]: response })
     await expect(invoke(api)).resolves.toBeDefined()

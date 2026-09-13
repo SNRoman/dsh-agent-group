@@ -52,7 +52,13 @@ function workspaceFixture() {
     text: `Alice 请看一下 <@${bob.agentId}>`,
     mentions: [bob.agentId],
   }).state
-  return { state, aliceId: alice.agentId, bobId: bob.agentId, roomId: room.roomId }
+  return {
+    state,
+    definitionId: definition.definitionId,
+    aliceId: alice.agentId,
+    bobId: bob.agentId,
+    roomId: room.roomId,
+  }
 }
 
 function roleAliasFixture() {
@@ -728,6 +734,275 @@ describe('workspace UI view model', () => {
     tree = renderOverlay()
     const retained = harness.find(tree, element => element.type === 'textarea')
     expect(retained?.props['value']).toBe('@all hello')
+  })
+
+  it('keeps a pending definition draft across a conflicting stale refresh and retries the visible values', async () => {
+    const fixture = workspaceFixture()
+    const mine = mutateWorkspace(fixture.state, {
+      type: 'definition/revise',
+      definitionId: fixture.definitionId,
+      description: 'my description',
+      instructions: 'my instructions',
+    }).state
+    const competing = mutateWorkspace(mine, {
+      type: 'definition/revise',
+      definitionId: fixture.definitionId,
+      description: 'competing description',
+      instructions: 'competing instructions',
+    }).state
+    const ui: Record<string, unknown> = {
+      open: true,
+      mode: 'colleagues',
+      selectedDefinitionId: fixture.definitionId,
+      snapshot: mine,
+      busy: false,
+    }
+    const actions = {
+      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(),
+      selectDefinition: vi.fn((definitionId: unknown) => { ui['selectedDefinitionId'] = definitionId }),
+      setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
+      setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
+      setError: vi.fn((error: unknown) => { ui['error'] = error }),
+      setRetry: vi.fn((retry: unknown) => { ui['retry'] = retry }),
+    }
+    const stale = new WorkspaceApiError({
+      kind: 'business', code: 'stale-revision', message: 'stale',
+      details: { expectedRevision: mine.revision, actualRevision: competing.revision },
+    })
+    const api = {
+      snapshot: vi.fn(async () => competing),
+      reviseDefinition: vi.fn()
+        .mockRejectedValueOnce(stale)
+        .mockImplementationOnce(async (input: { readonly description: string; readonly instructions: string }) => mutateWorkspace(competing, {
+          type: 'definition/revise',
+          definitionId: fixture.definitionId,
+          description: input.description,
+          instructions: input.instructions,
+        }).state),
+    }
+    const harness = componentHarness()
+    const render = (): unknown => harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector(ui), actions, api, t,
+    })
+    const revisionInputs = (tree: unknown): TestElement[] => harness.findAll(
+      tree,
+      element => element.type === 'textarea' && element.props['className'] === 'dsh-agent-group-textarea',
+    )
+
+    let tree = render()
+    const initialize = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    if (initialize === undefined) throw new Error('expected definition draft effect')
+    initialize()
+    tree = render()
+    let inputs = revisionInputs(tree)
+    expect(inputs.map(input => input.props['value'])).toEqual(['my description', 'my instructions'])
+    const save = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'agent.saveRevision')
+    ;(save!.props['onClick'] as () => void)()
+
+    await vi.waitFor(() => expect(api.snapshot).toHaveBeenCalledOnce())
+    expect(api.reviseDefinition).toHaveBeenCalledOnce()
+    tree = render()
+    const afterRefresh = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    if (afterRefresh === undefined) throw new Error('expected refreshed definition draft effect')
+    afterRefresh()
+    tree = render()
+    inputs = revisionInputs(tree)
+    expect(inputs.map(input => input.props['value'])).toEqual(['my description', 'my instructions'])
+
+    ;(inputs[0]!.props['onChange'] as (event: unknown) => void)({ target: { value: 'visible description' } })
+    ;(inputs[1]!.props['onChange'] as (event: unknown) => void)({ target: { value: 'visible instructions' } })
+    tree = render()
+    const retry = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'workspace.retry')
+    ;(retry!.props['onClick'] as () => void)()
+    await vi.waitFor(() => expect(api.reviseDefinition).toHaveBeenCalledTimes(2))
+    expect(api.reviseDefinition.mock.calls[1]).toEqual([
+      expect.objectContaining({
+        definitionId: fixture.definitionId,
+        description: 'visible description',
+        instructions: 'visible instructions',
+      }),
+      competing.revision,
+    ])
+  })
+
+  it('keeps a dirty definition draft across a background revision refresh', () => {
+    const fixture = workspaceFixture()
+    const background = mutateWorkspace(fixture.state, {
+      type: 'definition/revise',
+      definitionId: fixture.definitionId,
+      description: 'background description',
+      instructions: 'background instructions',
+    }).state
+    const ui: Record<string, unknown> = {
+      open: true,
+      mode: 'colleagues',
+      selectedDefinitionId: fixture.definitionId,
+      snapshot: fixture.state,
+      busy: false,
+    }
+    const actions = {
+      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(),
+      setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
+    }
+    const harness = componentHarness()
+    const render = (): unknown => harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector(ui), actions, api: {}, t,
+    })
+
+    let tree = render()
+    const initialize = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    if (initialize === undefined) throw new Error('expected definition draft effect')
+    initialize()
+    tree = render()
+    const inputs = harness.findAll(tree, element => element.type === 'textarea')
+    ;(inputs[0]!.props['onChange'] as (event: unknown) => void)({ target: { value: 'dirty description' } })
+    ;(inputs[1]!.props['onChange'] as (event: unknown) => void)({ target: { value: 'dirty instructions' } })
+    ui['snapshot'] = background
+    tree = render()
+    const refresh = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    if (refresh === undefined) throw new Error('expected definition draft refresh effect')
+    refresh()
+    tree = render()
+    expect(harness.findAll(tree, element => element.type === 'textarea').map(input => input.props['value']))
+      .toEqual(['dirty description', 'dirty instructions'])
+  })
+
+  it('resets the definition editor when the user cancels the draft', () => {
+    const fixture = workspaceFixture()
+    const ui: Record<string, unknown> = {
+      open: true,
+      mode: 'colleagues',
+      selectedDefinitionId: fixture.definitionId,
+      snapshot: fixture.state,
+      busy: false,
+    }
+    const actions = {
+      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(),
+      setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
+    }
+    const harness = componentHarness()
+    const render = (): unknown => harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector(ui), actions, api: {}, t,
+    })
+
+    let tree = render()
+    const initialize = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    if (initialize === undefined) throw new Error('expected definition draft effect')
+    initialize()
+    tree = render()
+    const description = harness.findAll(tree, element => element.type === 'textarea')[0]!
+    ;(description.props['onChange'] as (event: unknown) => void)({ target: { value: 'discard me' } })
+    tree = render()
+    const cancel = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'room.cancel')
+    expect(cancel).toBeDefined()
+    ;(cancel!.props['onClick'] as () => void)()
+    tree = render()
+    expect(harness.findAll(tree, element => element.type === 'textarea').map(input => input.props['value']))
+      .toEqual(['', ''])
+    expect(actions.setRetry).toHaveBeenCalledWith(undefined)
+  })
+
+  it('initializes the definition editor from an explicitly selected definition', () => {
+    const fixture = workspaceFixture()
+    const second = mutateWorkspace(fixture.state, {
+      type: 'definition/create',
+      name: 'Reviewer',
+      description: 'review description',
+      instructions: 'review instructions',
+    })
+    const ui: Record<string, unknown> = {
+      open: true,
+      mode: 'colleagues',
+      selectedDefinitionId: fixture.definitionId,
+      snapshot: second.state,
+      busy: false,
+    }
+    const actions = {
+      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(),
+      selectDefinition: vi.fn((definitionId: unknown) => { ui['selectedDefinitionId'] = definitionId }),
+      setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
+    }
+    const harness = componentHarness()
+    const render = (): unknown => harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector(ui), actions, api: {}, t,
+    })
+
+    let tree = render()
+    const initialize = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    if (initialize === undefined) throw new Error('expected definition draft effect')
+    initialize()
+    tree = render()
+    const firstDescription = harness.findAll(tree, element => element.type === 'textarea')[0]!
+    ;(firstDescription.props['onChange'] as (event: unknown) => void)({ target: { value: 'first draft' } })
+    tree = render()
+    const definitions = harness.findAll(
+      tree,
+      element => element.type === 'button' && element.props['className'] === 'dsh-agent-group-list-button',
+    )
+    expect(definitions).toHaveLength(2)
+    ;(definitions[1]!.props['onClick'] as () => void)()
+    tree = render()
+    expect(harness.findAll(tree, element => element.type === 'textarea').map(input => input.props['value']))
+      .toEqual(['review description', 'review instructions'])
+    expect(actions.selectDefinition).toHaveBeenCalledWith(second.definitionId)
+    expect(actions.setRetry).toHaveBeenCalledWith(undefined)
+  })
+
+  it('releases definition draft ownership after a successful revision', async () => {
+    const fixture = workspaceFixture()
+    const ui: Record<string, unknown> = {
+      open: true,
+      mode: 'colleagues',
+      selectedDefinitionId: fixture.definitionId,
+      snapshot: fixture.state,
+      busy: false,
+    }
+    const actions = {
+      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(),
+      setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
+      setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
+      setError: vi.fn(), setRetry: vi.fn(),
+    }
+    const api = {
+      reviseDefinition: vi.fn(async (input: { readonly description: string; readonly instructions: string }) => mutateWorkspace(ui['snapshot'] as ReturnType<typeof createInitialState>, {
+        type: 'definition/revise',
+        definitionId: fixture.definitionId,
+        description: input.description,
+        instructions: input.instructions,
+      }).state),
+    }
+    const harness = componentHarness()
+    const render = (): unknown => harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector(ui), actions, api, t,
+    })
+
+    let tree = render()
+    const initialize = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    if (initialize === undefined) throw new Error('expected definition draft effect')
+    initialize()
+    tree = render()
+    const inputs = harness.findAll(tree, element => element.type === 'textarea')
+    ;(inputs[0]!.props['onChange'] as (event: unknown) => void)({ target: { value: 'saved description' } })
+    ;(inputs[1]!.props['onChange'] as (event: unknown) => void)({ target: { value: 'saved instructions' } })
+    tree = render()
+    ;(harness.find(tree, element => element.type === 'button' && element.props['children'] === 'agent.saveRevision')!
+      .props['onClick'] as () => void)()
+    await vi.waitFor(() => expect(api.reviseDefinition).toHaveBeenCalledOnce())
+
+    const saved = ui['snapshot'] as ReturnType<typeof createInitialState>
+    ui['snapshot'] = mutateWorkspace(saved, {
+      type: 'definition/revise',
+      definitionId: fixture.definitionId,
+      description: 'new authoritative description',
+      instructions: 'new authoritative instructions',
+    }).state
+    tree = render()
+    const refreshCleanDraft = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    if (refreshCleanDraft === undefined) throw new Error('expected definition draft refresh effect')
+    refreshCleanDraft()
+    tree = render()
+    expect(harness.findAll(tree, element => element.type === 'textarea').map(input => input.props['value']))
+      .toEqual(['new authoritative description', 'new authoritative instructions'])
   })
 
   it('refreshes once after a stale write and retries only after the user asks', async () => {

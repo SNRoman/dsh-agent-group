@@ -10,6 +10,7 @@ import type { WorkspaceApiClient } from './api.ts'
 import type {
   AgentDefinitionId,
   AgentId,
+  DefinitionRevisionId,
   MembershipMemoryStart,
   MembershipId,
   RoomId,
@@ -38,6 +39,9 @@ export type WorkspaceOverlayProps = PropsRuntime<'shell.overlay'> & WorkspaceSto
 
 const EMPTY_TURN_STREAM: WorkspaceTurnStreamSnapshot = { version: 0, workspaceRevision: 0, turns: [] }
 type MutationOperation = (expectedRevision: number) => Promise<WorkspaceSnapshot>
+type PendingMutation =
+  | { readonly kind: 'operation'; readonly operation: MutationOperation }
+  | { readonly kind: 'definition-revision'; readonly definitionId: AgentDefinitionId }
 
 /** Additive sidebar footer action. It owns no DSH navigation state. */
 export function WorkspaceFooterAction({ wide, actions, t }: WorkspaceFooterActionProps) {
@@ -69,10 +73,13 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
   const [agentName, setAgentName] = useState('')
   const [revisionDescription, setRevisionDescription] = useState('')
   const [revisionInstructions, setRevisionInstructions] = useState('')
+  const [revisionDraftDefinitionId, setRevisionDraftDefinitionId] = useState<AgentDefinitionId | undefined>()
+  const [revisionDraftRevisionId, setRevisionDraftRevisionId] = useState<DefinitionRevisionId | undefined>()
+  const [revisionDraftDirty, setRevisionDraftDirty] = useState(false)
   const [syncExisting, setSyncExisting] = useState(true)
   const [turnStream, setTurnStream] = useState<WorkspaceTurnStreamSnapshot>(EMPTY_TURN_STREAM)
   const [streamError, setStreamError] = useState<WorkspaceUiError | undefined>()
-  const [pendingMutation, setPendingMutation] = useState<MutationOperation | undefined>()
+  const [pendingMutation, setPendingMutation] = useState<PendingMutation | undefined>()
 
   // One cancellation-aware long-poll subscription replaces the former timer
   // polling. Stream versions wake the Browser only when authoritative Session
@@ -160,25 +167,46 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
     : snapshot.definitionRevisions[selectedDefinition.currentRevisionId]
   const pendingDispatches = turnStream.turns.filter(turn => turn.status === 'running').length
 
+  const resetRevisionDraft = (source: WorkspaceSnapshot, definitionId: AgentDefinitionId): void => {
+    const definition = source.definitions[definitionId]
+    const revision = definition === undefined ? undefined : source.definitionRevisions[definition.currentRevisionId]
+    setRevisionDescription(revision?.description ?? '')
+    setRevisionInstructions(revision?.instructions ?? '')
+    setRevisionDraftDefinitionId(definitionId)
+    setRevisionDraftRevisionId(revision?.id)
+    setRevisionDraftDirty(false)
+  }
+
   useEffect(() => {
-    setRevisionDescription(selectedRevision?.description ?? '')
-    setRevisionInstructions(selectedRevision?.instructions ?? '')
-  }, [selectedRevision?.id])
+    if (snapshot === undefined || selectedDefinition === undefined) return
+    const ownsSelection = revisionDraftDefinitionId === selectedDefinition.id
+    const retryOwnsDraft = pendingMutation?.kind === 'definition-revision'
+      && pendingMutation.definitionId === selectedDefinition.id
+    if (!ownsSelection || (!revisionDraftDirty && !retryOwnsDraft && revisionDraftRevisionId !== selectedRevision?.id)) {
+      resetRevisionDraft(snapshot, selectedDefinition.id)
+    }
+  }, [snapshot, selectedDefinition, selectedRevision, revisionDraftDefinitionId, revisionDraftRevisionId, revisionDraftDirty, pendingMutation])
 
   if (!ui.open) return null
 
-  const commit = async (operation: MutationOperation, revision = snapshot?.revision): Promise<boolean> => {
+  const commit = async (
+    operation: MutationOperation,
+    revision = snapshot?.revision,
+    retry: PendingMutation = { kind: 'operation', operation },
+  ): Promise<boolean> => {
     if (revision === undefined) return false
     actions.setBusy(true)
     actions.setError(undefined)
     try {
-      actions.setSnapshot(await operation(revision))
+      const committed = await operation(revision)
+      actions.setSnapshot(committed)
+      if (retry.kind === 'definition-revision') resetRevisionDraft(committed, retry.definitionId)
       actions.setRetry(undefined)
       setPendingMutation(undefined)
       return true
     } catch (error) {
       if (isStaleRevision(error)) {
-        setPendingMutation(() => operation)
+        setPendingMutation(retry)
         try {
           const authoritative = await api.snapshot()
           actions.setSnapshot(authoritative)
@@ -203,6 +231,21 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
       actions.setMode('conversations')
       return result.snapshot
     })
+  }
+
+  const reviseDefinition = (
+    definitionId: AgentDefinitionId,
+    source: WorkspaceSnapshot,
+  ): MutationOperation => revision => {
+    const agentIds = Object.values(source.agents)
+      .filter(agent => agent.definitionId === definitionId)
+      .map(agent => agent.id)
+    return api.reviseDefinition({
+      definitionId,
+      description: revisionDescription,
+      instructions: revisionInstructions,
+      ...(syncExisting ? { synchronizeAgentIds: agentIds } : {}),
+    }, revision)
   }
 
   return (
@@ -230,7 +273,12 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
         {ui.error !== undefined ? <div className="dsh-agent-group-error">{errorMessage(ui.error, t)}</div> : null}
         {ui.retry !== undefined && pendingMutation !== undefined && snapshot !== undefined
           ? <div className="dsh-agent-group-retry" role="status"><span>{t('workspace.staleRetry')}</span><button type="button" className="dsh-agent-group-button" onClick={() => {
-              if (ui.retry?.refreshed === true) void commit(pendingMutation, snapshot.revision)
+              if (ui.retry?.refreshed === true) {
+                const operation = pendingMutation.kind === 'definition-revision'
+                  ? reviseDefinition(pendingMutation.definitionId, snapshot)
+                  : pendingMutation.operation
+                void commit(operation, snapshot.revision, pendingMutation)
+              }
               else void refreshStale(api, actions)
             }}>{t('workspace.retry')}</button></div>
           : null}
@@ -285,13 +333,27 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                 onSelectDefinition={definitionId => {
                   actions.selectDefinition(definitionId)
                   setCreatingDefinition(false)
+                  resetRevisionDraft(snapshot, definitionId)
+                  setPendingMutation(undefined)
+                  actions.setRetry(undefined)
                 }}
                 onCreatingDefinitionChange={setCreatingDefinition}
                 onDefinitionNameChange={setDefinitionName}
                 onDefinitionDescriptionChange={setDefinitionDescription}
                 onDefinitionInstructionsChange={setDefinitionInstructions}
-                onRevisionDescriptionChange={setRevisionDescription}
-                onRevisionInstructionsChange={setRevisionInstructions}
+                onRevisionDescriptionChange={value => {
+                  setRevisionDescription(value)
+                  setRevisionDraftDirty(true)
+                }}
+                onRevisionInstructionsChange={value => {
+                  setRevisionInstructions(value)
+                  setRevisionDraftDirty(true)
+                }}
+                onCancelRevision={definitionId => {
+                  resetRevisionDraft(snapshot, definitionId)
+                  setPendingMutation(undefined)
+                  actions.setRetry(undefined)
+                }}
                 onSyncExistingChange={setSyncExisting}
                 onAgentNameChange={setAgentName}
                 onCreateDefinition={async () => {
@@ -308,15 +370,8 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                   }
                 }}
                 onReviseDefinition={async definitionId => {
-                  const agentIds = Object.values(snapshot.agents)
-                    .filter(agent => agent.definitionId === definitionId)
-                    .map(agent => agent.id)
-                  await commit(revision => api.reviseDefinition({
-                    definitionId,
-                    description: revisionDescription,
-                    instructions: revisionInstructions,
-                    ...(syncExisting ? { synchronizeAgentIds: agentIds } : {}),
-                  }, revision))
+                  const retry: PendingMutation = { kind: 'definition-revision', definitionId }
+                  await commit(reviseDefinition(definitionId, snapshot), snapshot.revision, retry)
                 }}
                 onCreateAgent={async definitionId => {
                   const name = agentName.trim()
@@ -576,6 +631,7 @@ interface AgentWorkspaceProps {
   readonly onDefinitionInstructionsChange: (value: string) => void
   readonly onRevisionDescriptionChange: (value: string) => void
   readonly onRevisionInstructionsChange: (value: string) => void
+  readonly onCancelRevision: (id: AgentDefinitionId) => void
   readonly onSyncExistingChange: (value: boolean) => void
   readonly onAgentNameChange: (value: string) => void
   readonly onCreateDefinition: () => Promise<void>
@@ -637,7 +693,10 @@ function AgentWorkspace(props: AgentWorkspaceProps) {
                         <input type="checkbox" checked={props.syncExisting} onChange={event => props.onSyncExistingChange(event.target.checked)} />
                         {props.t('agent.syncExisting')}
                       </label>
-                      <div><button type="button" className="dsh-agent-group-button" disabled={props.busy} onClick={() => void props.onReviseDefinition(selected.id)}>{props.t('agent.saveRevision')}</button></div>
+                      <div className="dsh-agent-group-inline">
+                        <button type="button" className="dsh-agent-group-button" disabled={props.busy} onClick={() => void props.onReviseDefinition(selected.id)}>{props.t('agent.saveRevision')}</button>
+                        <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={props.busy} onClick={() => props.onCancelRevision(selected.id)}>{props.t('room.cancel')}</button>
+                      </div>
                     </div>
                   </section>
 
