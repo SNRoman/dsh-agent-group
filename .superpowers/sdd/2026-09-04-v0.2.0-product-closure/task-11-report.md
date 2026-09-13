@@ -30,6 +30,8 @@ The adapter rejects client-owned revision and actor fields before transport, add
 
 The response adapter validates every required nested snapshot, activity, memory, definition-history, runtime-status, mutation-value, and RPC-error field before cloning it into client state. Closed event, source, block, status, provenance, history, stop-result, and business-error discriminants reject unknown variants. State-bearing mutation values must carry the same revision as their committed wrapper, so contradictory Host responses cannot install an obsolete snapshot.
 
+The acknowledgement mutation has one endpoint-specific JSON representation. The Host's `value: undefined` field is omitted by the HTTP/JSON carrier, so `runtime/failure/acknowledge` accepts exact `{ revision }` and normalizes it to the typed `{ revision, value: undefined }` result. Missing or extra acknowledgement fields reject, and every other mutation continues to require exact `{ revision, value }`.
+
 Read methods cover `snapshot`, `runtime/status`, `runtime/activity/snapshot`, `runtime/activity/wait`, `memory/query`, and `definition/history`. The Browser no longer calls the pre-Task-10 stream aliases or consumes unwrapped mutation responses.
 
 ## Navigation, stale writes, and reconnects
@@ -84,6 +86,21 @@ git diff --check
 
 The focused tests use deferred activity waits and explicit effect cleanup; they contain no timing sleeps. Both Simplified Chinese and English dictionaries cover all four navigation labels plus loading, retry, dialog, close, empty, and error accessibility copy.
 
+Review-fix round 2 reproduced the acknowledgement failure after `JSON.stringify` and `JSON.parse`: the focused probe failed the dedicated transport case and the nineteenth routing-table row before the parser change. The endpoint-specific fix produced the following fresh evidence:
+
+```text
+pnpm vitest run tests/workspace-web-upgrade.spec.ts tests/workspace-view.spec.ts tests/workspace-locale.spec.ts tests/client-copy-verifier.spec.ts
+# 4 files passed; 116 tests passed
+
+pnpm vitest run tests/workspace-web-upgrade.spec.ts tests/workspace-view.spec.ts tests/workspace-locale.spec.ts tests/client-copy-verifier.spec.ts tests/workspace-rpc.spec.ts tests/workspace-direct-room.spec.ts tests/workspace-activity-stream.spec.ts tests/workspace-async-dispatch.spec.ts tests/web-bundle-platform.spec.ts
+# 9 files passed; 242 tests passed
+
+pnpm verify:client-copy
+pnpm run typecheck
+pnpm run build:web
+# all exited 0
+```
+
 ## Changed files
 
 - `packages/web/src/client/contracts.ts`
@@ -106,5 +123,7 @@ The type fixture and its owning TypeScript configuration are the only review-fix
 Original implementation commit: `eb3dfd501ce3945af8b3c36ac17108110b187760` (`feat(web): add workspace product navigation`).
 
 Review-fix implementation commit: `606262008cd51fd5fe7716845e44a9c453e46f91` (`fix(web): validate workspace client contracts`).
+
+JSON void-result fix commit: `bcb4271d2338546e54f66defc8a00ff250a1d471` (`fix(web): accept JSON void mutation result`).
 
 The Browser validators intentionally duplicate the Task 10 response field lists because the Web package has no runtime schema dependency and the Host's Zod schemas validate requests rather than exported responses. This makes Task 10 response changes an explicit Host/client update, reinforced by the compile fixture and malformed-response tests. The four-view foundation intentionally does not yet expose the Task 10 task, memory, definition-history, or runtime-control methods as full product workflows. Tasks 12–15 own those interfaces and their assembled Browser coverage.
