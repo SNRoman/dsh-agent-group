@@ -1,9 +1,26 @@
 import { defineConfig } from 'vitest/config'
 import { fileURLToPath } from 'node:url'
 
+const browserSourceTests = [
+  'tests/workspace-activity-dom.spec.ts',
+  'tests/workspace-activity-store.spec.ts',
+  'tests/workspace-definition-view.spec.ts',
+  'tests/workspace-memory-view.spec.ts',
+  'tests/workspace-task-dom.spec.ts',
+  'tests/workspace-task-view.spec.ts',
+  'tests/workspace-view.spec.ts',
+]
+
 export default defineConfig({
   test: {
     projects: [
+      {
+        test: {
+          name: 'unit',
+          include: ['tests/**/*.spec.ts'],
+          exclude: ['tests/workspace-locale.spec.ts', ...browserSourceTests],
+        },
+      },
       {
         resolve: {
           alias: {
@@ -12,9 +29,8 @@ export default defineConfig({
           },
         },
         test: {
-          name: 'unit',
-          include: ['tests/**/*.spec.ts'],
-          exclude: ['tests/workspace-locale.spec.ts'],
+          name: 'browser-source',
+          include: browserSourceTests,
         },
       },
       {

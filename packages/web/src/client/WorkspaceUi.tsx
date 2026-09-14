@@ -1,7 +1,7 @@
 /** Additive Agent Workspace Browser surfaces. */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { Dispatch, FormEvent, KeyboardEvent, SetStateAction } from 'react'
+import type { FormEvent, KeyboardEvent } from 'react'
 import type { PropsLocale, PropsRuntime, PropsStore, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
@@ -90,12 +90,61 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
   const [reconnectAttempt, setReconnectAttempt] = useState(0)
   const activityTriggerRef = useRef<HTMLButtonElement>(null)
   const activityVersionRef = useRef(0)
+  const refreshControllerRef = useRef<AbortController>()
+  const refreshGenerationRef = useRef(0)
+
+  const adoptActivity = useMemo(() => (next: WorkspaceActivitySnapshot): void => {
+    if (next.version < activityVersionRef.current) return
+    activityVersionRef.current = next.version
+    setTurnStream(current => next.version < current.version ? current : activityTurnStream(next))
+    setActivitySnapshot(current => selectNewerActivitySnapshot(current, next))
+  }, [])
+
+  const cancelRefresh = useMemo(() => (): void => {
+    refreshGenerationRef.current += 1
+    refreshControllerRef.current?.abort()
+    refreshControllerRef.current = undefined
+  }, [])
+
+  const refreshWorkspace = useMemo(() => async (): Promise<void> => {
+    cancelRefresh()
+    const controller = new AbortController()
+    const generation = refreshGenerationRef.current
+    refreshControllerRef.current = controller
+    const live = (): boolean => !controller.signal.aborted
+      && refreshControllerRef.current === controller
+      && refreshGenerationRef.current === generation
+    actions.setBusy(true)
+    actions.setError(undefined)
+    try {
+      const [nextSnapshot, nextActivity] = await Promise.all([
+        api.snapshot(controller.signal),
+        api.activitySnapshot(controller.signal),
+      ])
+      if (!live()) return
+      actions.setSnapshot(nextSnapshot)
+      adoptActivity(nextActivity)
+    } catch (error) {
+      if (live()) actions.setError(toUiError(error))
+    } finally {
+      if (live()) {
+        refreshControllerRef.current = undefined
+        actions.setBusy(false)
+      }
+    }
+  }, [actions, adoptActivity, api, cancelRefresh])
+
+  const closeWorkspace = useMemo(() => (): void => {
+    cancelRefresh()
+    actions.close()
+  }, [actions, cancelRefresh])
 
   // One cancellation-aware long-poll subscription replaces the former timer
   // polling. Stream versions wake the Browser only when authoritative Session
   // output or the durable workspace revision actually changes.
   useEffect(() => {
     if (!ui.open) {
+      cancelRefresh()
       setTurnStream(EMPTY_TURN_STREAM)
       setActivitySnapshot(EMPTY_ACTIVITY)
       activityVersionRef.current = 0
@@ -117,29 +166,22 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
           if (controller.signal.aborted) return
         }
         actions.setSnapshot(initialSnapshot)
-        setTurnStream(current => initialStream.version < current.version ? current : activityTurnStream(initialStream))
-        setActivitySnapshot(current => selectNewerActivitySnapshot(current, initialStream))
-        activityVersionRef.current = Math.max(activityVersionRef.current, initialStream.version)
+        adoptActivity(initialStream)
         setStreamError(undefined)
         actions.setBusy(false)
 
         let durableRevision = initialSnapshot.revision
-        let currentVersion = activityVersionRef.current
         while (!controller.signal.aborted) {
-          const next = await api.waitForActivity(currentVersion, controller.signal)
+          const requestedVersion = activityVersionRef.current
+          const next = await api.waitForActivity(requestedVersion, controller.signal)
           if (controller.signal.aborted) return
-          if (next.version <= currentVersion) {
-            if (next.version === currentVersion) {
-              setTurnStream(activityTurnStream(next))
-              setActivitySnapshot(current => selectNewerActivitySnapshot(current, next))
-            }
+          if (next.version <= requestedVersion) {
+            if (next.version === requestedVersion) adoptActivity(next)
             setStreamError({ kind: 'unexpected' })
             return
           }
-          currentVersion = next.version
-          activityVersionRef.current = next.version
-          setTurnStream(current => next.version < current.version ? current : activityTurnStream(next))
-          setActivitySnapshot(current => selectNewerActivitySnapshot(current, next))
+          if (next.version < activityVersionRef.current) continue
+          adoptActivity(next)
           setStreamError(undefined)
           if (next.workspaceRevision > durableRevision) {
             const durable = await api.snapshot(controller.signal)
@@ -157,8 +199,11 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
       }
     }
     void subscribe()
-    return () => controller.abort()
-  }, [ui.open, api, actions, reconnectAttempt])
+    return () => {
+      controller.abort()
+      cancelRefresh()
+    }
+  }, [ui.open, api, actions, reconnectAttempt, adoptActivity, cancelRefresh])
 
   useEffect(() => {
     if (!ui.open) return
@@ -167,11 +212,11 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
       if (ui.activityDrawerOpen === true) {
         actions.closeActivityDrawer()
         activityTriggerRef.current?.focus()
-      } else actions.close()
+      } else closeWorkspace()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [ui.open, ui.activityDrawerOpen, actions])
+  }, [ui.open, ui.activityDrawerOpen, actions, closeWorkspace])
 
   const snapshot = ui.snapshot
   const rooms = useMemo(() => snapshot === undefined ? [] : Object.values(snapshot.rooms), [snapshot])
@@ -220,10 +265,6 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
       actions.selectActivity(activity.activities[0]?.activityId)
     }
   }, [activity, ui.activityDrawerOpen, ui.selectedActivityId, actions])
-
-  useEffect(() => {
-    activityVersionRef.current = Math.max(activityVersionRef.current, activitySnapshot.version)
-  }, [activitySnapshot.version])
 
   if (!ui.open) return null
 
@@ -293,8 +334,8 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
             {activity?.summary.usingTool ? <WorkspaceRuntimeBadge value={t('activity.usingTool')} /> : null}
             <span className="dsh-agent-group-activity-count">{activity?.activities.length ?? 0}</span>
           </button>
-          <button type="button" className="dsh-agent-group-icon-button" onClick={() => void refresh(api, actions, setTurnStream, setActivitySnapshot)} aria-label={t('workspace.refresh')} title={t('workspace.refresh')}><RefreshIcon /></button>
-          <button type="button" className="dsh-agent-group-icon-button" onClick={() => actions.close()} aria-label={t('workspace.close')} title={t('workspace.close')}><CloseIcon /></button>
+          <button type="button" className="dsh-agent-group-icon-button" onClick={() => void refreshWorkspace()} aria-label={t('workspace.refresh')} title={t('workspace.refresh')}><RefreshIcon /></button>
+          <button type="button" className="dsh-agent-group-icon-button" onClick={closeWorkspace} aria-label={t('workspace.close')} title={t('workspace.close')}><CloseIcon /></button>
         </header>
 
         {ui.error !== undefined ? <div className="dsh-agent-group-error">{errorMessage(ui.error, t)}</div> : null}
@@ -418,10 +459,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                 activity={activitySnapshot}
                 api={api}
                 onSnapshot={actions.setSnapshot}
-                onActivity={next => {
-                  setActivitySnapshot(current => selectNewerActivitySnapshot(current, next))
-                  setTurnStream(current => next.version < current.version ? current : activityTurnStream(next))
-                }}
+                onActivity={adoptActivity}
                 t={t}
               /> : <WorkspaceMemory snapshot={snapshot} api={api} onSnapshot={actions.setSnapshot} t={t} />}
         {ui.activityDrawerOpen === true && activity !== undefined ? <WorkspaceActivityDrawer
@@ -431,11 +469,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
           selectedActivityId={ui.selectedActivityId}
           onSelectActivity={actions.selectActivity}
           onSnapshot={actions.setSnapshot}
-          onActivity={next => {
-            activityVersionRef.current = Math.max(activityVersionRef.current, next.version)
-            setActivitySnapshot(current => selectNewerActivitySnapshot(current, next))
-            setTurnStream(current => next.version < current.version ? current : activityTurnStream(next))
-          }}
+          onActivity={adoptActivity}
           onClose={actions.closeActivityDrawer}
           returnFocusRef={activityTriggerRef}
           t={t}
@@ -836,26 +870,6 @@ function visibleWorkspaceTurns(
 ): readonly WorkspaceTurnProjection[] {
   if (durableRevision <= stream.workspaceRevision) return stream.turns
   return stream.turns.filter(turn => turn.status === 'running')
-}
-
-async function refresh(
-  api: WorkspaceApiClient,
-  actions: WorkspaceStoreProps['actions'],
-  setTurnStream: Dispatch<SetStateAction<WorkspaceTurnStreamSnapshot>>,
-  setActivitySnapshot: Dispatch<SetStateAction<WorkspaceActivitySnapshot>>,
-): Promise<void> {
-  actions.setBusy(true)
-  actions.setError(undefined)
-  try {
-    const [snapshot, stream] = await Promise.all([api.snapshot(), api.activitySnapshot()])
-    actions.setSnapshot(snapshot)
-    setTurnStream(current => stream.version < current.version ? current : activityTurnStream(stream))
-    setActivitySnapshot(current => selectNewerActivitySnapshot(current, stream))
-  } catch (error) {
-    actions.setError(toUiError(error))
-  } finally {
-    actions.setBusy(false)
-  }
 }
 
 function isStaleRevision(error: unknown): error is WorkspaceApiError {

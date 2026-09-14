@@ -34,9 +34,11 @@ export function WorkspaceActivityDrawer(props: WorkspaceActivityDrawerProps) {
   const [refreshFailed, setRefreshFailed] = useState(false)
   const [notice, setNotice] = useState<'stopping' | 'already-stopping' | undefined>()
   const mounted = useRef(true)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     mounted.current = true
+    closeButtonRef.current?.focus()
     return () => { mounted.current = false }
   }, [])
 
@@ -150,7 +152,7 @@ export function WorkspaceActivityDrawer(props: WorkspaceActivityDrawerProps) {
     <div className="dsh-agent-group-section-head">
       <strong>{props.t('activity.title')}</strong>
       <span className="dsh-agent-group-muted">{props.t('activity.count', { count: props.projection.activities.length })}</span>
-      <button type="button" className="dsh-agent-group-icon-button dsh-agent-group-right" onClick={close} aria-label={props.t('activity.close')}>{props.t('workspace.close')}</button>
+      <button ref={closeButtonRef} type="button" className="dsh-agent-group-icon-button dsh-agent-group-right" onClick={close} aria-label={props.t('activity.close')}>{props.t('workspace.close')}</button>
     </div>
     {error ? <div className="dsh-agent-group-error" role="alert">{props.t('activity.requestFailed')}</div> : null}
     {refreshFailed ? <div className="dsh-agent-group-retry" role="status">{props.t('activity.refreshFailed')}</div> : null}
@@ -171,7 +173,7 @@ export function WorkspaceActivityDrawer(props: WorkspaceActivityDrawerProps) {
     })}
     <div className="dsh-agent-group-activity-layout">
       <div className="dsh-agent-group-list" aria-label={props.t('activity.title')}>
-        {props.projection.activities.map(item => <button type="button" className="dsh-agent-group-list-button" data-active={item.activityId === selected?.activityId} key={item.activityId} onClick={() => props.onSelectActivity(item.activityId)}>
+        {props.projection.activities.map(item => <button type="button" className="dsh-agent-group-list-button" aria-pressed={item.activityId === selected?.activityId} data-active={item.activityId === selected?.activityId} key={item.activityId} onClick={() => props.onSelectActivity(item.activityId)}>
           <span>{subjectLabel(item, props)}</span><WorkspaceRuntimeBadge value={props.t(`activity.status.${item.status}`)} />
         </button>)}
         {props.projection.activities.length === 0 ? <div className="dsh-agent-group-empty">{props.t('activity.empty')}</div> : null}
