@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, createElement, useState } from 'react'
+import { act, createElement, StrictMode, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkspaceApiError } from '../packages/web/src/client/api.ts'
@@ -97,6 +97,7 @@ async function mount(
   dictionary: Dictionary = en,
   initialState: WorkspaceSnapshot = snapshot(),
   initialActivity: WorkspaceActivitySnapshot = activity(),
+  strictMode = false,
 ) {
   const container = document.createElement('div')
   document.body.append(container)
@@ -112,8 +113,17 @@ async function mount(
       setState(current => value.revision < current.revision ? current : value)
     }, onActivity: (value: WorkspaceActivitySnapshot) => { activities.push(value); setStream(value) }, t: translate(dictionary) as never })
   }
-  await act(async () => root.render(createElement(Harness)))
-  return { container, snapshots, activities }
+  await act(async () => root.render(strictMode ? createElement(StrictMode, null, createElement(Harness)) : createElement(Harness)))
+  return {
+    container,
+    snapshots,
+    activities,
+    unmount: async (): Promise<void> => {
+      const index = mounted.findIndex(item => item.root === root)
+      if (index >= 0) mounted.splice(index, 1)
+      await act(async () => { root.unmount(); container.remove() })
+    },
+  }
 }
 
 function button(container: HTMLElement, name: string): HTMLButtonElement {
@@ -302,6 +312,104 @@ describe('task center real DOM interactions', () => {
     await click(button(container, `Retry action ${names.cancelOther}`))
 
     expect(api.cancelTask).toHaveBeenLastCalledWith('other', 13)
+  })
+
+  it('publishes a stale-revision durable refresh and enables retry while activity remains pending', async () => {
+    const activityWait = deferred<WorkspaceActivitySnapshot>()
+    const refreshed = { ...snapshot(), revision: 13 }
+    const api = createApi({
+      cancelTask: vi.fn().mockRejectedValueOnce(stale()).mockResolvedValueOnce(refreshed),
+      snapshot: vi.fn().mockResolvedValue(refreshed),
+      activitySnapshot: vi.fn().mockReturnValue(activityWait.promise),
+    })
+    const { container, snapshots } = await mount(api)
+    const label = actionNames().cancelOther
+
+    try {
+      await click(button(container, label))
+
+      expect(snapshots).toContain(refreshed)
+      expect(button(container, `Retry action ${label}`).disabled).toBe(false)
+      await click(button(container, `Retry action ${label}`))
+      expect(api.cancelTask).toHaveBeenLastCalledWith('other', 13)
+    } finally {
+      await act(async () => activityWait.resolve(activity()))
+    }
+  })
+
+  it('does not offer a stale retry when durable refresh has not reached the reported revision', async () => {
+    const activityWait = deferred<WorkspaceActivitySnapshot>()
+    const api = createApi({
+      cancelTask: vi.fn().mockRejectedValue(stale()),
+      snapshot: vi.fn().mockResolvedValue(snapshot()),
+      activitySnapshot: vi.fn().mockReturnValue(activityWait.promise),
+    })
+    const { container } = await mount(api)
+    const label = actionNames().cancelOther
+
+    try {
+      await click(button(container, label))
+
+      expect([...container.querySelectorAll('button')].some(item => item.getAttribute('aria-label') === `Retry action ${label}`)).toBe(false)
+      expect(button(container, label).disabled).toBe(false)
+      expect(container.textContent).toContain('Refresh failed. Use Refresh to reconcile current task controls.')
+    } finally {
+      await act(async () => activityWait.resolve(activity()))
+    }
+  })
+
+  it('publishes an activity refresh and releases its stop control while durable refresh remains pending', async () => {
+    const snapshotWait = deferred<WorkspaceSnapshot>()
+    const refreshedActivity = { ...activity(), version: 3, activities: [] }
+    const api = createApi({
+      snapshot: vi.fn().mockReturnValue(snapshotWait.promise),
+      activitySnapshot: vi.fn().mockResolvedValue(refreshedActivity),
+      stopActivity: vi.fn().mockResolvedValue({ revision: 12, value: { status: 'stopping' } }),
+    })
+    const { container, activities } = await mount(api)
+    const label = actionNames().stopTurn
+
+    try {
+      await click(button(container, label))
+
+      expect(activities).toContain(refreshedActivity)
+      expect([...container.querySelectorAll('button')].some(item => item.getAttribute('aria-label') === label)).toBe(false)
+    } finally {
+      await act(async () => snapshotWait.resolve(snapshot()))
+    }
+  })
+
+  it('does not publish refresh results that settle after the task center unmounts', async () => {
+    const snapshotWait = deferred<WorkspaceSnapshot>()
+    const activityWait = deferred<WorkspaceActivitySnapshot>()
+    const refreshed = { ...snapshot(), revision: 13 }
+    const api = createApi({
+      snapshot: vi.fn().mockReturnValue(snapshotWait.promise),
+      activitySnapshot: vi.fn().mockReturnValue(activityWait.promise),
+    })
+    const view = await mount(api)
+
+    await click(button(view.container, actionNames().retryRoot))
+    await view.unmount()
+    await act(async () => {
+      snapshotWait.resolve(refreshed)
+      activityWait.reject(new Error('activity unavailable'))
+      await snapshotWait.promise
+      await Promise.resolve()
+    })
+
+    expect(view.snapshots).toEqual([])
+    expect(view.activities).toEqual([])
+  })
+
+  it('continues publishing completed actions after the development StrictMode effect cycle', async () => {
+    const committed = { ...snapshot(), revision: 13 }
+    const api = createApi({ cancelTask: vi.fn().mockResolvedValue(committed) })
+    const { container, snapshots } = await mount(api, en, snapshot(), activity(), true)
+
+    await click(button(container, actionNames().cancelOther))
+
+    expect(snapshots).toContain(committed)
   })
 
   it.each(['snapshot', 'activity'] as const)('adopts the successful %s refresh leg independently', async successfulRead => {

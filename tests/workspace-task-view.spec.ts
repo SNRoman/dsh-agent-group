@@ -213,6 +213,11 @@ function componentHarness() {
       if (!(index in states)) states[index] = typeof initial === 'function' ? (initial as () => unknown)() : initial
       return [states[index], (next: unknown) => { states[index] = typeof next === 'function' ? (next as (value: unknown) => unknown)(states[index]) : next }]
     },
+    useRef(initial: unknown) {
+      const index = hook++
+      if (!(index in states)) states[index] = { current: initial }
+      return states[index]
+    },
     useMemo(factory: () => unknown) { hook += 1; return factory() },
     useEffect(effect: () => void) { hook += 1; effect() },
   }

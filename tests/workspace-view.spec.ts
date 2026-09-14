@@ -129,6 +129,11 @@ function componentHarness(initialTurnStream?: WorkspaceTurnStreamSnapshot) {
         owner[index] = typeof next === 'function' ? (next as (previous: unknown) => unknown)(owner[index]) : next
       }]
     },
+    useRef(initial: unknown) {
+      const index = hookIndex++
+      if (!(index in currentState)) currentState[index] = { current: initial }
+      return currentState[index]
+    },
     useEffect(effect: () => void | (() => void)) { hookIndex += 1; currentEffects.push(effect) },
     useMemo(factory: () => unknown) { hookIndex += 1; return factory() },
   }

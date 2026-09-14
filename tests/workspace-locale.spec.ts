@@ -103,6 +103,11 @@ function renderHarness() {
           : next
       }]
     },
+    useRef(initial: unknown) {
+      const index = hook++
+      if (!(index in states)) states[index] = { current: initial }
+      return states[index]
+    },
     useEffect() { hook += 1 },
     useMemo(factory: () => unknown) { hook += 1; return factory() },
   }

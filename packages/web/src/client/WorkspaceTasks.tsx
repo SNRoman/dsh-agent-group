@@ -1,6 +1,6 @@
 /** Human task-management surface for the Agent Workspace Browser. */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { WorkspaceApiError } from './api.ts'
 import type { WorkspaceApiClient } from './api.ts'
@@ -23,6 +23,7 @@ type ConvergenceMarker =
   | { readonly kind: 'delivery'; readonly key: string; readonly taskId: string }
   | { readonly kind: 'activity'; readonly key: string; readonly activityId: string }
   | { readonly kind: 'child'; readonly key: string; readonly childId: string }
+interface RefreshLegs { readonly snapshot: Promise<WorkspaceSnapshot | undefined>; readonly activity: Promise<boolean> }
 
 /** Render canonical task trees and exact Host-owned task controls. */
 export function WorkspaceTasks(props: WorkspaceTasksProps) {
@@ -36,16 +37,29 @@ export function WorkspaceTasks(props: WorkspaceTasksProps) {
   const [notice, setNotice] = useState<'stopping' | 'already-stopping' | undefined>()
   const [retries, setRetries] = useState<ReadonlyMap<string, RetryAction>>(() => new Map())
   const [convergences, setConvergences] = useState<ReadonlyMap<string, ConvergenceMarker>>(() => new Map())
+  const mounted = useRef(true)
+
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
 
   useEffect(() => {
     setConvergences(current => reconcileConvergences(current, roots))
   }, [roots])
 
-  const refresh = async (): Promise<void> => {
-    const [snapshot, activity] = await Promise.allSettled([props.api.snapshot(), props.api.activitySnapshot()])
-    if (snapshot.status === 'fulfilled') props.onSnapshot(snapshot.value)
-    if (activity.status === 'fulfilled') props.onActivity(activity.value)
-    setRefreshFailed(snapshot.status === 'rejected' || activity.status === 'rejected')
+  const refresh = (): RefreshLegs => {
+    const markFailed = (): void => { if (mounted.current) setRefreshFailed(true) }
+    return {
+      snapshot: Promise.resolve().then(() => props.api.snapshot()).then(value => {
+        if (mounted.current) props.onSnapshot(value)
+        return value
+      }, () => { markFailed(); return undefined }),
+      activity: Promise.resolve().then(() => props.api.activitySnapshot()).then(value => {
+        if (mounted.current) props.onActivity(value)
+        return true
+      }, () => { markFailed(); return false }),
+    }
   }
 
   const execute = async (
@@ -61,6 +75,7 @@ export function WorkspaceTasks(props: WorkspaceTasksProps) {
     setNotice(undefined)
     try {
       const result = await run(props.snapshot.revision)
+      if (!mounted.current) return
       const committed = committedSnapshot(result)
       if (committed !== undefined) props.onSnapshot(committed)
       if (committed === undefined && convergence !== undefined) {
@@ -71,20 +86,33 @@ export function WorkspaceTasks(props: WorkspaceTasksProps) {
       }
       setRetries(current => withoutRetry(current, key))
       clear?.()
-      await refresh()
+      const refreshes = refresh()
+      if (committed === undefined) {
+        await (convergence?.kind === 'activity' ? refreshes.activity : refreshes.snapshot)
+      }
     } catch (cause) {
+      if (!mounted.current) return
       if (cause instanceof WorkspaceApiError && cause.kind === 'business' && cause.code === 'stale-revision') {
-        await refresh()
-        setRetries(current => new Map(current).set(key, { key, label, run, clear, convergence }))
+        const refreshed = await refresh().snapshot
+        if (mounted.current) {
+          const requiredRevision = 'actualRevision' in cause.details ? cause.details.actualRevision : props.snapshot.revision + 1
+          if (refreshed !== undefined && refreshed.revision >= requiredRevision) {
+            setRetries(current => new Map(current).set(key, { key, label, run, clear, convergence }))
+          } else {
+            setRefreshFailed(true)
+          }
+        }
       } else {
         setError(taskErrorMessage(cause, props.t))
       }
     } finally {
-      setPending(current => {
-        const next = new Set(current)
-        next.delete(key)
-        return next
-      })
+      if (mounted.current) {
+        setPending(current => {
+          const next = new Set(current)
+          next.delete(key)
+          return next
+        })
+      }
     }
   }
 
