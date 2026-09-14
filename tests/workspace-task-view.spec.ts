@@ -220,6 +220,7 @@ function componentHarness() {
     },
     useMemo(factory: () => unknown) { hook += 1; return factory() },
     useEffect(effect: () => void) { hook += 1; effect() },
+    useLayoutEffect(effect: () => void) { hook += 1; effect() },
   }
   const render = (component: TestComponent, props: Readonly<Record<string, unknown>>) => { hook = 0; return component(props) }
   const all = (root: unknown, predicate: (element: TestElement) => boolean): TestElement[] => {

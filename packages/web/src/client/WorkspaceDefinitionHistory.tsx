@@ -1,6 +1,6 @@
 /** Immutable definition-revision history and selective synchronization. */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { WorkspaceApiError } from './api.ts'
 import type { WorkspaceApiClient } from './api.ts'
@@ -9,6 +9,12 @@ import type { AgentDefinitionId, AgentId, DefinitionHistoryItem, DefinitionRevis
 type SynchronizationMode = 'none' | 'all' | 'subset'
 type RequestState = 'idle' | 'pending' | 'stale' | 'error'
 type HistoryOwner = Readonly<{ definitionId: AgentDefinitionId; revision: number }>
+type FocusRestore = 'save' | 'later' | Readonly<{
+  readonly kind: 'history'
+  readonly definitionId: AgentDefinitionId
+  readonly snapshotRevision: number
+  readonly revisionId: DefinitionRevisionId
+}>
 
 export interface WorkspaceDefinitionHistoryProps {
   readonly snapshot: WorkspaceSnapshot
@@ -39,10 +45,12 @@ export function WorkspaceDefinitionHistory(props: WorkspaceDefinitionHistoryProp
   const [laterRevisionId, setLaterRevisionId] = useState<DefinitionRevisionId | undefined>()
   const [laterAgentIds, setLaterAgentIds] = useState<readonly AgentId[]>([])
   const [laterState, setLaterState] = useState<RequestState>('idle')
-  const [focusRestore, setFocusRestore] = useState<'save' | 'later' | undefined>()
+  const [focusRestore, setFocusRestore] = useState<FocusRestore | undefined>()
   const activeSelection = useRef({ definitionId: props.definitionId, generation: 0 })
   const saveTrigger = useRef<HTMLButtonElement | null>(null)
   const laterTrigger = useRef<HTMLButtonElement | null>(null)
+  const historyStatusTarget = useRef<HTMLDivElement | null>(null)
+  const historyTriggers = useRef(new Map<DefinitionRevisionId, HTMLButtonElement>())
   const saveRequestInFlight = useRef(false)
   const laterRequestInFlight = useRef(false)
   if (activeSelection.current.definitionId !== props.definitionId) {
@@ -69,7 +77,10 @@ export function WorkspaceDefinitionHistory(props: WorkspaceDefinitionHistoryProp
       setHistoryOwner(owner)
       setHistoryState('ready')
     }).catch(() => {
-      if (!controller.signal.aborted && historyGeneration.current === requestGeneration) setHistoryState('error')
+      if (!controller.signal.aborted && historyGeneration.current === requestGeneration) {
+        setHistoryOwner(owner)
+        setHistoryState('error')
+      }
     })
     return () => controller.abort()
   }, [props.api, props.definitionId, props.snapshot.revision, historyVersion])
@@ -85,12 +96,27 @@ export function WorkspaceDefinitionHistory(props: WorkspaceDefinitionHistoryProp
     props.onDraftReservationChange(false)
   }, [props.definitionId])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (focusRestore === undefined) return
-    const trigger = focusRestore === 'save' ? saveTrigger : laterTrigger
-    trigger.current?.focus()
+    if (focusRestore === 'save' || focusRestore === 'later') {
+      const trigger = focusRestore === 'save' ? saveTrigger : laterTrigger
+      trigger.current?.focus()
+      setFocusRestore(undefined)
+      return
+    }
+    if (focusRestore.definitionId !== props.definitionId) {
+      setFocusRestore(undefined)
+      return
+    }
+    const fallback = historyStatusTarget.current
+    if (props.snapshot.revision < focusRestore.snapshotRevision || !hasCurrentHistory || historyState !== 'ready') {
+      fallback?.focus()
+      return
+    }
+    const trigger = historyTriggers.current.get(focusRestore.revisionId)
+    ;(trigger ?? fallback)?.focus()
     setFocusRestore(undefined)
-  }, [focusRestore])
+  }, [focusRestore, hasCurrentHistory, historyState, props.definitionId, props.snapshot.revision])
 
   const refreshAfterStale = async (kind: 'save' | 'later', selectionGeneration: number): Promise<void> => {
     try {
@@ -158,12 +184,13 @@ export function WorkspaceDefinitionHistory(props: WorkspaceDefinitionHistoryProp
     setLaterState('pending')
     try {
       const committed = await props.api.synchronizeDefinition(props.definitionId, laterRevisionId, laterAgentIds, props.snapshot.revision)
+      const selectedRevisionId = laterRevisionId
       props.onSnapshot(committed)
       if (activeSelection.current.generation !== selectionGeneration) return
       setLaterRevisionId(undefined)
       setLaterAgentIds([])
       setLaterState('idle')
-      setFocusRestore('later')
+      setFocusRestore({ kind: 'history', definitionId: props.definitionId, snapshotRevision: committed.revision, revisionId: selectedRevisionId })
     } catch (error) {
       if (isStale(error)) await refreshAfterStale('later', selectionGeneration)
       else if (activeSelection.current.generation === selectionGeneration) setLaterState('error')
@@ -199,7 +226,7 @@ export function WorkspaceDefinitionHistory(props: WorkspaceDefinitionHistoryProp
 
     <section className="dsh-agent-group-card">
       <div className="dsh-agent-group-card-head"><strong>{props.t('history.title')}</strong></div>
-      {displayedHistoryState === 'loading' ? <div role="status" className="dsh-agent-group-empty">{props.t('history.loading')}</div> : null}
+      <div ref={historyStatusTarget} role="status" tabIndex={-1} aria-label={props.t('history.title')} className={displayedHistoryState === 'loading' ? 'dsh-agent-group-empty' : undefined}>{displayedHistoryState === 'loading' ? props.t('history.loading') : null}</div>
       {displayedHistoryState === 'error' ? <div role="alert" className="dsh-agent-group-error">{props.t('history.error')} <button type="button" className="dsh-agent-group-button" onClick={() => setHistoryVersion(value => value + 1)}>{props.t('workspace.retry')}</button></div> : null}
       {displayedHistoryState === 'ready' && history.length === 0 ? <div className="dsh-agent-group-empty">{props.t('history.empty')}</div> : null}
       <div className="dsh-agent-group-history-list">{hasCurrentHistory ? history.map(item => <article key={item.id} className="dsh-agent-group-history-item" aria-label={props.t('history.revisionNamed', { number: item.number })}>
@@ -212,7 +239,7 @@ export function WorkspaceDefinitionHistory(props: WorkspaceDefinitionHistoryProp
             ? props.t('history.unknownPinned', { id })
             : props.t('history.agentPinned', { name: agent.name, id, status: agent.employmentStatus === 'employed' ? props.t('agent.employed') : props.t('agent.departed') })
         }).join(props.t('history.listSeparator')) })}</div>
-        <button type="button" className="dsh-agent-group-button" aria-label={props.t('history.synchronizeNamed', { number: item.number })} onClick={event => { laterTrigger.current = event.currentTarget; setLaterRevisionId(item.id); setLaterAgentIds([]); setLaterState('idle') }}>{props.t('history.synchronize')}</button>
+        <button ref={element => { if (element === null) historyTriggers.current.delete(item.id); else historyTriggers.current.set(item.id, element) }} type="button" className="dsh-agent-group-button" aria-label={props.t('history.synchronizeNamed', { number: item.number })} onClick={event => { laterTrigger.current = event.currentTarget; setLaterRevisionId(item.id); setLaterAgentIds([]); setLaterState('idle') }}>{props.t('history.synchronize')}</button>
       </article>) : null}</div>
     </section>
 

@@ -111,6 +111,7 @@ function renderHarness() {
       return states[index]
     },
     useEffect() { hook += 1 },
+    useLayoutEffect() { hook += 1 },
     useMemo(factory: () => unknown) { hook += 1; return factory() },
   }
   return (component: TestComponent, props: Readonly<Record<string, unknown>>): unknown => {

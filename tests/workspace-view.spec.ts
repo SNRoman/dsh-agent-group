@@ -135,6 +135,7 @@ function componentHarness(initialTurnStream?: WorkspaceTurnStreamSnapshot) {
       return currentState[index]
     },
     useEffect(effect: () => void | (() => void)) { hookIndex += 1; currentEffects.push(effect) },
+    useLayoutEffect(effect: () => void | (() => void)) { hookIndex += 1; currentEffects.push(effect) },
     useMemo(factory: () => unknown) { hookIndex += 1; return factory() },
   }
 

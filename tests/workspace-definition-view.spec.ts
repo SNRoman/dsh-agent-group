@@ -341,6 +341,53 @@ describe('definition revision history and synchronization', () => {
     await vi.waitFor(() => expect(container.textContent).toContain('Refreshed history'))
   })
 
+  it('shows the initial history failure with a retry that loads the current owner', async () => {
+    const client = api({ definitionHistory: vi.fn().mockRejectedValueOnce(new Error('private history detail')).mockResolvedValueOnce(history) })
+    const container = await mount(client)
+    await vi.waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain('Revision history request failed.'))
+    expect(container.textContent).not.toContain('Old role')
+    expect(container.querySelectorAll('.dsh-agent-group-history-item')).toHaveLength(0)
+    await click(button(container, 'Retry'))
+    await vi.waitFor(() => expect(container.textContent).toContain('Old role'))
+    expect(client.definitionHistory).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows a replacement history failure without prior cards and retries the replacement owner', async () => {
+    const client = api({ definitionHistory: vi.fn().mockResolvedValueOnce(history).mockRejectedValueOnce(new Error('private history detail')).mockResolvedValueOnce(history) })
+    const container = await mount(client)
+    await vi.waitFor(() => expect(container.textContent).toContain('Old role'))
+    await click(button(container, 'Save new revision'))
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"][aria-label="Synchronize new revision"]')!
+    await click(button(dialog, 'Save revision'))
+    await vi.waitFor(() => expect(client.definitionHistory).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain('Revision history request failed.'))
+    expect(container.textContent).not.toContain('Old role')
+    expect(container.querySelectorAll('.dsh-agent-group-history-item')).toHaveLength(0)
+    await click(button(container, 'Retry'))
+    await vi.waitFor(() => expect(container.textContent).toContain('Old role'))
+    expect(client.definitionHistory).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps focus on history loading and restores it to the synchronized revision after deferred replacement history', async () => {
+    const replacement = deferred<readonly DefinitionHistoryItem[]>()
+    const client = api({ definitionHistory: vi.fn().mockResolvedValueOnce(history).mockImplementationOnce(() => replacement.promise) })
+    const container = await mount(client)
+    await vi.waitFor(() => expect(container.textContent).toContain('Old role'))
+    const trigger = button(container, 'Synchronize revision 1')
+    trigger.focus()
+    await click(trigger)
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"][aria-label="Synchronize historical revision"]')!
+    await click(field(dialog, 'Select Alice (alice)'))
+    await click(button(dialog, 'Confirm synchronization'))
+    await vi.waitFor(() => expect(client.definitionHistory).toHaveBeenCalledTimes(2))
+    const loading = container.querySelector<HTMLElement>('[role="status"]')!
+    expect(document.activeElement).toBe(loading)
+    expect(container.querySelectorAll('.dsh-agent-group-history-item')).toHaveLength(0)
+    await act(async () => replacement.resolve(history))
+    await vi.waitFor(() => expect(document.activeElement).toBe(button(container, 'Synchronize revision 1')))
+    expect(document.activeElement).not.toBe(trigger)
+  })
+
   it('ignores a late history response after definition selection changes', async () => {
     const old = deferred<readonly DefinitionHistoryItem[]>()
     const otherHistory: readonly DefinitionHistoryItem[] = [{ id: 'other-rev', definitionId: 'other', number: 1, description: 'Other history', instructions: 'Other', creationEvent: { status: 'derived', sequence: 4 }, status: 'current', agentIds: [] }]
