@@ -13,7 +13,7 @@ export const WORKSPACE_UI_CSS = `
 .dsh-agent-group-footer-icon { width: 18px; height: 18px; flex: none; }
 
 .dsh-agent-group-overlay-root { position: fixed; inset: 0; pointer-events: auto; display: flex; align-items: stretch; justify-content: stretch; padding: 18px; box-sizing: border-box; background: color-mix(in srgb, var(--dsw-alias-label-primary) 18%, transparent); }
-.dsh-agent-group-workbench { width: 100%; height: 100%; min-width: 0; min-height: 0; display: grid; grid-template-rows: 56px minmax(0, 1fr); overflow: hidden; border: 1px solid var(--dsw-alias-border-l2); border-radius: 18px; background: var(--dsw-alias-button-elevated-fill); color: var(--dsw-alias-label-primary); }
+.dsh-agent-group-workbench { position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; display: grid; grid-template-rows: 56px minmax(0, 1fr); overflow: hidden; border: 1px solid var(--dsw-alias-border-l2); border-radius: 18px; background: var(--dsw-alias-button-elevated-fill); color: var(--dsw-alias-label-primary); }
 .dsh-agent-group-topbar { display: flex; align-items: center; gap: 12px; padding: 0 18px; border-bottom: 1px solid var(--dsw-alias-border-l2); }
 .dsh-agent-group-title { font-size: 16px; font-weight: 600; white-space: nowrap; }
 .dsh-agent-group-tabs { display: flex; gap: 4px; margin-left: 12px; }
@@ -24,6 +24,12 @@ export const WORKSPACE_UI_CSS = `
 .dsh-agent-group-icon-button { width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; border-radius: 10px; background: transparent; }
 .dsh-agent-group-icon-button:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .dsh-agent-group-icon-button svg { width: 18px; height: 18px; }
+.dsh-agent-group-activity-trigger { width: auto; min-width: 44px; gap: 5px; padding: 0 7px; }
+.dsh-agent-group-activity-count { min-width: 1ch; font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.dsh-agent-group-activity-drawer { position: absolute; z-index: 1; top: 56px; right: 0; bottom: 0; width: min(640px, 100%); display: flex; flex-direction: column; overflow: auto; border-left: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-button-elevated-fill); box-shadow: -14px 0 32px rgb(0 0 0 / .12); }
+.dsh-agent-group-activity-layout { min-height: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 10px; padding: 10px; }
+.dsh-agent-group-activity-detail { min-width: 0; overflow: auto; }
+.dsh-agent-group-runtime-badges { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
 
 .dsh-agent-group-body { min-width: 0; min-height: 0; display: grid; grid-template-columns: 230px minmax(0, 1fr) 260px; }
 .dsh-agent-group-body[data-mode="colleagues"] { grid-template-columns: 260px minmax(0, 1fr); }

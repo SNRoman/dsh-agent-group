@@ -6,7 +6,6 @@ import type {
   DelegationGrantId,
   TaskDeliveryAttemptId,
   TaskId,
-  WorkspaceActivity,
   WorkspaceActivityIdentity,
   WorkspaceActivitySnapshot,
   WorkspaceActorView,
@@ -15,6 +14,7 @@ import type {
   WorkspaceSnapshot,
   WorkspaceTaskView,
 } from './contracts.ts'
+import { projectWorkspaceActivity } from './activity-view-model.ts'
 
 export interface TaskParty { readonly id: string; readonly label: string }
 export type TaskActor = (WorkspaceActorView & TaskParty)
@@ -49,7 +49,8 @@ export interface TaskActivityProjection {
   readonly agentLabel: string
   readonly attemptId: TaskDeliveryAttemptId
   readonly messageId: string
-  readonly status: WorkspaceActivity['status']
+  readonly status: 'queued' | 'responding' | 'stopping' | 'settled'
+  readonly usingTool: boolean
   readonly stopIdentity?: WorkspaceActivityIdentity | undefined
 }
 
@@ -90,6 +91,7 @@ export function projectTaskRoots(
   snapshot: WorkspaceSnapshot,
   activity: WorkspaceActivitySnapshot,
 ): readonly TaskRootProjection[] {
+  const runtime = projectWorkspaceActivity(snapshot, activity)
   const assignments = new Map(Object.values(snapshot.taskAssignments).map(item => [item.taskId, item]))
   const eventsByTask = new Map<TaskId, WorkspaceEventView[]>()
   const eventsByGrant = new Map<DelegationGrantId, WorkspaceEventView[]>()
@@ -134,10 +136,19 @@ export function projectTaskRoots(
         }
       })
       .sort((left, right) => compareFirst(left.eventSequences[0], right.eventSequences[0], left.id, right.id))
-    const activities = activity.activities
-      .filter(item => item.source.kind === 'task' && item.source.taskId === task.id)
-      .sort((left, right) => left.startOrder - right.startOrder || left.activityId.localeCompare(right.activityId))
-      .map(item => projectActivity(snapshot, item))
+    const activities = (runtime.tasks[task.id] ?? []).map(item => {
+      if (item.source.kind !== 'task') throw new Error('task activity projection requires a task source')
+      return {
+        activityId: item.activityId,
+        agentId: item.agent.id as AgentId,
+        agentLabel: item.agent.label,
+        attemptId: item.source.attemptId as TaskDeliveryAttemptId,
+        messageId: item.messageId,
+        status: item.status,
+        usingTool: item.usingTool,
+        ...(item.stopIdentity === undefined ? {} : { stopIdentity: item.stopIdentity }),
+      }
+    })
     return {
       id: task.id,
       rootTaskId: task.rootTaskId,
@@ -244,27 +255,6 @@ function projectDelivery(task: WorkspaceTaskView, events: readonly WorkspaceEven
     attemptId: latestAttemptId,
     phase: last?.type === 'task/delivery-accepted' ? 'accepted' : 'started',
     retryable: false,
-  }
-}
-
-function projectActivity(snapshot: WorkspaceSnapshot, item: WorkspaceActivity): TaskActivityProjection {
-  if (item.source.kind !== 'task') throw new Error('task activity projection requires a task source')
-  return {
-    activityId: item.activityId,
-    agentId: item.agentId,
-    agentLabel: snapshot.agents[item.agentId]?.name ?? item.agentId,
-    attemptId: item.source.attemptId,
-    messageId: item.messageId,
-    status: item.status,
-    ...(item.claimed === undefined ? {} : {
-      stopIdentity: {
-        activityId: item.activityId,
-        agentId: item.agentId,
-        messageId: item.messageId,
-        sessionId: item.claimed.sessionId,
-        turn: item.claimed.turn,
-      },
-    }),
   }
 }
 

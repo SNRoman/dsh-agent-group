@@ -2,7 +2,7 @@
 
 import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-runtime/client'
 import type { WorkspaceApiError } from './api.ts'
-import type { AgentDefinitionId, RoomId, WorkspaceSnapshot } from './contracts.ts'
+import type { AgentDefinitionId, RoomId, WorkspaceActivityId, WorkspaceSnapshot } from './contracts.ts'
 import { selectNewerWorkspaceSnapshot } from './task-view-model.ts'
 
 export type WorkspaceViewMode = 'conversations' | 'colleagues' | 'tasks' | 'memory'
@@ -12,6 +12,8 @@ export interface WorkspaceUiState {
   mode: WorkspaceViewMode
   selectedRoomId?: RoomId
   selectedDefinitionId?: AgentDefinitionId
+  activityDrawerOpen?: boolean
+  selectedActivityId?: WorkspaceActivityId
   snapshot?: WorkspaceSnapshot
   busy: boolean
   error?: WorkspaceUiError
@@ -30,6 +32,9 @@ type WorkspaceUiActions = {
   setMode: (draft: WorkspaceUiState, mode: WorkspaceViewMode) => void
   selectRoom: (draft: WorkspaceUiState, roomId: RoomId | undefined) => void
   selectDefinition: (draft: WorkspaceUiState, definitionId: AgentDefinitionId | undefined) => void
+  openActivityDrawer: (draft: WorkspaceUiState, activityId?: WorkspaceActivityId | undefined) => void
+  closeActivityDrawer: (draft: WorkspaceUiState) => void
+  selectActivity: (draft: WorkspaceUiState, activityId: WorkspaceActivityId | undefined) => void
   setSnapshot: (draft: WorkspaceUiState, snapshot: WorkspaceSnapshot) => void
   setBusy: (draft: WorkspaceUiState, busy: boolean) => void
   setError: (draft: WorkspaceUiState, error: WorkspaceUiError | undefined) => void
@@ -51,6 +56,15 @@ export function createWorkspaceUiStore(): EngineStoreHandle<WorkspaceUiState, Wo
       selectDefinition: (draft, definitionId) => {
         if (definitionId === undefined) delete draft.selectedDefinitionId
         else draft.selectedDefinitionId = definitionId
+      },
+      openActivityDrawer: (draft, activityId) => {
+        draft.activityDrawerOpen = true
+        if (activityId !== undefined) draft.selectedActivityId = activityId
+      },
+      closeActivityDrawer: draft => { draft.activityDrawerOpen = false },
+      selectActivity: (draft, activityId) => {
+        if (activityId === undefined) delete draft.selectedActivityId
+        else draft.selectedActivityId = activityId
       },
       setSnapshot: (draft, snapshot) => {
         const selected = selectNewerWorkspaceSnapshot(draft.snapshot, snapshot)

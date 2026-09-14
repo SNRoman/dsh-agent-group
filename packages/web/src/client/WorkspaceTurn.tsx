@@ -4,6 +4,8 @@ import { useState } from 'react'
 import { DisclosureRow, MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
+  WorkspaceActivityBlock,
+  WorkspaceActivityToolBlock,
   WorkspaceTurnProjection,
   WorkspaceTurnReasoningBlock,
   WorkspaceTurnToolBlock,
@@ -34,21 +36,9 @@ export function WorkspaceLiveTurn({ turn, agentName, t }: {
           <span>{streaming ? t('turn.replying') : t('turn.saving')}</span>
         </div>
         <div className="dsh-agent-group-live-blocks">
-          {turn.blocks.map(block => {
-            if (block.kind === 'text') {
-              return <MarkdownText key={`text:${block.index}`} text={block.text} streaming={streaming} />
-            }
-            if (block.kind === 'reasoning') {
-              return <ReasoningDisclosure key={`reasoning:${block.index}`} block={block} streaming={streaming} t={t} />
-            }
-            if (block.kind === 'tool') {
-              return <ToolDisclosure key={`tool:${block.callId}:${block.index}`} block={block} t={t} />
-            }
-            return <UnknownDisclosure key={`unknown:${block.index}`} block={block} t={t} />
-          })}
           {turn.blocks.length === 0 && streaming
             ? <div className="dsh-agent-group-muted">{t('turn.thinking')}</div>
-            : null}
+            : <WorkspaceActivityDetails blocks={turn.blocks} streaming={streaming} t={t} />}
           {turn.error !== undefined
             ? <div className="dsh-agent-group-error dsh-agent-group-turn-error">{turn.error}</div>
             : null}
@@ -56,6 +46,22 @@ export function WorkspaceLiveTurn({ turn, agentName, t }: {
       </div>
     </article>
   )
+}
+
+/** Render safe text, reasoning, tool, and extension blocks for every runtime surface. */
+export function WorkspaceActivityDetails({ blocks, streaming, t }: {
+  readonly blocks: readonly (WorkspaceActivityBlock | WorkspaceTurnProjection['blocks'][number])[]
+  readonly streaming: boolean
+} & PropsLocale<'agentWorkspace'>) {
+  return <>
+    {blocks.map(block => {
+      if (block.kind === 'text') return <MarkdownText key={`text:${block.index}`} text={block.text} streaming={streaming} />
+      if (block.kind === 'reasoning') return <ReasoningDisclosure key={`reasoning:${block.index}`} block={block} streaming={streaming} t={t} />
+      if (block.kind === 'tool') return <ToolDisclosure key={`tool:${block.callId}:${block.index}`} block={block} t={t} />
+      return <UnknownDisclosure key={`unknown:${block.index}`} block={block} t={t} />
+    })}
+    {blocks.length === 0 && streaming ? <div className="dsh-agent-group-muted">{t('turn.thinking')}</div> : null}
+  </>
 }
 
 function ReasoningDisclosure({ block, streaming, t }: {
@@ -80,7 +86,7 @@ function ReasoningDisclosure({ block, streaming, t }: {
   )
 }
 
-function ToolDisclosure({ block, t }: { readonly block: WorkspaceTurnToolBlock } & PropsLocale<'agentWorkspace'>) {
+function ToolDisclosure({ block, t }: { readonly block: WorkspaceTurnToolBlock | WorkspaceActivityToolBlock } & PropsLocale<'agentWorkspace'>) {
   const [open, setOpen] = useState(false)
   const title = block.name.trim() === '' ? t('turn.toolCall') : t('turn.toolNamed', { name: block.name })
   const status = block.status === 'running' ? t('turn.running') : block.status === 'failed' ? t('turn.failed') : t('turn.completed')
@@ -102,7 +108,7 @@ function ToolDisclosure({ block, t }: { readonly block: WorkspaceTurnToolBlock }
           ? <Detail label={t('turn.result')} value={block.resultText} />
           : null}
         {block.error !== undefined
-          ? <Detail label={t('turn.error')} value={block.error} />
+          ? <Detail label={t('turn.error')} value={typeof block.error === 'string' ? block.error : block.error.summary} />
           : null}
       </div>
     </DisclosureRow>

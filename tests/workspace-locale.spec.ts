@@ -10,6 +10,8 @@ import { WorkspaceLiveTurn } from '../packages/web/src/client/WorkspaceTurn.tsx'
 import { WorkspaceTasks } from '../packages/web/src/client/WorkspaceTasks.tsx'
 import { WorkspaceMemory } from '../packages/web/src/client/WorkspaceMemory.tsx'
 import { WorkspaceDefinitionHistory } from '../packages/web/src/client/WorkspaceDefinitionHistory.tsx'
+import { WorkspaceActivityDrawer } from '../packages/web/src/client/WorkspaceActivityDrawer.tsx'
+import { projectWorkspaceActivity } from '../packages/web/src/client/activity-view-model.ts'
 import type { WorkspaceActivitySnapshot, WorkspaceSnapshot } from '../packages/web/src/client/contracts.ts'
 
 const browserRuntime = vi.hoisted(() => {
@@ -168,8 +170,8 @@ const liveTurn: WorkspaceTurnProjection = {
 
 describe('Agent Workspace locale runtime', () => {
   it.each([
-    ['zh', ['智能体工作区', '打开智能体工作区', '会话', '同事', '任务', '记忆', '正在读取智能体工作区…', '正在回复…', '正在思考…', '工作区请求失败。']],
-    ['en', ['Agent Workspace', 'Open Agent Workspace', 'Conversations', 'Colleagues', 'Tasks', 'Memory', 'Loading Agent Workspace…', 'Replying…', 'Thinking…', 'Workspace request failed.']],
+    ['zh', ['智能体工作区', '打开智能体工作区', '会话', '同事', '任务', '记忆', '打开运行状态', '正在读取智能体工作区…', '正在回复…', '正在思考…', '工作区请求失败。']],
+    ['en', ['Agent Workspace', 'Open Agent Workspace', 'Conversations', 'Colleagues', 'Tasks', 'Memory', 'Open runtime activity', 'Loading Agent Workspace…', 'Replying…', 'Thinking…', 'Workspace request failed.']],
   ] as const)('renders footer, overlay, live, empty, error and accessibility copy in %s', (localeId, expected) => {
     const locale = new LocaleRuntime(new Context())
     locale.setLocale(localeId)
@@ -189,6 +191,29 @@ describe('Agent Workspace locale runtime', () => {
     for (const value of expected) expect(rendered).toContain(value)
     expect(registered.entries).toHaveLength(2)
     expect(registered.entries.every(entry => entry.options['locale'] === 'agentWorkspace')).toBe(true)
+    registered.dispose()
+  })
+
+  it.each([
+    ['zh', ['运行状态', '关闭运行状态', '当前没有运行活动。']],
+    ['en', ['Runtime activity', 'Close runtime activity', 'No runtime activity.']],
+  ] as const)('renders activity drawer accessibility and empty copy in %s', (localeId, expected) => {
+    const locale = new LocaleRuntime(new Context())
+    locale.setLocale(localeId)
+    const registered = registerPlugin(locale)
+    const t = locale.bind('agentWorkspace' as never)
+    const render = renderHarness()
+    const snapshot: WorkspaceSnapshot = {
+      workspaceId: 'workspace', revision: 0, nextId: 1, nextSequence: 1,
+      definitions: {}, definitionRevisions: {}, agents: {}, rooms: {}, memberships: {}, events: [], memoryEntries: [], tasks: {}, taskAssignments: {}, delegationGrants: {}, childRuns: {}, sessionBindings: {},
+    }
+    const activity: WorkspaceActivitySnapshot = { version: 0, workspaceRevision: 0, activities: [], agents: [] }
+    const drawer = render(WorkspaceActivityDrawer as unknown as TestComponent, {
+      projection: projectWorkspaceActivity(snapshot, activity), snapshot, api: {}, selectedActivityId: undefined,
+      onSelectActivity: vi.fn(), onSnapshot: vi.fn(), onActivity: vi.fn(), onClose: vi.fn(), returnFocusRef: { current: null }, t,
+    })
+    const rendered = strings(drawer)
+    for (const value of expected) expect(rendered).toContain(value)
     registered.dispose()
   })
 

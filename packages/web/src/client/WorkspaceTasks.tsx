@@ -6,6 +6,7 @@ import { WorkspaceApiError } from './api.ts'
 import type { WorkspaceApiClient } from './api.ts'
 import type { AgentId, WorkspaceActivitySnapshot, WorkspaceSnapshot } from './contracts.ts'
 import { projectTaskRoots } from './task-view-model.ts'
+import { WorkspaceRuntimeBadge } from './WorkspaceActivityDrawer.tsx'
 import type { TaskProjection, TaskRootProjection } from './task-view-model.ts'
 
 interface WorkspaceTasksProps {
@@ -207,7 +208,7 @@ function TaskRuntime({ task, pending, convergences, execute, api, t }: {
     {task.activities.map(item => {
       const key = `stop-activity:${item.activityId}`
       const label = t('task.stopTurnNamed', { task: task.title, agent: item.agentLabel, activity: item.activityId })
-      return <div className="dsh-agent-group-task-row" key={item.activityId}><span>{item.agentLabel}</span><TaskBadge value={t(`task.activity.${item.status}`)} />{item.stopIdentity !== undefined && item.status !== 'settled' ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" aria-label={label} disabled={item.status === 'stopping' || pending.has(key) || convergences.has(key)} onClick={() => void execute(key, label, revision => api.stopActivity(item.stopIdentity!, revision), undefined, { kind: 'activity', key, activityId: item.activityId })}>{t('task.stopTurn')}</button> : null}</div>
+      return <div className="dsh-agent-group-task-row" key={item.activityId}><span>{item.agentLabel}</span><WorkspaceRuntimeBadge value={t(`activity.status.${item.status}`)} />{item.usingTool ? <WorkspaceRuntimeBadge value={t('activity.usingTool')} /> : null}{item.stopIdentity !== undefined ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" aria-label={label} disabled={pending.has(key) || convergences.has(key)} onClick={() => void execute(key, label, revision => api.stopActivity(item.stopIdentity!, revision), undefined, { kind: 'activity', key, activityId: item.activityId })}>{t('task.stopTurn')}</button> : item.status === 'stopping' ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled>{t('activity.status.stopping')}</button> : null}</div>
     })}
     {task.children.map(child => {
       const key = `stop-child:${child.id}`

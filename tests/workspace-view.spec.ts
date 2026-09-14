@@ -617,6 +617,35 @@ describe('workspace UI view model', () => {
     await Promise.resolve()
   })
 
+  it('does not busy-loop when a wait returns a non-advancing replacement', async () => {
+    const fixture = workspaceFixture()
+    const stream = { version: 4, workspaceRevision: fixture.state.revision, activities: [], agents: [] }
+    const pending = pendingPromise<typeof stream>()
+    const api = {
+      snapshot: vi.fn().mockResolvedValue(fixture.state),
+      activitySnapshot: vi.fn().mockResolvedValue(stream),
+      waitForActivity: vi.fn()
+        .mockResolvedValueOnce({ ...stream })
+        .mockImplementation((_version: number, signal: AbortSignal) => {
+          signal.addEventListener('abort', () => pending.reject(new Error('cancelled')), { once: true })
+          return pending.promise
+        }),
+    }
+    const harness = componentHarness()
+    harness.render(WorkspaceOverlay as unknown as TestComponent, {
+      useStore: (selector: (state: unknown) => unknown) => selector({ open: true, mode: 'conversations', snapshot: fixture.state, busy: false }),
+      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
+      api, t,
+    })
+    const subscription = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[0]
+    if (subscription === undefined) throw new Error('expected stream subscription effect')
+    const cleanup = subscription()
+    await vi.waitFor(() => expect(api.waitForActivity).toHaveBeenCalled())
+    await Promise.resolve()
+    expect(api.waitForActivity).toHaveBeenCalledTimes(1)
+    if (typeof cleanup === 'function') cleanup()
+  })
+
   it('reformats a raw stream failure exactly once after the locale changes', async () => {
     const fixture = workspaceFixture()
     const ui: Record<string, unknown> = {
@@ -662,6 +691,33 @@ describe('workspace UI view model', () => {
     const errors = harness.findAll(rerendered, element => element.props['className'] === 'dsh-agent-group-error')
     expect(errors.map(error => error.props['children'])).toEqual(['Live status connection failed.'])
     expect(actions.setError).not.toHaveBeenCalledWith(expect.any(Error))
+    if (typeof cleanup === 'function') cleanup()
+  })
+
+  it('offers an explicit reconnect after a safe stream failure', async () => {
+    const fixture = workspaceFixture()
+    const ui = { open: true, mode: 'conversations' as const, snapshot: fixture.state, busy: false }
+    const stream = { version: 0, workspaceRevision: fixture.state.revision, activities: [], agents: [] }
+    const api = {
+      snapshot: vi.fn().mockResolvedValue(fixture.state),
+      activitySnapshot: vi.fn().mockResolvedValue(stream),
+      waitForActivity: vi.fn().mockRejectedValue(new Error('upstream detail')),
+    }
+    const harness = componentHarness()
+    const props = {
+      useStore: (selector: (state: unknown) => unknown) => selector(ui),
+      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
+      api, t,
+    }
+    harness.render(WorkspaceOverlay as unknown as TestComponent, props)
+    const first = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[0]
+    if (first === undefined) throw new Error('expected stream subscription effect')
+    const cleanup = first()
+    await vi.waitFor(() => expect(api.waitForActivity).toHaveBeenCalledOnce())
+    const failed = harness.render(WorkspaceOverlay as unknown as TestComponent, props)
+    const retry = harness.find(failed, element => element.type === 'button' && element.props['children'] === 'workspace.retry')
+    expect(retry).toBeDefined()
+    ;(retry!.props['onClick'] as () => void)()
     if (typeof cleanup === 'function') cleanup()
   })
 

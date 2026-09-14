@@ -1,6 +1,6 @@
 /** Additive Agent Workspace Browser surfaces. */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, FormEvent, KeyboardEvent, SetStateAction } from 'react'
 import type { PropsLocale, PropsRuntime, PropsStore, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
@@ -26,6 +26,9 @@ import { WorkspaceTasks } from './WorkspaceTasks.tsx'
 import { WorkspaceMemory } from './WorkspaceMemory.tsx'
 import { WorkspaceDefinitionHistory } from './WorkspaceDefinitionHistory.tsx'
 import { selectNewerActivitySnapshot } from './task-view-model.ts'
+import { projectWorkspaceActivity } from './activity-view-model.ts'
+import type { WorkspaceActivityProjection } from './activity-view-model.ts'
+import { WorkspaceActivityBadges, WorkspaceActivityDrawer, WorkspaceAgentRuntimeBadges, WorkspaceRuntimeBadge } from './WorkspaceActivityDrawer.tsx'
 import {
   activeRoomMembers,
   actorLabel,
@@ -84,6 +87,9 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
   const [activitySnapshot, setActivitySnapshot] = useState<WorkspaceActivitySnapshot>(EMPTY_ACTIVITY)
   const [streamError, setStreamError] = useState<WorkspaceUiError | undefined>()
   const [pendingMutation, setPendingMutation] = useState<PendingMutation | undefined>()
+  const [reconnectAttempt, setReconnectAttempt] = useState(0)
+  const activityTriggerRef = useRef<HTMLButtonElement>(null)
+  const activityVersionRef = useRef(0)
 
   // One cancellation-aware long-poll subscription replaces the former timer
   // polling. Stream versions wake the Browser only when authoritative Session
@@ -92,6 +98,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
     if (!ui.open) {
       setTurnStream(EMPTY_TURN_STREAM)
       setActivitySnapshot(EMPTY_ACTIVITY)
+      activityVersionRef.current = 0
       setStreamError(undefined)
       return
     }
@@ -112,15 +119,25 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
         actions.setSnapshot(initialSnapshot)
         setTurnStream(current => initialStream.version < current.version ? current : activityTurnStream(initialStream))
         setActivitySnapshot(current => selectNewerActivitySnapshot(current, initialStream))
+        activityVersionRef.current = Math.max(activityVersionRef.current, initialStream.version)
         setStreamError(undefined)
         actions.setBusy(false)
 
         let durableRevision = initialSnapshot.revision
-        let currentVersion = initialStream.version
+        let currentVersion = activityVersionRef.current
         while (!controller.signal.aborted) {
           const next = await api.waitForActivity(currentVersion, controller.signal)
           if (controller.signal.aborted) return
+          if (next.version <= currentVersion) {
+            if (next.version === currentVersion) {
+              setTurnStream(activityTurnStream(next))
+              setActivitySnapshot(current => selectNewerActivitySnapshot(current, next))
+            }
+            setStreamError({ kind: 'unexpected' })
+            return
+          }
           currentVersion = next.version
+          activityVersionRef.current = next.version
           setTurnStream(current => next.version < current.version ? current : activityTurnStream(next))
           setActivitySnapshot(current => selectNewerActivitySnapshot(current, next))
           setStreamError(undefined)
@@ -141,20 +158,25 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
     }
     void subscribe()
     return () => controller.abort()
-  }, [ui.open, api, actions])
+  }, [ui.open, api, actions, reconnectAttempt])
 
   useEffect(() => {
     if (!ui.open) return
     const onKeyDown = (event: globalThis.KeyboardEvent): void => {
-      if (event.key === 'Escape') actions.close()
+      if (event.key !== 'Escape') return
+      if (ui.activityDrawerOpen === true) {
+        actions.closeActivityDrawer()
+        activityTriggerRef.current?.focus()
+      } else actions.close()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [ui.open, actions])
+  }, [ui.open, ui.activityDrawerOpen, actions])
 
   const snapshot = ui.snapshot
   const rooms = useMemo(() => snapshot === undefined ? [] : Object.values(snapshot.rooms), [snapshot])
   const definitions = useMemo(() => snapshot === undefined ? [] : Object.values(snapshot.definitions), [snapshot])
+  const activity = useMemo(() => snapshot === undefined ? undefined : projectWorkspaceActivity(snapshot, activitySnapshot), [snapshot, activitySnapshot])
 
   useEffect(() => {
     if (snapshot === undefined) return
@@ -172,7 +194,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
   const selectedRevision = snapshot === undefined || selectedDefinition === undefined
     ? undefined
     : snapshot.definitionRevisions[selectedDefinition.currentRevisionId]
-  const pendingDispatches = turnStream.turns.filter(turn => turn.status === 'running').length
+  const pendingDispatches = activity?.activities.filter(item => item.status !== 'settled').length ?? 0
 
   const resetRevisionDraft = (source: WorkspaceSnapshot, definitionId: AgentDefinitionId): void => {
     const definition = source.definitions[definitionId]
@@ -191,6 +213,17 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
       resetRevisionDraft(snapshot, selectedDefinition.id)
     }
   }, [snapshot, selectedDefinition, selectedRevision, revisionDraftDefinitionId, revisionDraftRevisionId, revisionDraftDirty, revisionDraftReserved])
+
+  useEffect(() => {
+    if (activity === undefined || !ui.activityDrawerOpen) return
+    if (ui.selectedActivityId === undefined || !activity.activities.some(item => item.activityId === ui.selectedActivityId)) {
+      actions.selectActivity(activity.activities[0]?.activityId)
+    }
+  }, [activity, ui.activityDrawerOpen, ui.selectedActivityId, actions])
+
+  useEffect(() => {
+    activityVersionRef.current = Math.max(activityVersionRef.current, activitySnapshot.version)
+  }, [activitySnapshot.version])
 
   if (!ui.open) return null
 
@@ -255,6 +288,11 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
             : pendingDispatches > 0
               ? <span className="dsh-agent-group-busy">{t('workspace.agentsProcessing')}</span>
               : null}
+          <button ref={activityTriggerRef} type="button" className="dsh-agent-group-icon-button dsh-agent-group-activity-trigger" onClick={() => actions.openActivityDrawer(activity?.activities[0]?.activityId)} aria-label={t('activity.open')} title={t('activity.open')}>
+            <WorkspaceRuntimeBadge value={t(`activity.status.${activity?.summary.status ?? 'idle'}`)} />
+            {activity?.summary.usingTool ? <WorkspaceRuntimeBadge value={t('activity.usingTool')} /> : null}
+            <span className="dsh-agent-group-activity-count">{activity?.activities.length ?? 0}</span>
+          </button>
           <button type="button" className="dsh-agent-group-icon-button" onClick={() => void refresh(api, actions, setTurnStream, setActivitySnapshot)} aria-label={t('workspace.refresh')} title={t('workspace.refresh')}><RefreshIcon /></button>
           <button type="button" className="dsh-agent-group-icon-button" onClick={() => actions.close()} aria-label={t('workspace.close')} title={t('workspace.close')}><CloseIcon /></button>
         </header>
@@ -268,7 +306,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
               else void refreshStale(api, actions)
             }}>{t('workspace.retry')}</button></div>
           : null}
-        {streamError !== undefined ? <div className="dsh-agent-group-error">{errorMessage(streamError, t, 'workspace.streamFailed')}</div> : null}
+        {streamError !== undefined ? <div className="dsh-agent-group-retry" role="status"><span className="dsh-agent-group-error">{errorMessage(streamError, t, 'workspace.streamFailed')}</span><button type="button" className="dsh-agent-group-button" onClick={() => { setStreamError(undefined); setReconnectAttempt(value => value + 1) }}>{t('workspace.retry')}</button></div> : null}
         {snapshot === undefined
           ? <div className="dsh-agent-group-empty">{t('workspace.loading')}</div>
           : ui.mode === 'conversations'
@@ -276,6 +314,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                 key={ui.selectedRoomId ?? 'no-room'}
                 snapshot={snapshot}
                 liveTurns={visibleWorkspaceTurns(snapshot.revision, turnStream)}
+                activity={activity!}
                 selectedRoomId={ui.selectedRoomId}
                 busy={ui.busy}
                 draft={draft}
@@ -306,6 +345,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
               />
             : ui.mode === 'colleagues' ? <AgentWorkspace
                 snapshot={snapshot}
+                activity={activity!}
                 selectedDefinitionId={ui.selectedDefinitionId}
                 busy={ui.busy}
                 creatingDefinition={creatingDefinition}
@@ -384,6 +424,22 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                 }}
                 t={t}
               /> : <WorkspaceMemory snapshot={snapshot} api={api} onSnapshot={actions.setSnapshot} t={t} />}
+        {ui.activityDrawerOpen === true && activity !== undefined ? <WorkspaceActivityDrawer
+          projection={activity}
+          snapshot={snapshot!}
+          api={api}
+          selectedActivityId={ui.selectedActivityId}
+          onSelectActivity={actions.selectActivity}
+          onSnapshot={actions.setSnapshot}
+          onActivity={next => {
+            activityVersionRef.current = Math.max(activityVersionRef.current, next.version)
+            setActivitySnapshot(current => selectNewerActivitySnapshot(current, next))
+            setTurnStream(current => next.version < current.version ? current : activityTurnStream(next))
+          }}
+          onClose={actions.closeActivityDrawer}
+          returnFocusRef={activityTriggerRef}
+          t={t}
+        /> : null}
       </section>
     </div>
   )
@@ -391,6 +447,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
 
 interface ChatWorkspaceProps {
   readonly snapshot: WorkspaceSnapshot
+  readonly activity: WorkspaceActivityProjection
   readonly liveTurns: readonly WorkspaceTurnProjection[]
   readonly selectedRoomId: RoomId | undefined
   readonly busy: boolean
@@ -486,6 +543,7 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
             <button key={room.id} type="button" className="dsh-agent-group-list-button" data-active={room.id === selectedRoomId} onClick={() => props.onSelectRoom(room.id)}>
               <ChatIcon />
               <span>{roomLabel(snapshot, room.id, props.t)}</span>
+              <WorkspaceActivityBadges activities={props.activity.rooms[room.id] ?? []} t={props.t} />
               <small>{room.kind === 'direct' ? props.t('room.direct') : activeRoomMembers(snapshot, room.id).length}</small>
             </button>
           ))}
@@ -599,6 +657,7 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
               return <div className="dsh-agent-group-list-button" key={agent.id} role="group" aria-label={agent.name}>
                 <span className="dsh-agent-group-dot" data-employed="true" />
                 <span>{agent.name}</span>
+                <WorkspaceAgentRuntimeBadges agent={props.activity.agents[agent.id]} t={props.t} />
                 {selectedRoom?.kind === 'group'
                   ? <button type="button" className="dsh-agent-group-button dsh-agent-group-right" data-variant="ghost" disabled={props.busy} onClick={() => void props.onOpenDirect(agent.id)}>{props.t('room.direct')}</button>
                   : null}
@@ -616,6 +675,7 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
 
 interface AgentWorkspaceProps {
   readonly snapshot: WorkspaceSnapshot
+  readonly activity: WorkspaceActivityProjection
   readonly selectedDefinitionId: AgentDefinitionId | undefined
   readonly busy: boolean
   readonly creatingDefinition: boolean
@@ -713,6 +773,7 @@ function AgentWorkspace(props: AgentWorkspaceProps) {
                       {agents.map(agent => <div className="dsh-agent-group-list-button" key={agent.id} role="group" aria-label={agent.name}>
                         <span className="dsh-agent-group-dot" data-employed={agent.employmentStatus === 'employed'} />
                         <span>{agent.name}</span>
+                        <WorkspaceAgentRuntimeBadges agent={props.activity.agents[agent.id]} t={props.t} />
                         <small>{agent.employmentStatus === 'employed' ? props.t('agent.employed') : props.t('agent.departed')}</small>
                         <button
                           type="button"

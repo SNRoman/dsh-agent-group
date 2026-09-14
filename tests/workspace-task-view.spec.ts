@@ -60,7 +60,7 @@ function activity(): WorkspaceActivitySnapshot {
     ],
     activities: [
       { activityId: 'activity-queued', agentId: 'bob', source: { kind: 'task', taskId: 'derived', attemptId: 'attempt-derived' }, messageId: 'message-derived', startOrder: 2, status: 'queued', blocks: [] },
-      { activityId: 'activity-task', agentId: 'alice', source: { kind: 'task', taskId: 'root-late', attemptId: 'attempt-2' }, messageId: 'message-2', startOrder: 1, status: 'stopping', claimed: { sessionId: 'session-1', turn: 7 }, blocks: [] },
+      { activityId: 'activity-task', agentId: 'alice', source: { kind: 'task', taskId: 'root-late', attemptId: 'attempt-2' }, messageId: 'message-2', startOrder: 1, status: 'stopping', claimed: { sessionId: 'session-1', turn: 7 }, blocks: [{ kind: 'tool', index: 0, callId: 'call', name: 'shell', arguments: '{}', status: 'running' }] },
     ],
   }
 }
@@ -94,8 +94,7 @@ describe('task center projection', () => {
     })
     expect(roots[1]?.children[0]).toMatchObject({ id: 'child-running', status: 'running', parent: { id: 'alice', label: 'Alice' } })
     expect(roots[1]?.activities[0]).toEqual({
-      activityId: 'activity-task', agentId: 'alice', agentLabel: 'Alice', attemptId: 'attempt-2', messageId: 'message-2', status: 'stopping',
-      stopIdentity: { activityId: 'activity-task', agentId: 'alice', messageId: 'message-2', sessionId: 'session-1', turn: 7 },
+      activityId: 'activity-task', agentId: 'alice', agentLabel: 'Alice', attemptId: 'attempt-2', messageId: 'message-2', status: 'stopping', usingTool: true,
     })
     expect(source).toEqual(originalSnapshot)
     expect(stream).toEqual(originalActivity)
@@ -344,7 +343,8 @@ describe('task center interactions', () => {
 
   it('treats not-active stop as convergence and refreshes without an error', async () => {
     const state = snapshot()
-    const stream = activity()
+    const original = activity()
+    const stream: WorkspaceActivitySnapshot = { ...original, activities: original.activities.map(item => item.activityId === 'activity-task' ? { ...item, status: 'responding' } : item) }
     const api = {
       stopActivity: vi.fn().mockResolvedValue({ revision: 12, value: { status: 'not-active' } }),
       snapshot: vi.fn().mockResolvedValue(state), activitySnapshot: vi.fn().mockResolvedValue(stream),
