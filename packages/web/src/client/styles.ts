@@ -86,6 +86,19 @@ export const WORKSPACE_UI_CSS = `
 .dsh-agent-group-task-badge { display: inline-flex; align-items: center; min-height: 22px; padding: 1px 7px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; color: var(--dsw-alias-label-secondary); font-size: 11px; }
 .dsh-agent-group-task-child { margin-top: 7px; padding: 7px 0; font-size: 12px; }
 .dsh-agent-group-task-child summary { cursor: pointer; }
+.dsh-agent-group-body[data-mode="memory"] { grid-template-columns: 300px minmax(0, 1fr); }
+.dsh-agent-group-memory-filters .dsh-agent-group-form { gap: 12px; }
+.dsh-agent-group-fieldset { min-width: 0; max-height: 180px; overflow: auto; margin: 0; padding: 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; }
+.dsh-agent-group-check { display: flex; align-items: center; gap: 7px; min-height: 28px; font-size: 12px; }
+.dsh-agent-group-memory-list, .dsh-agent-group-history-list { display: flex; flex-direction: column; gap: 8px; }
+.dsh-agent-group-memory-meta { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; margin: 10px 0; font-size: 12px; }
+.dsh-agent-group-memory-meta dt { color: var(--dsw-alias-label-secondary); }
+.dsh-agent-group-memory-meta dd { margin: 0; overflow-wrap: anywhere; }
+.dsh-agent-group-history-item { padding: 10px 0; border-top: 1px solid var(--dsw-alias-border-l2); }
+.dsh-agent-group-history-item:first-child { border-top: 0; }
+.dsh-agent-group-modal { position: fixed; inset: 0; z-index: 2; display: grid; place-items: center; padding: 18px; background: rgb(0 0 0 / .38); }
+.dsh-agent-group-modal-card { width: min(520px, 100%); max-height: min(680px, 90vh); overflow: auto; box-sizing: border-box; padding: 18px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; background: var(--dsw-alias-bg-primary); color: var(--dsw-alias-label-primary); }
+.dsh-agent-group-modal-card h2 { margin: 0 0 12px; font-size: 16px; }
 
 @media (max-width: 980px) {
   .dsh-agent-group-overlay-root { padding: 8px; }
@@ -94,7 +107,7 @@ export const WORKSPACE_UI_CSS = `
   .dsh-agent-group-body[data-mode="conversations"] > .dsh-agent-group-panel:last-child { display: none; }
 }
 @media (max-width: 720px) {
-  .dsh-agent-group-body, .dsh-agent-group-body[data-mode="colleagues"] { grid-template-columns: 1fr; }
+  .dsh-agent-group-body, .dsh-agent-group-body[data-mode="colleagues"], .dsh-agent-group-body[data-mode="memory"] { grid-template-columns: 1fr; }
   .dsh-agent-group-body > .dsh-agent-group-panel:first-child { display: none; }
   .dsh-agent-group-tabs { margin-left: 0; }
   .dsh-agent-group-title { display: none; }

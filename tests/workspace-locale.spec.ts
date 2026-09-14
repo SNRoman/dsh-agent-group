@@ -8,6 +8,8 @@ import { apply, inject } from '../packages/web/src/client/index.ts'
 import { WorkspaceFooterAction, WorkspaceOverlay } from '../packages/web/src/client/WorkspaceUi.tsx'
 import { WorkspaceLiveTurn } from '../packages/web/src/client/WorkspaceTurn.tsx'
 import { WorkspaceTasks } from '../packages/web/src/client/WorkspaceTasks.tsx'
+import { WorkspaceMemory } from '../packages/web/src/client/WorkspaceMemory.tsx'
+import { WorkspaceDefinitionHistory } from '../packages/web/src/client/WorkspaceDefinitionHistory.tsx'
 import type { WorkspaceActivitySnapshot, WorkspaceSnapshot } from '../packages/web/src/client/contracts.ts'
 
 const browserRuntime = vi.hoisted(() => {
@@ -205,6 +207,34 @@ describe('Agent Workspace locale runtime', () => {
     const activity: WorkspaceActivitySnapshot = { version: 0, workspaceRevision: 0, activities: [], agents: [] }
     const taskView = render(WorkspaceTasks as unknown as TestComponent, { snapshot, activity, api: {}, onSnapshot: vi.fn(), onActivity: vi.fn(), t })
     const rendered = strings(taskView)
+    for (const value of expected) expect(rendered).toContain(value)
+    registered.dispose()
+  })
+
+  it.each([
+    ['zh', ['统一个人记忆', '智能体', '来源类型', '首次获得途径', '不可变修订历史', '正在读取修订历史…']],
+    ['en', ['Unified personal memory', 'Agent', 'Source kind', 'First provenance', 'Immutable revision history', 'Loading revision history…']],
+  ] as const)('renders memory and definition-history product copy in %s', (localeId, expected) => {
+    const locale = new LocaleRuntime(new Context())
+    locale.setLocale(localeId)
+    const registered = registerPlugin(locale)
+    const t = locale.bind('agentWorkspace' as never)
+    const render = renderHarness()
+    const snapshot: WorkspaceSnapshot = {
+      workspaceId: 'workspace', revision: 1, nextId: 2, nextSequence: 2,
+      definitions: { role: { id: 'role', name: 'Engineer', revisionIds: ['revision'], currentRevisionId: 'revision' } },
+      definitionRevisions: { revision: { id: 'revision', definitionId: 'role', number: 1, description: '', instructions: '' } },
+      agents: { alice: { id: 'alice', name: 'Alice', definitionId: 'role', definitionRevisionId: 'revision', employmentStatus: 'employed', employmentPeriods: [] } },
+      rooms: {}, memberships: {}, events: [], memoryEntries: [], tasks: {}, taskAssignments: {}, delegationGrants: {}, childRuns: {}, sessionBindings: {},
+    }
+    const client = { queryMemory: vi.fn(), definitionHistory: vi.fn() }
+    const memory = render(WorkspaceMemory as unknown as TestComponent, { snapshot, api: client, onSnapshot: vi.fn(), t })
+    const renderHistory = renderHarness()
+    const history = renderHistory(WorkspaceDefinitionHistory as unknown as TestComponent, {
+      snapshot, definitionId: 'role', description: '', instructions: '', api: client,
+      onDescriptionChange: vi.fn(), onInstructionsChange: vi.fn(), onSnapshot: vi.fn(), onSaveSuccess: vi.fn(), onEditorCancel: vi.fn(), onDraftReservationChange: vi.fn(), t,
+    })
+    const rendered = [...strings(memory), ...strings(history)]
     for (const value of expected) expect(rendered).toContain(value)
     registered.dispose()
   })

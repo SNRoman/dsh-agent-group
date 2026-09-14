@@ -23,6 +23,8 @@ import type {
 import type { createWorkspaceUiStore, WorkspaceUiError } from './store.ts'
 import { WorkspaceLiveTurn, WorkspaceMarkdownMessage } from './WorkspaceTurn.tsx'
 import { WorkspaceTasks } from './WorkspaceTasks.tsx'
+import { WorkspaceMemory } from './WorkspaceMemory.tsx'
+import { WorkspaceDefinitionHistory } from './WorkspaceDefinitionHistory.tsx'
 import { selectNewerActivitySnapshot } from './task-view-model.ts'
 import {
   activeRoomMembers,
@@ -42,9 +44,7 @@ export type WorkspaceOverlayProps = PropsRuntime<'shell.overlay'> & WorkspaceSto
 const EMPTY_TURN_STREAM: WorkspaceTurnStreamSnapshot = { version: 0, workspaceRevision: 0, turns: [] }
 const EMPTY_ACTIVITY: WorkspaceActivitySnapshot = { version: 0, workspaceRevision: 0, activities: [], agents: [] }
 type MutationOperation = (expectedRevision: number) => Promise<WorkspaceSnapshot>
-type PendingMutation =
-  | { readonly kind: 'operation'; readonly operation: MutationOperation }
-  | { readonly kind: 'definition-revision'; readonly definitionId: AgentDefinitionId }
+type PendingMutation = { readonly kind: 'operation'; readonly operation: MutationOperation }
 
 /** Additive sidebar footer action. It owns no DSH navigation state. */
 export function WorkspaceFooterAction({ wide, actions, t }: WorkspaceFooterActionProps) {
@@ -79,7 +79,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
   const [revisionDraftDefinitionId, setRevisionDraftDefinitionId] = useState<AgentDefinitionId | undefined>()
   const [revisionDraftRevisionId, setRevisionDraftRevisionId] = useState<DefinitionRevisionId | undefined>()
   const [revisionDraftDirty, setRevisionDraftDirty] = useState(false)
-  const [syncExisting, setSyncExisting] = useState(true)
+  const [revisionDraftReserved, setRevisionDraftReserved] = useState(false)
   const [turnStream, setTurnStream] = useState<WorkspaceTurnStreamSnapshot>(EMPTY_TURN_STREAM)
   const [activitySnapshot, setActivitySnapshot] = useState<WorkspaceActivitySnapshot>(EMPTY_ACTIVITY)
   const [streamError, setStreamError] = useState<WorkspaceUiError | undefined>()
@@ -187,12 +187,10 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
   useEffect(() => {
     if (snapshot === undefined || selectedDefinition === undefined) return
     const ownsSelection = revisionDraftDefinitionId === selectedDefinition.id
-    const retryOwnsDraft = pendingMutation?.kind === 'definition-revision'
-      && pendingMutation.definitionId === selectedDefinition.id
-    if (!ownsSelection || (!revisionDraftDirty && !retryOwnsDraft && revisionDraftRevisionId !== selectedRevision?.id)) {
+    if (!ownsSelection || (!revisionDraftDirty && !revisionDraftReserved && revisionDraftRevisionId !== selectedRevision?.id)) {
       resetRevisionDraft(snapshot, selectedDefinition.id)
     }
-  }, [snapshot, selectedDefinition, selectedRevision, revisionDraftDefinitionId, revisionDraftRevisionId, revisionDraftDirty, pendingMutation])
+  }, [snapshot, selectedDefinition, selectedRevision, revisionDraftDefinitionId, revisionDraftRevisionId, revisionDraftDirty, revisionDraftReserved])
 
   if (!ui.open) return null
 
@@ -207,7 +205,6 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
     try {
       const committed = await operation(revision)
       actions.setSnapshot(committed)
-      if (retry.kind === 'definition-revision') resetRevisionDraft(committed, retry.definitionId)
       actions.setRetry(undefined)
       setPendingMutation(undefined)
       return true
@@ -240,21 +237,6 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
     })
   }
 
-  const reviseDefinition = (
-    definitionId: AgentDefinitionId,
-    source: WorkspaceSnapshot,
-  ): MutationOperation => revision => {
-    const agentIds = Object.values(source.agents)
-      .filter(agent => agent.definitionId === definitionId)
-      .map(agent => agent.id)
-    return api.reviseDefinition({
-      definitionId,
-      description: revisionDescription,
-      instructions: revisionInstructions,
-      ...(syncExisting ? { synchronizeAgentIds: agentIds } : {}),
-    }, revision)
-  }
-
   return (
     <div className="dsh-agent-group-overlay-root" role="dialog" aria-modal="true" aria-label={t('workspace.title')}>
       <section className="dsh-agent-group-workbench">
@@ -281,10 +263,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
         {ui.retry !== undefined && pendingMutation !== undefined && snapshot !== undefined
           ? <div className="dsh-agent-group-retry" role="status"><span>{t('workspace.staleRetry')}</span><button type="button" className="dsh-agent-group-button" onClick={() => {
               if (ui.retry?.refreshed === true) {
-                const operation = pendingMutation.kind === 'definition-revision'
-                  ? reviseDefinition(pendingMutation.definitionId, snapshot)
-                  : pendingMutation.operation
-                void commit(operation, snapshot.revision, pendingMutation)
+                void commit(pendingMutation.operation, snapshot.revision, pendingMutation)
               }
               else void refreshStale(api, actions)
             }}>{t('workspace.retry')}</button></div>
@@ -335,12 +314,14 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                 definitionInstructions={definitionInstructions}
                 revisionDescription={revisionDescription}
                 revisionInstructions={revisionInstructions}
-                syncExisting={syncExisting}
                 agentName={agentName}
+                api={api}
+                onSnapshot={actions.setSnapshot}
                 onSelectDefinition={definitionId => {
                   actions.selectDefinition(definitionId)
                   setCreatingDefinition(false)
                   resetRevisionDraft(snapshot, definitionId)
+                  setRevisionDraftReserved(false)
                   setPendingMutation(undefined)
                   actions.setRetry(undefined)
                 }}
@@ -358,10 +339,10 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                 }}
                 onCancelRevision={definitionId => {
                   resetRevisionDraft(snapshot, definitionId)
+                  setRevisionDraftReserved(false)
                   setPendingMutation(undefined)
                   actions.setRetry(undefined)
                 }}
-                onSyncExistingChange={setSyncExisting}
                 onAgentNameChange={setAgentName}
                 onCreateDefinition={async () => {
                   if (definitionName.trim() === '') return
@@ -376,10 +357,14 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                     setCreatingDefinition(false)
                   }
                 }}
-                onReviseDefinition={async definitionId => {
-                  const retry: PendingMutation = { kind: 'definition-revision', definitionId }
-                  await commit(reviseDefinition(definitionId, snapshot), snapshot.revision, retry)
+                onRevisionSaved={() => {
+                  setRevisionDraftDefinitionId(undefined)
+                  setRevisionDraftDirty(false)
+                  setRevisionDraftReserved(false)
+                  setPendingMutation(undefined)
+                  actions.setRetry(undefined)
                 }}
+                onDraftReservationChange={setRevisionDraftReserved}
                 onCreateAgent={async definitionId => {
                   const name = agentName.trim()
                   if (name === '') return
@@ -398,7 +383,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                   setTurnStream(current => next.version < current.version ? current : activityTurnStream(next))
                 }}
                 t={t}
-              /> : <WorkspaceFoundationView mode="memory" t={t} />}
+              /> : <WorkspaceMemory snapshot={snapshot} api={api} onSnapshot={actions.setSnapshot} t={t} />}
       </section>
     </div>
   )
@@ -639,8 +624,9 @@ interface AgentWorkspaceProps {
   readonly definitionInstructions: string
   readonly revisionDescription: string
   readonly revisionInstructions: string
-  readonly syncExisting: boolean
   readonly agentName: string
+  readonly api: WorkspaceApiClient
+  readonly onSnapshot: (snapshot: WorkspaceSnapshot) => void
   readonly onSelectDefinition: (id: AgentDefinitionId) => void
   readonly onCreatingDefinitionChange: (value: boolean) => void
   readonly onDefinitionNameChange: (value: string) => void
@@ -649,10 +635,10 @@ interface AgentWorkspaceProps {
   readonly onRevisionDescriptionChange: (value: string) => void
   readonly onRevisionInstructionsChange: (value: string) => void
   readonly onCancelRevision: (id: AgentDefinitionId) => void
-  readonly onSyncExistingChange: (value: boolean) => void
   readonly onAgentNameChange: (value: string) => void
   readonly onCreateDefinition: () => Promise<void>
-  readonly onReviseDefinition: (id: AgentDefinitionId) => Promise<void>
+  readonly onRevisionSaved: () => void
+  readonly onDraftReservationChange: (reserved: boolean) => void
   readonly onCreateAgent: (id: AgentDefinitionId) => Promise<void>
   readonly onSetEmployment: (agentId: AgentId, employed: boolean) => Promise<void>
   readonly onOpenDirect: (agentId: AgentId) => Promise<void>
@@ -702,20 +688,20 @@ function AgentWorkspace(props: AgentWorkspaceProps) {
             : selected === undefined || revision === undefined
               ? <div className="dsh-agent-group-empty">{props.t('agent.selectDefinition')}</div>
               : <>
-                  <section className="dsh-agent-group-card">
-                    <div className="dsh-agent-group-form">
-                      <Field label={props.t('agent.description')}><textarea className="dsh-agent-group-textarea" value={props.revisionDescription} onChange={event => props.onRevisionDescriptionChange(event.target.value)} /></Field>
-                      <Field label={props.t('agent.instructions')}><textarea className="dsh-agent-group-textarea" value={props.revisionInstructions} onChange={event => props.onRevisionInstructionsChange(event.target.value)} /></Field>
-                      <label className="dsh-agent-group-inline dsh-agent-group-muted">
-                        <input type="checkbox" checked={props.syncExisting} onChange={event => props.onSyncExistingChange(event.target.checked)} />
-                        {props.t('agent.syncExisting')}
-                      </label>
-                      <div className="dsh-agent-group-inline">
-                        <button type="button" className="dsh-agent-group-button" disabled={props.busy} onClick={() => void props.onReviseDefinition(selected.id)}>{props.t('agent.saveRevision')}</button>
-                        <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={props.busy} onClick={() => props.onCancelRevision(selected.id)}>{props.t('room.cancel')}</button>
-                      </div>
-                    </div>
-                  </section>
+                  <WorkspaceDefinitionHistory
+                    snapshot={props.snapshot}
+                    definitionId={selected.id}
+                    description={props.revisionDescription}
+                    instructions={props.revisionInstructions}
+                    api={props.api}
+                    onDescriptionChange={props.onRevisionDescriptionChange}
+                    onInstructionsChange={props.onRevisionInstructionsChange}
+                    onSnapshot={props.onSnapshot}
+                    onSaveSuccess={props.onRevisionSaved}
+                    onEditorCancel={() => props.onCancelRevision(selected.id)}
+                    onDraftReservationChange={props.onDraftReservationChange}
+                    t={props.t}
+                  />
 
                   <section className="dsh-agent-group-card">
                     <div className="dsh-agent-group-card-head"><strong>{props.t('agent.instances')}</strong><span className="dsh-agent-group-muted">{props.t('agent.instancesHint')}</span></div>
@@ -750,15 +736,6 @@ function AgentWorkspace(props: AgentWorkspaceProps) {
 
 function Field({ label, children }: { readonly label: string; readonly children: React.ReactNode }) {
   return <div className="dsh-agent-group-field"><label>{label}</label>{children}</div>
-}
-
-function WorkspaceFoundationView({ mode, t }: {
-  readonly mode: 'tasks' | 'memory'
-  readonly t: TranslateNS<'agentWorkspace'>
-}) {
-  return <div className="dsh-agent-group-body dsh-agent-group-foundation" data-mode={mode} aria-label={t(`workspace.${mode}`)}>
-    <div className="dsh-agent-group-empty">{t(mode === 'tasks' ? 'workspace.tasksEmpty' : 'workspace.memoryEmpty')}</div>
-  </div>
 }
 
 function activityTurnStream(activity: WorkspaceActivitySnapshot): WorkspaceTurnStreamSnapshot {

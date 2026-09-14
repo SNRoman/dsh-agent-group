@@ -815,7 +815,10 @@ describe('workspace UI view model', () => {
     let inputs = revisionInputs(tree)
     expect(inputs.map(input => input.props['value'])).toEqual(['my description', 'my instructions'])
     const save = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'agent.saveRevision')
-    ;(save!.props['onClick'] as () => void)()
+    ;(save!.props['onClick'] as (event: unknown) => void)({ currentTarget: { focus: vi.fn() } })
+    tree = render()
+    const confirmSave = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'history.saveConfirm')
+    ;(confirmSave!.props['onClick'] as () => void)()
 
     await vi.waitFor(() => expect(api.snapshot).toHaveBeenCalledOnce())
     expect(api.reviseDefinition).toHaveBeenCalledOnce()
@@ -1004,6 +1007,9 @@ describe('workspace UI view model', () => {
     ;(inputs[1]!.props['onChange'] as (event: unknown) => void)({ target: { value: 'saved instructions' } })
     tree = render()
     ;(harness.find(tree, element => element.type === 'button' && element.props['children'] === 'agent.saveRevision')!
+      .props['onClick'] as (event: unknown) => void)({ currentTarget: { focus: vi.fn() } })
+    tree = render()
+    ;(harness.find(tree, element => element.type === 'button' && element.props['children'] === 'history.saveConfirm')!
       .props['onClick'] as () => void)()
     await vi.waitFor(() => expect(api.reviseDefinition).toHaveBeenCalledOnce())
 
