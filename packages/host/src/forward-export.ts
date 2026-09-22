@@ -5,7 +5,7 @@ import canonicalize from 'canonicalize'
 import { WorkspaceId } from './ids.ts'
 import type { WorkspaceId as WorkspaceIdType } from './ids.ts'
 import { assertWorkspaceInvariants } from './invariant.ts'
-import { workspaceStateSchema } from './spec.ts'
+import { workspaceStateSchema } from './workspace-state-schema.ts'
 import type { WorkspaceState } from './types.ts'
 
 /** Stable portable document family. */

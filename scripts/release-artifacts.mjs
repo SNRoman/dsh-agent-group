@@ -36,6 +36,7 @@ function sourceFiles(root) {
     'vitest.config.ts',
     'scripts/release.mjs',
     'scripts/release-artifacts.mjs',
+    'scripts/export-forward-v1.mjs',
   ]) {
     const path = join(root, name)
     if (existsSync(path)) files.push(path)
@@ -49,6 +50,7 @@ function smokeInputFiles(root) {
     'scripts/release-smoke-contract.mjs',
     'tests/e2e/README.md',
     'tests/e2e/workspace-browser.mjs',
+    'tests/fixtures/v0.1.0/agent-workspace.json',
   ].map(name => join(root, name))
   const fixtureRoot = join(root, 'tests', 'fixtures', 'browser')
   const visit = directory => {

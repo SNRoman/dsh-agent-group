@@ -55,6 +55,13 @@ jobs:
         working-directory: plugin/dsh-agent-group
         run: pnpm exec playwright install --with-deps chromium
 
+      - name: Verify forward-export smoke inputs
+        working-directory: plugin/dsh-agent-group
+        run: >-
+          test -f scripts/export-forward-v1.mjs &&
+          test -f packages/host/src/forward-export.ts &&
+          test -f tests/fixtures/v0.1.0/agent-workspace.json
+
       - name: Wait for all manifests and run exact-version smoke
         working-directory: plugin/dsh-agent-group
         run: >-

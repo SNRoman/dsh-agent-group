@@ -26,6 +26,10 @@
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./forward-export": {
+      "types": "./lib/types/forward-export.d.ts",
+      "default": "./lib/types/forward-export.js"
+    },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },

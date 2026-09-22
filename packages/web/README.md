@@ -10,7 +10,11 @@ dsh plugin --profile web add dsh-agent-group
 
 The package is additive: it registers only `sidebar.footer.action` and `shell.overlay` and does not replace the core conversation surfaces.
 
+The overlay presents four views: Definitions for roles and immutable revision pins, Tasks for assignments/grants/attempts/results, Memory for one colleague's unified event history, and Runtime for live activity with exact stop controls. Mutations use Host-owned eligibility and revision checks; the client does not infer authority or rewrite durable history.
+
 The overlay requires the user to choose a memory start for every group join. Its plugin-owned labels, accessibility text, empty states, status text, and policy errors use aligned Simplified Chinese and English dictionaries. Agent names, room names, messages, model output, and tool data remain unchanged user or runtime content.
+
+Portable export remains deliberately outside the Browser. v0.2.0 has no import, backup, or restore control.
 
 DeepSeek Harness compatibility is `>=0.1.1-rc.2 <0.1.2-0`, verified at `0.1.1-rc.2` commit `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`.
 

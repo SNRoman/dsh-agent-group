@@ -26,12 +26,17 @@ describe('workspace manifests', () => {
   test('publishes the frozen forward exporter from the built Host entry', async () => {
     const host = JSON.parse(await readFile('packages/host/package.json', 'utf8')) as {
       dependencies: Record<string, string>
+      exports: Record<string, unknown>
       files: string[]
     }
     expect(host.dependencies.canonicalize).toBe('2.1.0')
     expect(host.files).toContain('lib/index.js')
+    expect(host.exports['./forward-export']).toEqual({
+      types: './lib/types/forward-export.d.ts',
+      default: './lib/types/forward-export.js',
+    })
 
-    const built = await import('../packages/host/lib/index.js') as Record<string, unknown>
+    const built = await import('../packages/host/lib/types/forward-export.js') as Record<string, unknown>
     expect(built.WORKSPACE_EXPORT_FORMAT_VERSION).toBe(1)
     expect(built.createForwardWorkspaceExportV1).toBeTypeOf('function')
   })
@@ -51,6 +56,12 @@ describe('workspace manifests', () => {
       for (const archive of await readdir(destination)) {
         const { stdout } = await execFileAsync(process.platform === 'win32' ? 'tar.exe' : 'tar', ['-xOf', join(destination, archive), 'package/package.json'])
         expect(stdout).not.toContain('link:')
+        if (archive.startsWith('dsh-agent-group-host-')) {
+          const { stdout: entries } = await execFileAsync(process.platform === 'win32' ? 'tar.exe' : 'tar', ['-tf', join(destination, archive)])
+          expect(entries).toContain('package/lib/index.js')
+          expect(entries).toContain('package/lib/types/forward-export.d.ts')
+          expect(entries).toContain('package/src/forward-export.ts')
+        }
       }
     } finally {
       await rm(destination, { recursive: true, force: true })

@@ -12,11 +12,13 @@ on:
       - 'packages/**/src/**'
       - 'scripts/release.mjs'
       - 'scripts/release-artifacts.mjs'
+      - 'scripts/export-forward-v1.mjs'
       - 'scripts/release-smoke.mjs'
       - 'scripts/release-smoke-contract.mjs'
       - 'tests/e2e/workspace-browser.mjs'
       - 'tests/e2e/README.md'
       - 'tests/fixtures/browser/**'
+      - 'tests/fixtures/v0.1.0/agent-workspace.json'
       - 'tests/release-contract.spec.ts'
       - 'README.md'
       - 'LICENSE'
@@ -69,6 +71,13 @@ jobs:
       - name: Install Chromium
         working-directory: plugin/dsh-agent-group
         run: pnpm exec playwright install --with-deps chromium
+
+      - name: Verify forward-export smoke inputs
+        working-directory: plugin/dsh-agent-group
+        run: >-
+          test -f scripts/export-forward-v1.mjs &&
+          test -f packages/host/src/forward-export.ts &&
+          test -f tests/fixtures/v0.1.0/agent-workspace.json
 
       - name: Pack and run the assembled Browser smoke
         working-directory: plugin/dsh-agent-group

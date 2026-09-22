@@ -45,6 +45,9 @@ export async function readCompatibility(pluginDirectory) {
       throw new Error(`compatibility.json: ${field} expected a non-empty string, actual ${String(declaration[field])}`)
     }
   }
+  if (declaration.forwardExport?.format !== 'dsh-agent-workspace' || declaration.forwardExport?.formatVersion !== 1) {
+    throw new Error('compatibility.json: forwardExport expected dsh-agent-workspace format version 1, actual invalid')
+  }
   if (
     typeof declaration.verifiedSource !== 'object'
     || declaration.verifiedSource === null

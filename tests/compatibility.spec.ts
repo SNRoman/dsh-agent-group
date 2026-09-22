@@ -17,6 +17,7 @@ const verifyCompatibilityScript = fileURLToPath(new URL('../scripts/verify-compa
 interface Compatibility {
   schemaVersion: number
   candidatePluginVersion: string
+  forwardExport: { format: string, formatVersion: number }
   peerRange: string
   registryDevelopmentVersion: string
   verifiedSource: { version: string, commit: string }
@@ -85,7 +86,8 @@ async function createDshFixture(
 function declaration(commit: string): Compatibility {
   return {
     schemaVersion: 1,
-    candidatePluginVersion: '0.1.1',
+    candidatePluginVersion: '0.2.0',
+    forwardExport: { format: 'dsh-agent-workspace', formatVersion: 1 },
     peerRange,
     registryDevelopmentVersion: developmentVersion,
     verifiedSource: { version: developmentVersion, commit },
@@ -122,6 +124,19 @@ describe('compatibility declaration', { timeout: PROCESS_TEST_TIMEOUT_MS }, () =
           'packages/web/package.json: @deepseek-ai/dsh-agent expected >=0.1.1-rc.2 <0.1.2-0, actual ^0.1.1',
         ),
       })
+  })
+
+  it.each([
+    ['missing metadata', undefined],
+    ['wrong format', { format: 'other', formatVersion: 1 }],
+    ['wrong version', { format: 'dsh-agent-workspace', formatVersion: 2 }],
+  ])('rejects %s for the frozen forward export', async (_name, forwardExport) => {
+    const dsh = await createDshFixture()
+    const compatibility = { ...declaration(dsh.commit), forwardExport }
+    const plugin = await createPluginFixture(compatibility as Compatibility)
+
+    await expect(execFile(process.execPath, [verifyCompatibilityScript], { cwd: plugin, encoding: 'utf8' }))
+      .rejects.toMatchObject({ stderr: expect.stringContaining('compatibility.json: forwardExport') })
   })
 
   it('rejects a source checkout missing a required DSH package manifest', async () => {

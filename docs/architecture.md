@@ -13,7 +13,9 @@ One `WorkspaceState` record holds every durable fact, stored once in a storage-d
 - `tasks`, `taskAssignments`, `delegationGrants`, `childRuns` — formal work and human-authorized peer delegation.
 - `sessionBindings` — the durable DSH session id bound to each materialized agent.
 
-`state.ts` applies pure aggregate commands; `memory.ts`, `tasks.ts`, and the small policy helpers build on those primitives. The durable service validates the complete aggregate with the Zod schema in `spec.ts` and calls `assertWorkspaceInvariants` at every write boundary so cross-record references fail before commit.
+`state.ts` applies pure aggregate commands; `memory.ts`, `tasks.ts`, and the small policy helpers build on those primitives. The durable service validates the complete aggregate with the Zod schema in `workspace-state-schema.ts` and calls `assertWorkspaceInvariants` at every write boundary so cross-record references fail before commit. `spec.ts` attaches that schema to the storage-domain declaration, while the public forward-export leaf can load the validator without importing the Cordis-backed Host entry point.
+
+Definitions own an ordered list of immutable revisions. Saving a definition revision can leave every colleague pinned, move all eligible colleagues, or move an explicit subset. Events and task results retain the definition revision used when the work began, so later synchronization does not rewrite history.
 
 ## Persistence
 
@@ -35,11 +37,21 @@ The installable bundle intentionally mounts only the Host service and Browser ov
 
 Formal task execution validates employment, task openness, and assignment before the assignee is woken. `runChild` records the committed child-run id inside the durable mutation, passes an optional caller cancellation signal to `ctx.subagents`, always disposes a published run, and terminalizes accepted child work as `completed`, `failed`, or `cancelled`. A child that started while its parent was employed can still reach a durable terminal state if that parent departs while the child is running.
 
+`TaskDeliveryCoordinator` serializes delivery per task, persists the delivery source before inbox admission, recovers pending attempts after restart, and records exactly one terminal result or retryable failure. Human grants authorize peer-derived tasks inside one root task tree. Cancellation commits before runtime cleanup: root cancellation cascades across open descendants, while derived cancellation remains scoped to the selected task.
+
+Unified Memory is a projection of durable events and first-acquisition provenance. Room membership, selected history, task results, and child results all contribute to the same per-colleague memory without copying message bodies into a second store. Queries use snapshot revisions and stable cursors so pages cannot silently mix revisions.
+
+`WorkspaceActivityStream` and `WorkspaceActivityController` own the ephemeral Runtime projection. Activity snapshots replace prior snapshots after reconnect; they do not append to the durable aggregate. Exact stop carries activity, agent, session, message, task, and attempt identity through the controller, while durable task cancellation remains a separate operation.
+
+## Forward compatibility
+
+`forward-export.ts` freezes the producer for `dsh-agent-workspace` format version 1. It validates and clones the local aggregate, omits `workspaceId` and `sessionBindings`, computes SHA-256 over the RFC 8785 canonical envelope without `digest`, and returns the completed canonical document. The command-line adapter reads one version-0 storage document and opens the destination exclusively. v0.2 has no importer, RPC method, or Browser control for portability.
+
 Workspace policy failures use stable business-error codes with JSON-safe identifiers and counters. The RPC layer distinguishes those failures from malformed requests, caller cancellation, and unexpected internal errors. The Browser maps known codes through its typed Simplified Chinese and English dictionaries instead of parsing Host prose.
 
 ## Release validation
 
-Default development resolves the declared DSH packages from the registry. Source compatibility is an explicit isolated check against the exact point in `compatibility.json`; it does not mutate either checkout. The packed release gate hashes deterministic build inputs and all three tarballs, assembles a clean DSH Web profile, exercises the Browser workflow, then verifies removal, restart, preservation of core files, and recovery of a pre-existing core conversation. Its receipt also hashes the Browser driver and fixtures. Publishing consumes those verified tarball paths and never repacks them.
+Default development resolves the declared DSH packages from the registry. Source compatibility is an explicit isolated check against the exact point in `compatibility.json`; it does not mutate either checkout. The packed release gate hashes deterministic build inputs and all three tarballs, assembles a clean DSH Web profile, calls the installed Host forward exporter against the legacy v0.1 fixture, exercises the four-view Browser workflow, then verifies removal, restart, preservation of core files, and recovery of a pre-existing core conversation. Its receipt also hashes the Browser driver, legacy aggregate, and fixtures. Publishing consumes those verified tarball paths and never repacks them.
 
 ## Extension seams
 

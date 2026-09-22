@@ -29,6 +29,17 @@ if (uniqueVersions.size !== 1) {
   for (const [name, version] of versions) console.error(`  ${name}: ${version}`)
   process.exit(1)
 }
+const releaseVersion = [...uniqueVersions][0]
+assertCompatibilityDeclaration(compatibility, releaseVersion)
+
+function assertCompatibilityDeclaration(declaration, version) {
+  if (declaration.candidatePluginVersion !== version) {
+    throw new Error(`compatibility candidate ${String(declaration.candidatePluginVersion)} does not match package version ${version}`)
+  }
+  if (declaration.forwardExport?.format !== 'dsh-agent-workspace' || declaration.forwardExport?.formatVersion !== 1) {
+    throw new Error('compatibility declaration must freeze dsh-agent-workspace forward export format version 1')
+  }
+}
 
 if (action === 'pack') {
   const outDir = resolve('release')
@@ -38,11 +49,11 @@ if (action === 'pack') {
     console.log(`\nPacking ${pkg.name}@${versions.get(pkg.name)}...`)
     run(['--filter', pkg.name, 'pack', '--pack-destination', outDir])
   }
-  writeReleaseManifest(process.cwd(), [...uniqueVersions][0])
+  writeReleaseManifest(process.cwd(), releaseVersion)
   console.log(`\nPacked release artifacts in ${outDir}`)
 } else if (action === 'publish') {
-  verifyReleaseSmokeReceipt(process.cwd(), [...uniqueVersions][0], compatibility.verifiedSource)
-  const release = verifyReleaseArtifacts(process.cwd(), [...uniqueVersions][0])
+  verifyReleaseSmokeReceipt(process.cwd(), releaseVersion, compatibility.verifiedSource)
+  const release = verifyReleaseArtifacts(process.cwd(), releaseVersion)
   console.log('Publishing in dependency order: host -> web -> bundle')
   const commands = releasePublishCommands(release.artifacts, forwarded)
   for (const [index, pkg] of RELEASE_PACKAGES.entries()) {

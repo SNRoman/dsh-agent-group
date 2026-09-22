@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, relative } from 'node:path'
+import canonicalize from 'canonicalize'
 
 const BUNDLE = 'dsh-agent-group'
 const HOST = '@dsh-agent-group/host'
@@ -329,6 +330,52 @@ export function assertRestartPersistence(before, after) {
 
 function equalEvidence(actual, expected, description) {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(description)
+}
+
+/** Verify an installed Host package's frozen forward-export document. */
+export function assertForwardExportEvidence(document, state, pluginVersion, format) {
+  if (document?.format !== format.format || document?.formatVersion !== format.formatVersion) {
+    throw new Error('forward export format or version changed')
+  }
+  if (document.pluginVersion !== pluginVersion) throw new Error('forward export plugin version changed')
+  if (document.compatibleImportRange !== '>=0.3.0 <0.4.0') throw new Error('forward export compatible import range changed')
+  if (document.diagnostics !== undefined) throw new Error('forward export producer emitted diagnostics')
+  equalEvidence(document.workspace?.descriptor, { id: 'local', label: 'Local workspace', lifecycle: 'active' }, 'forward export descriptor changed')
+  const { workspaceId, sessionBindings, ...portable } = state
+  if (workspaceId !== 'local') throw new Error('forward export source is not the local workspace')
+  const walk = value => {
+    if (Array.isArray(value)) return value.flatMap(walk)
+    if (value !== null && typeof value === 'object') {
+      if (Object.hasOwn(value, 'sessionBindings')) throw new Error('forward export contains sessionBindings')
+      return Object.values(value).flatMap(walk)
+    }
+    return typeof value === 'string' ? [value] : []
+  }
+  const strings = walk(document)
+  for (const sessionId of Object.values(sessionBindings)) {
+    if (strings.includes(sessionId)) throw new Error(`forward export contains session id '${sessionId}'`)
+  }
+  if (canonicalize(document.workspace?.aggregate) !== canonicalize(portable)) throw new Error('forward export aggregate changed')
+  const { digest, ...envelope } = document
+  const canonicalEnvelope = canonicalize(envelope)
+  if (canonicalEnvelope === undefined) throw new Error('forward export envelope is not canonicalizable')
+  const expectedDigest = createHash('sha256').update(canonicalEnvelope).digest('hex')
+  if (digest?.algorithm !== 'sha-256' || digest?.canonicalization !== 'RFC8785' || digest?.hex !== expectedDigest) {
+    throw new Error('forward export digest changed')
+  }
+}
+
+/** Verify that an installed Host opened legacy storage without rewriting any durable identity. */
+export function assertLegacyWorkspacePreserved(before, after) {
+  if (before?.unit?.name !== 'agent_workspace' || before?.unit?.version !== 0) {
+    throw new Error('legacy source is not an agent_workspace version-0 storage document')
+  }
+  if (Object.keys(before.tables?.workspaces ?? {}).join() !== 'local') {
+    throw new Error('legacy source does not contain exactly one local workspace')
+  }
+  if (canonicalize(after) !== canonicalize(before)) {
+    throw new Error('installed Host rewrote the legacy workspace, ids, or session bindings while loading it')
+  }
 }
 
 function exactlyOne(items, description) {

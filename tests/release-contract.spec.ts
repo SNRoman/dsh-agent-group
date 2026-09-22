@@ -32,6 +32,7 @@ describe('public release contract', () => {
     const compatibility = readJson('compatibility.json')
     expect(manifests.map(manifest => manifest.version)).toEqual(['0.2.0', '0.2.0', '0.2.0'])
     expect(compatibility.candidatePluginVersion).toBe('0.2.0')
+    expect(compatibility.forwardExport).toEqual({ format: 'dsh-agent-workspace', formatVersion: 1 })
     expect(readText('packages/host/src/forward-export.ts')).toContain("AGENT_WORKSPACE_PLUGIN_VERSION = '0.2.0'")
 
     const root = readJson('package.json')
@@ -47,6 +48,85 @@ describe('public release contract', () => {
     ].join('\n')
     expect(publicSources).not.toMatch(/workspace\/import|importForwardWorkspace|importWorkspace/)
     expect(readText('packages/web/src/client/WorkspaceUi.tsx')).not.toMatch(/backup|export workspace|import workspace/i)
+  })
+
+  it('documents the v0.2 product and keeps publication as a separate authorization', () => {
+    const readme = readText('README.md')
+    const architecture = readText('docs/architecture.md')
+    const releaseNotes = readText('docs/releases/v0.2.0.md')
+    const hostReadme = readText('packages/host/README.md')
+    const webReadme = readText('packages/web/README.md')
+    const bundleReadme = readText('packages/bundle/README.md')
+
+    for (const text of [readme, releaseNotes]) {
+      for (const value of ['Tasks', 'Memory', 'Runtime', 'definition revision', 'export:forward-v1']) expect(text).toContain(value)
+      expect(text).toContain('no import')
+    }
+    expect(readme).toContain('[v0.2.0 release notes](docs/releases/v0.2.0.md)')
+    expect(readme).toContain('pnpm smoke:registry -- --version 0.2.0')
+    expect(releaseNotes).toContain('does not publish packages, create tags, or create a GitHub Release')
+    expect(architecture).toContain('TaskDeliveryCoordinator')
+    expect(architecture).toContain('WorkspaceActivityStream')
+    expect(architecture).toContain('RFC 8785')
+    expect(hostReadme).toContain('Version `0.2.0`')
+    expect(hostReadme).toContain('createForwardWorkspaceExportV1')
+    expect(webReadme).toContain('four views')
+    expect(bundleReadme).toContain('Compatibility for v0.2.0')
+  })
+
+  it('binds packed and registry smoke to the installed public exporter and legacy fixture', () => {
+    const driver = readText('scripts/release-smoke.mjs')
+    for (const value of [
+      'FORWARD_EXPORT_SOURCE_FIXTURE',
+      'LEGACY_SESSION_SENTINEL',
+      'verifyInstalledForwardExport',
+      'verifyForwardExportPeerIsolation',
+      'verifyInstalledLegacyLoad',
+      'createRequire',
+      'forward-export-v1.json',
+      'forward-export-peer-isolation.json',
+      'legacy-load.json',
+      'assertForwardExportEvidence',
+      'assertLegacyWorkspacePreserved',
+    ]) expect(driver).toContain(value)
+    expect(driver.indexOf('await verifyInstalledForwardExport')).toBeLessThan(driver.indexOf('await startServer(fixture'))
+    expect(driver.indexOf('await verifyInstalledLegacyLoad')).toBeLessThan(driver.indexOf('await startServer(fixture'))
+
+    const release = readText('scripts/release.mjs')
+    expect(release).toContain('assertCompatibilityDeclaration')
+    expect(release).toContain('declaration.forwardExport')
+
+    for (const workflow of ['.github/workflows/release-smoke.yml', '.github/workflows/registry-smoke.yml']) {
+      const source = readText(workflow)
+      expect(source).toContain('scripts/export-forward-v1.mjs')
+      expect(source).toContain('packages/host/src/forward-export.ts')
+      expect(source).toContain('tests/fixtures/v0.1.0/agent-workspace.json')
+      expect(source).not.toContain('--installation-only')
+    }
+  })
+
+  it('independently validates forward-export smoke evidence', async () => {
+    const { assertForwardExportEvidence, assertLegacyWorkspacePreserved } = await import('../scripts/release-smoke-contract.mjs')
+    const source = readJson('tests/fixtures/v0.2.0/agent-workspace.json')
+    const document = readJson('tests/fixtures/v0.2.0/portable-workspace-v1.json')
+    const state = source.tables.workspaces.local
+    expect(() => assertForwardExportEvidence(document, state, '0.2.0', {
+      format: 'dsh-agent-workspace', formatVersion: 1,
+    })).not.toThrow()
+    expect(() => assertForwardExportEvidence({ ...document, pluginVersion: '0.1.1' }, state, '0.2.0', {
+      format: 'dsh-agent-workspace', formatVersion: 1,
+    })).toThrow(/plugin version/i)
+    expect(() => assertForwardExportEvidence({
+      ...document,
+      workspace: { ...document.workspace, aggregate: { ...document.workspace.aggregate, sessionBindings: state.sessionBindings } },
+    }, state, '0.2.0', { format: 'dsh-agent-workspace', formatVersion: 1 })).toThrow(/sessionBindings/i)
+    expect(() => assertForwardExportEvidence({ ...document, digest: { ...document.digest, hex: '0'.repeat(64) } }, state, '0.2.0', {
+      format: 'dsh-agent-workspace', formatVersion: 1,
+    })).toThrow(/digest/i)
+    expect(() => assertLegacyWorkspacePreserved(source, structuredClone(source))).not.toThrow()
+    const rewritten = structuredClone(source)
+    rewritten.tables.workspaces.local.sessionBindings['agent-3'] = 'rewritten-session'
+    expect(() => assertLegacyWorkspacePreserved(source, rewritten)).toThrow(/rewrote.*session bindings/i)
   })
 
   it('ships an MIT license and public installation instructions', () => {
@@ -149,11 +229,13 @@ describe('public release contract', () => {
       await mkdir(join(root, 'scripts'), { recursive: true })
       await mkdir(join(root, 'tests', 'e2e'), { recursive: true })
       await mkdir(join(root, 'tests', 'fixtures', 'browser'), { recursive: true })
+      await mkdir(join(root, 'tests', 'fixtures', 'v0.1.0'), { recursive: true })
       await writeFile(join(root, 'scripts', 'release-smoke.mjs'), 'smoke driver\n', 'utf8')
       await writeFile(join(root, 'scripts', 'release-smoke-contract.mjs'), 'smoke assertions\n', 'utf8')
       await writeFile(join(root, 'tests', 'e2e', 'workspace-browser.mjs'), 'browser scenario\n', 'utf8')
       await writeFile(join(root, 'tests', 'e2e', 'README.md'), 'browser operator guide\n', 'utf8')
       await writeFile(join(root, 'tests', 'fixtures', 'browser', 'cordis.test.yml'), 'fixture\n', 'utf8')
+      await writeFile(join(root, 'tests', 'fixtures', 'v0.1.0', 'agent-workspace.json'), '{}\n', 'utf8')
       const releaseDir = join(root, 'release')
       await mkdir(releaseDir)
       for (const filename of [

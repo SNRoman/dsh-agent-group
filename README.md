@@ -14,6 +14,8 @@ A persistent multi-agent workspace for [DeepSeek Harness](https://github.com/dee
 - **Child agents** — an employed agent can run a one-shot DSH child agent and retain the terminal result in personal memory without turning the child into a workspace colleague.
 - **Additive integration** — the Browser package registers only `sidebar.footer.action` and `shell.overlay`; it does not replace the core `sidebar`, `conversation`, or `details` surfaces and does not intercept `/api`.
 - **Localized policy feedback** — Simplified Chinese and English dictionaries own plugin UI copy, while stable Host error codes keep localization independent from exception text.
+- **Four product views** — Definitions manages reusable roles and immutable definition revision history; Tasks shows assignment, grants, attempts, cancellation, child work, and results; Memory exposes each colleague's unified event history; Runtime shows live activity and exact stop controls.
+- **Forward compatibility export** — the read-only `export:forward-v1` command creates a canonical, checksummed handoff for a future v0.3 importer while leaving the source storage untouched.
 
 ## Requirements
 
@@ -71,6 +73,23 @@ The Host service is exposed as `ctx.agentWorkspace`. It stores one local aggrega
 
 The Browser transport uses the existing Harness Connection RPC service on the plugin-local Agent Workspace channel. There is no second HTTP/WebSocket server, no core API interception, and no replacement of the standard Harness conversation store.
 
+## Workspace workflow
+
+Create a definition, then create named colleagues from it. Add colleagues to a group with an explicit memory start, use mentions for conversation, and use Tasks when work needs durable ownership or human-authorized delegation. Memory belongs to the colleague rather than to one chat: a silent member remembers admitted room events, task results, and child results. Saving a new definition revision offers none, all, or a selected subset of existing colleagues for synchronization; every colleague remains pinned to an immutable revision.
+
+Runtime activity is intentionally ephemeral. The durable task attempt and result remain authoritative, while the drawer shows queued, responding, stopping, and settled activity for the current Host process. Exact stop targets one activity identity; an interrupted task remains open and retryable, does not acquire a task result, and does not cancel unrelated queued work.
+
+## Forward export
+
+v0.2.0 freezes portable format `dsh-agent-workspace` version `1` for the future v0.3 compatibility matrix. Build the Host package, then export an explicit storage-domain document:
+
+```sh
+pnpm build:host
+pnpm export:forward-v1 -- --input E:/exports/agent-workspace.json --output E:/exports/workspace-portable-v1.json --exported-at 2026-09-04T00:00:00.000Z
+```
+
+The command validates one version-`0` local aggregate, preserves definitions, colleagues, employment history, rooms, Tasks, Memory, child results, and events, omits local DSH session bindings, refuses to overwrite its output, and never changes the source. This release deliberately provides no import endpoint and no Browser backup control.
+
 ## Development
 
 This repository is a pnpm workspace. Default development installs the verified DeepSeek Harness packages from the public registry.
@@ -105,7 +124,7 @@ The Playwright command installs the Chromium runtime used by the smoke. `release
 After all three packages are published, verify the exact immutable registry version:
 
 ```sh
-pnpm smoke:registry -- --version 0.1.1 --dsh <absolute-path-to-deepseek-harness-0.1.1-rc.2>
+pnpm smoke:registry -- --version 0.2.0 --dsh <absolute-path-to-deepseek-harness-0.1.1-rc.2>
 ```
 
 Before publishing a candidate, maintainers may prove registry-only installation and startup mechanics against the existing public version without applying newer Browser assertions:
@@ -134,7 +153,7 @@ pnpm release:publish -- --tag next
 
 The `Release smoke` GitHub Actions workflow runs the packed command above and retains assembled configuration, Host logs, ARIA milestones, console diagnostics, and the final durable aggregate. The manual `Registry smoke` workflow waits with bounded retries for all three exact package manifests, then runs the same installation, startup, and Browser scenario from registry specifications only.
 
-See the [v0.1.1 release notes](docs/releases/v0.1.1.md) for the candidate changes, verified compatibility point, and publication checkpoint.
+See the [v0.2.0 release notes](docs/releases/v0.2.0.md) for the complete product closure, verified compatibility point, forward-export handoff, and publication checkpoint. The earlier [v0.1.1 release notes](docs/releases/v0.1.1.md) remain available for the stabilization release.
 
 ## Known limitations
 

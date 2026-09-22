@@ -2,7 +2,9 @@
 
 import { createWriteStream, existsSync, readFileSync } from 'node:fs'
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { createRequire } from 'node:module'
+import canonicalize from 'canonicalize'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -15,6 +17,8 @@ import {
   assertPublishedRegistryPackage,
   assertResolvedPackages,
   assertFileTreePreserved,
+  assertForwardExportEvidence,
+  assertLegacyWorkspacePreserved,
   assertUninstalledProfile,
   manifestFileTree,
   registryProfileCommands,
@@ -29,6 +33,9 @@ const SCRIPTED_ADAPTER = join(REPO_ROOT, 'tests', 'fixtures', 'browser', 'script
 const TASK_TOOLS_PROFILE = join(REPO_ROOT, 'tests', 'fixtures', 'browser', 'task-tools-profile.ts')
 const TASK_TOOLS_DRIVER = join(REPO_ROOT, 'tests', 'e2e', 'task-tools-profile.mjs')
 const BROWSER_DRIVER = join(REPO_ROOT, 'tests', 'e2e', 'workspace-browser.mjs')
+const FORWARD_EXPORT_SOURCE_FIXTURE = join(REPO_ROOT, 'tests', 'fixtures', 'v0.1.0', 'agent-workspace.json')
+const FORWARD_EXPORT_TIMESTAMP = '2026-09-04T00:00:00.000Z'
+const LEGACY_SESSION_SENTINEL = '11111111-1111-4111-8111-111111111111'
 const READY_TIMEOUT_MS = 120_000
 const COMMAND_TIMEOUT_MS = 20 * 60_000
 const REGISTRY_ATTEMPTS = 12
@@ -139,7 +146,7 @@ async function stagePackedBundle(stage, evidence) {
   const result = JSON.parse(packed.stdout)
   const tarball = join(stage, result[0].filename)
   if (!existsSync(tarball)) throw new Error('npm pack did not produce the staged bundle')
-  return tarball
+  return { bundle: tarball, host: artifacts.host }
 }
 
 async function stageFixture(scratch) {
@@ -228,6 +235,111 @@ async function verifyInstalledPackages(profile, version, evidence, registryPacka
     const lockfile = await readFile(join(profile, 'pnpm-lock.yaml'), 'utf8')
     assertProfileLock(lockfile, version, registryPackages)
   }
+}
+
+async function verifyInstalledForwardExport(profile, version, evidence) {
+  const sourceBefore = await readFile(FORWARD_EXPORT_SOURCE_FIXTURE)
+  const sourceHash = createHash('sha256').update(sourceBefore).digest('hex')
+  const stored = JSON.parse(sourceBefore.toString('utf8'))
+  if (stored.unit?.name !== 'agent_workspace' || stored.unit?.version !== 0
+    || Object.keys(stored.tables?.workspaces ?? {}).join() !== 'local') {
+    throw new Error('legacy forward-export fixture is not one version-0 local workspace')
+  }
+  const requireFromProfile = createRequire(join(profile, 'package.json'))
+  const requireFromBundle = createRequire(requireFromProfile.resolve('dsh-agent-group/package.json'))
+  const hostEntry = requireFromBundle.resolve('@dsh-agent-group/host/forward-export')
+  const installedHost = await import(`${pathToFileURL(hostEntry).href}?release-smoke=${randomUUID()}`)
+  if (typeof installedHost.createForwardWorkspaceExportV1 !== 'function') {
+    throw new Error('installed Host package does not export createForwardWorkspaceExportV1')
+  }
+  if (installedHost.WORKSPACE_EXPORT_FORMAT !== COMPATIBILITY.forwardExport.format
+    || installedHost.WORKSPACE_EXPORT_FORMAT_VERSION !== COMPATIBILITY.forwardExport.formatVersion) {
+    throw new Error('installed Host forward-export constants do not match compatibility.json')
+  }
+  const result = installedHost.createForwardWorkspaceExportV1(stored.tables.workspaces.local, {
+    exportedAt: FORWARD_EXPORT_TIMESTAMP,
+  })
+  assertForwardExportEvidence(result.document, stored.tables.workspaces.local, version, COMPATIBILITY.forwardExport)
+  if (result.json !== canonicalize(result.document)) {
+    throw new Error('installed Host forward exporter returned inconsistent JSON')
+  }
+  const sourceAfter = await readFile(FORWARD_EXPORT_SOURCE_FIXTURE)
+  if (createHash('sha256').update(sourceAfter).digest('hex') !== sourceHash) throw new Error('forward export modified its source fixture')
+  await writeFile(join(evidence, 'forward-export-v1.json'), `${result.json}\n`, 'utf8')
+}
+
+async function verifyForwardExportPeerIsolation(scratch, packageSpec, version, evidence) {
+  const consumer = join(scratch, 'forward-export-consumer')
+  await mkdir(consumer, { recursive: true })
+  await writeFile(join(consumer, 'package.json'), `${JSON.stringify({
+    private: true,
+    type: 'module',
+    dependencies: { '@dsh-agent-group/host': packageSpec },
+  }, null, 2)}\n`, 'utf8')
+  await run('pnpm', ['install', '--prod', '--config.auto-install-peers=false', '--strict-peer-dependencies=false'], {
+    cwd: consumer,
+    stdio: 'pipe',
+  })
+  for (const peer of [
+    '@deepseek-ai/cordis',
+    '@deepseek-ai/dsh-agent',
+    '@deepseek-ai/dsh-brand',
+    '@deepseek-ai/dsh-llm',
+    '@deepseek-ai/dsh-session',
+    '@deepseek-ai/dsh-storage-domain',
+    '@deepseek-ai/dsh-tools',
+  ]) {
+    if (existsSync(join(consumer, 'node_modules', ...peer.split('/')))) {
+      throw new Error(`isolated forward-export consumer installed peer '${peer}'`)
+    }
+  }
+  const runner = join(consumer, 'verify.mjs')
+  await writeFile(runner, `
+import { readFile } from 'node:fs/promises'
+import { createForwardWorkspaceExportV1 } from '@dsh-agent-group/host/forward-export'
+const stored = JSON.parse(await readFile(process.argv[2], 'utf8'))
+const result = createForwardWorkspaceExportV1(stored.tables.workspaces.local, { exportedAt: ${JSON.stringify(FORWARD_EXPORT_TIMESTAMP)} })
+process.stdout.write(result.json)
+`.trimStart(), 'utf8')
+  const result = await run(process.execPath, [runner, FORWARD_EXPORT_SOURCE_FIXTURE], { cwd: consumer, stdio: 'pipe' })
+  const document = JSON.parse(result.stdout)
+  const stored = JSON.parse(await readFile(FORWARD_EXPORT_SOURCE_FIXTURE, 'utf8'))
+  assertForwardExportEvidence(document, stored.tables.workspaces.local, version, COMPATIBILITY.forwardExport)
+  await writeFile(join(evidence, 'forward-export-peer-isolation.json'), `${JSON.stringify({
+    packageSpec,
+    omittedPeers: true,
+    document,
+  }, null, 2)}\n`, 'utf8')
+}
+
+async function verifyInstalledLegacyLoad(options, installCommands, fixture, scratch, evidence, startServer, stopServer) {
+  const legacyDshHome = join(scratch, 'legacy-dsh-home')
+  const environment = safeEnvironment({
+    DSH_HOME: legacyDshHome,
+    DSH_AGENTS_HOME: join(scratch, 'legacy-agents-home'),
+    DSH_TELEMETRY_DISABLED: '1',
+    DSH_AGENT_GROUP_SMOKE_GATE: join(scratch, 'legacy-release-gate'),
+    NODE_NO_WARNINGS: '1',
+  })
+  for (const command of installCommands) await run('pnpm', command, { cwd: options.dsh, env: environment })
+  const storageDirectory = join(legacyDshHome, 'storages')
+  const storagePath = join(storageDirectory, 'agent_workspace.json')
+  await mkdir(storageDirectory, { recursive: true })
+  const before = JSON.parse(await readFile(FORWARD_EXPORT_SOURCE_FIXTURE, 'utf8'))
+  before.tables.workspaces.local.sessionBindings['agent-3'] = LEGACY_SESSION_SENTINEL
+  await writeFile(storagePath, `${JSON.stringify(before, null, 2)}\n`, 'utf8')
+  await startServer({ ...fixture, path: fixture.restartPath }, environment, 'host-legacy-load.log')
+  await stopServer()
+  const after = JSON.parse(await readFile(storagePath, 'utf8'))
+  assertLegacyWorkspacePreserved(before, after)
+  await writeFile(join(evidence, 'legacy-load.json'), `${JSON.stringify({
+    storageDomain: after.unit,
+    workspaceIds: Object.keys(after.tables.workspaces),
+    sessionBindings: after.tables.workspaces.local.sessionBindings,
+    sessionSentinelPreserved: after.tables.workspaces.local.sessionBindings['agent-3'] === LEGACY_SESSION_SENTINEL,
+    preserved: true,
+  }, null, 2)}\n`, 'utf8')
+  await cp(storagePath, join(evidence, 'legacy-agent-workspace-after-host.json'))
 }
 
 function captureHostLog(child, hostLog) {
@@ -366,13 +478,16 @@ async function main() {
     if (!options.skipDshPrepare) await prepareDsh(options.dsh)
     let installCommands
     let registryPackages = []
+    let forwardExportPackageSpec
     if (options.mode === 'packed') {
-      const installSpec = await stagePackedBundle(join(scratch, 'stage'), artifactsRoot)
-      installCommands = [['dsh', 'plugin', '--profile', 'web', 'add', installSpec]]
+      const staged = await stagePackedBundle(join(scratch, 'stage'), artifactsRoot)
+      installCommands = [['dsh', 'plugin', '--profile', 'web', 'add', staged.bundle]]
+      forwardExportPackageSpec = fileSpec(staged.host)
     }
     else {
       registryPackages = await waitForRegistry(options.version, artifactsRoot)
       installCommands = registryProfileCommands(options.version)
+      forwardExportPackageSpec = options.version
     }
     const environment = safeEnvironment({
       DSH_HOME: dshHome,
@@ -384,6 +499,14 @@ async function main() {
     })
     const fixture = await stageFixture(scratch)
     await mkdir(coreWorkspace, { recursive: true })
+    if (!options.installationOnly) {
+      await verifyForwardExportPeerIsolation(
+        scratch,
+        forwardExportPackageSpec,
+        options.version ?? COMPATIBILITY.candidatePluginVersion,
+        artifactsRoot,
+      )
+    }
     for (const command of installCommands) await run('pnpm', command, { cwd: options.dsh, env: environment })
     const profile = join(dshHome, 'profiles', 'web')
     await verifyInstalledPackages(
@@ -392,6 +515,22 @@ async function main() {
       artifactsRoot,
       registryPackages,
     )
+    if (!options.installationOnly) {
+      await verifyInstalledForwardExport(
+        profile,
+        options.version ?? COMPATIBILITY.candidatePluginVersion,
+        artifactsRoot,
+      )
+      await verifyInstalledLegacyLoad(
+        options,
+        installCommands,
+        fixture,
+        scratch,
+        artifactsRoot,
+        startServer,
+        stopServer,
+      )
+    }
     const config = await run('pnpm', ['dsh', '--profile', 'web', '--patch', fixture.path, '--dump-config'], {
       cwd: options.dsh,
       env: environment,
