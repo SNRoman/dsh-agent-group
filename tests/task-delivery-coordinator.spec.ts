@@ -467,6 +467,42 @@ describe('TaskDeliveryCoordinator', () => {
     ])
   })
 
+  test('converges an interrupted flight after its first terminal failure write rejects', async () => {
+    const built = assignedTask()
+    let state = built.state
+    let rejectedTerminalWrite = false
+    const host: TaskDeliveryCoordinatorHost = {
+      snapshot: () => structuredClone(state),
+      apply: async mutation => {
+        const next = mutation(state)
+        const appendedFailure = next.events.some(event => event.type === 'task/delivery-failed')
+          && !state.events.some(event => event.type === 'task/delivery-failed')
+        if (appendedFailure && !rejectedTerminalWrite) {
+          rejectedTerminalWrite = true
+          throw new Error('transient terminal write failure')
+        }
+        state = next
+        return structuredClone(state)
+      },
+      ensureEmployee: async () => handle(),
+      deliver: async (_agentId, _message, _recall, _source, hooks) => {
+        await hooks?.onClaim?.()
+        return {
+          output: [{ type: 'text', text: 'unsafe partial output' }],
+          stopReason: { kind: 'aborted', reason: { kind: 'user' } },
+          interrupted: true,
+        }
+      },
+    }
+    const coordinator = new TaskDeliveryCoordinator(host)
+
+    await expect(coordinator.deliver(built.taskId)).rejects.toThrow('transient terminal write failure')
+    expect(rejectedTerminalWrite).toBe(true)
+    expect(state.events.filter(event => event.type === 'task/delivery-failed')).toEqual([
+      expect.objectContaining({ failureCode: 'interrupted' }),
+    ])
+  })
+
   test('a complete result that loses the cancellation race is recorded once without reopening the task', async () => {
     const built = assignedTask()
     let state = built.state

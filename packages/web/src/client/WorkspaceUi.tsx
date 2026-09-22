@@ -303,12 +303,16 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
   }
 
   const openDirect = async (agentId: AgentId): Promise<void> => {
-    await commit(async revision => {
+    let roomId: RoomId | undefined
+    const committed = await commit(async revision => {
       const result = await api.openDirect(agentId, revision)
-      actions.selectRoom(result.roomId)
-      actions.setMode('conversations')
+      roomId = result.roomId
       return result.snapshot
     })
+    if (committed && roomId !== undefined) {
+      actions.selectRoom(roomId)
+      actions.setMode('conversations')
+    }
   }
 
   return (

@@ -15,6 +15,7 @@ on:
       - 'scripts/release-smoke.mjs'
       - 'scripts/release-smoke-contract.mjs'
       - 'tests/e2e/workspace-browser.mjs'
+      - 'tests/e2e/README.md'
       - 'tests/fixtures/browser/**'
       - 'tests/release-contract.spec.ts'
       - 'README.md'
@@ -71,9 +72,7 @@ jobs:
 
       - name: Pack and run the assembled Browser smoke
         working-directory: plugin/dsh-agent-group
-        run: |
-          pnpm release:pack
-          pnpm smoke:packed -- --dsh "$GITHUB_WORKSPACE/deepseek-harness"
+        run: pnpm test:e2e:browser -- --dsh "$GITHUB_WORKSPACE/deepseek-harness"
 
       - name: Upload release-smoke evidence
         if: always()

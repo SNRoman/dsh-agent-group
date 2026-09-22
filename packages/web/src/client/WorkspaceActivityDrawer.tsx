@@ -8,6 +8,7 @@ import type { WorkspaceApiClient } from './api.ts'
 import type { AgentId, WorkspaceActivitySnapshot, WorkspaceSnapshot } from './contracts.ts'
 import type { ActivityProjection, AgentActivityProjection, WorkspaceActivityProjection } from './activity-view-model.ts'
 import { WorkspaceActivityDetails } from './WorkspaceTurn.tsx'
+import { workspaceRuntimeErrorText, workspaceTerminalReasonText } from './runtime-copy.ts'
 
 type RetryAction =
   | { readonly kind: 'stop'; readonly key: string; readonly item: ActivityProjection; readonly revision: number }
@@ -167,7 +168,7 @@ export function WorkspaceActivityDrawer(props: WorkspaceActivityDrawerProps) {
       const blocked = pending.has(key) || converged.has(key) || retries.has(key)
       return <div className="dsh-agent-group-card" key={key} data-agent-id={agent.id}>
         <div className="dsh-agent-group-card-head"><strong>{agent.label}</strong><WorkspaceRuntimeBadge value={props.t('activity.status.failed')} /></div>
-        {agent.error ? <p>{agent.error.summary}</p> : null}
+        {agent.error ? <p>{workspaceRuntimeErrorText(agent.error, props.t)}</p> : null}
         <button type="button" className="dsh-agent-group-button" disabled={blocked} aria-label={props.t('activity.acknowledgeNamed', { agent: agent.label })} onClick={() => void acknowledge(agent.id as AgentId, agent.label, props.snapshot.revision)}>{props.t('activity.acknowledge')}</button>
       </div>
     })}
@@ -184,8 +185,8 @@ export function WorkspaceActivityDrawer(props: WorkspaceActivityDrawerProps) {
         <p className="dsh-agent-group-muted">{props.t('activity.identities', { activity: selected.activityId, message: selected.messageId })}</p>
         {selected.source.kind === 'task' ? <p className="dsh-agent-group-muted">{props.t('activity.attemptId', { id: selected.source.attemptId })}</p> : null}
         <WorkspaceActivityDetails blocks={selected.blocks} streaming={selected.status === 'responding' || selected.status === 'stopping'} t={props.t} />
-        {selected.terminalReason ? <p>{props.t('activity.terminalReason', { reason: selected.terminalReason })}</p> : null}
-        {selected.error ? <div className="dsh-agent-group-error">{selected.error.summary}</div> : null}
+        {selected.terminalReason ? <p>{props.t('activity.terminalReason', { reason: workspaceTerminalReasonText(selected.terminalReason, props.t) })}</p> : null}
+        {selected.error ? <div className="dsh-agent-group-error">{workspaceRuntimeErrorText(selected.error, props.t)}</div> : null}
         <StopControl item={selected} pending={pending} converged={converged} retries={retries} revision={props.snapshot.revision} stop={stop} t={props.t} />
       </article> : null}
     </div>

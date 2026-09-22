@@ -19,6 +19,7 @@ const browserFixtureFiles = [
   'tests/fixtures/task-tools/profile-session.expected.json',
   'tests/e2e/task-tools-profile.mjs',
   'tests/e2e/workspace-browser.mjs',
+  'tests/e2e/README.md',
   '.github/workflows/registry-smoke.yml',
 ] as const
 
@@ -75,10 +76,15 @@ describe('public release contract', () => {
     expect(root.scripts['release:pack']).toBeTruthy()
     expect(root.scripts['release:publish']).toBeTruthy()
     expect(root.scripts['smoke:packed']).toBeTruthy()
+    expect(root.scripts['test:e2e:browser']).toBe('pnpm release:pack && node scripts/release-smoke.mjs --mode packed')
+
+    const ci = readText('.github/workflows/ci.yml')
+    expect(ci).toContain('pnpm exec playwright install --with-deps chromium')
+    expect(ci).toContain('pnpm test:e2e:browser -- --dsh "$GITHUB_WORKSPACE/deepseek-harness"')
+    expect(ci).toContain('ref: b150a551b8d465e31e418e1b2eaf5e79bbb7d28e')
 
     const workflow = readText('.github/workflows/release-smoke.yml')
-    expect(workflow).toContain('pnpm release:pack')
-    expect(workflow).toContain('pnpm smoke:packed')
+    expect(workflow).toContain('pnpm test:e2e:browser -- --dsh "$GITHUB_WORKSPACE/deepseek-harness"')
     expect(workflow).toContain('timeout-minutes: 30')
     for (const path of [
       'compatibility.json',
@@ -86,6 +92,7 @@ describe('public release contract', () => {
       'pnpm-workspace.yaml',
       'scripts/release-artifacts.mjs',
       'scripts/release-smoke-contract.mjs',
+      'tests/e2e/README.md',
     ]) {
       expect(workflow).toContain(`- '${path}'`)
     }
@@ -123,6 +130,7 @@ describe('public release contract', () => {
       await writeFile(join(root, 'scripts', 'release-smoke.mjs'), 'smoke driver\n', 'utf8')
       await writeFile(join(root, 'scripts', 'release-smoke-contract.mjs'), 'smoke assertions\n', 'utf8')
       await writeFile(join(root, 'tests', 'e2e', 'workspace-browser.mjs'), 'browser scenario\n', 'utf8')
+      await writeFile(join(root, 'tests', 'e2e', 'README.md'), 'browser operator guide\n', 'utf8')
       await writeFile(join(root, 'tests', 'fixtures', 'browser', 'cordis.test.yml'), 'fixture\n', 'utf8')
       const releaseDir = join(root, 'release')
       await mkdir(releaseDir)
@@ -150,6 +158,9 @@ describe('public release contract', () => {
       await writeFile(join(root, 'tests', 'e2e', 'workspace-browser.mjs'), 'stronger browser scenario\n', 'utf8')
       expect(() => verifyReleaseSmokeReceipt(root, '1.2.3', { version: '0.1.1-rc.2', commit: 'abc' })).toThrow('smoke receipt')
       await writeFile(join(root, 'tests', 'e2e', 'workspace-browser.mjs'), 'browser scenario\n', 'utf8')
+      await writeFile(join(root, 'tests', 'e2e', 'README.md'), 'changed operator guide\n', 'utf8')
+      expect(() => verifyReleaseSmokeReceipt(root, '1.2.3', { version: '0.1.1-rc.2', commit: 'abc' })).toThrow('smoke receipt')
+      await writeFile(join(root, 'tests', 'e2e', 'README.md'), 'browser operator guide\n', 'utf8')
       await writeFile(join(root, 'packages', 'host', 'src', 'index.ts'), 'changed\n', 'utf8')
       expect(() => verifyReleaseArtifacts(root, '1.2.3')).toThrow('source')
       await writeFile(join(root, 'packages', 'host', 'src', 'index.ts'), "export const value = 'host'\n", 'utf8')
@@ -183,13 +194,40 @@ describe('public release contract', () => {
     expect(scripted).toContain('@deepseek-ai/dsh-llm')
     expect(scripted).toContain('scripted')
     expect(scripted).toContain('workspace_complete_task')
+    expect(scripted).toContain("`${gate}.denial-result-ready`")
+    expect(scripted).toContain('const GATE_TIMEOUT_MS = 120_000')
+    expect(scripted).toContain('setTimeout(() => finish(new Error(\'scripted smoke gate timed out\')), GATE_TIMEOUT_MS)')
+    for (const marker of [
+      'V020_DELEGATE',
+      'V020_CHILD',
+      'V020_SAFE_FAILURE',
+      'V020_HOLD',
+    ]) expect(scripted).toContain(marker)
     expect(readText('tests/fixtures/browser/task-tools-profile.ts')).toContain('runAssignedTask')
     expect(readText('tests/fixtures/task-tools/profile-session.expected.json')).toContain('workspace_delegate_task')
+
+    const hostSource = readText('packages/host/src/index.ts')
+    expect(hostSource).toContain("childProvider: z.string().default('spawn')")
+    expect(hostSource).toContain('this.config.childProvider')
+    expect(hostSource).not.toContain("'spawn-in-process'")
 
     const smoke = readText('tests/e2e/workspace-browser.mjs')
     expect(smoke).toContain('playwright')
     expect(smoke).toContain('toMatchAriaSnapshot')
     expect(smoke).toContain('@all')
+    expect(smoke).toContain("waitForFixtureReceipt(`${args.gate}.denial-result-ready`)")
+    expect(smoke).toContain('name: /^Release room \\d+$/u')
+    expect(smoke).toContain("name: /^Alice Responding Direct$/u")
+    expect(smoke).toContain("row.locator('p').getByText(entry.text, { exact: true })")
+    expect(smoke).toContain("block.toolCallId === 'profile-policy-denial'")
+    expect(smoke).toContain("getByRole('article', { name: '修订 1', exact: true }).waitFor")
+    expect(smoke).toContain("getByRole('article', { name: '修订 2', exact: true }).waitFor")
+    expect(smoke).toContain('Creation event ${receipt.revisionEventSequence}')
+    expect(smoke).toContain("getByText('当前没有运行活动。', { exact: true })")
+    expect(smoke).toContain('zh-CN runtime rendered an untranslated Host failure summary')
+    expect(smoke).toContain("['不可变修订历史', '修订 1', '修订 2', '指令', '保存新修订']")
+    expect(smoke).not.toContain('getByText(/响应中|正在停止|排队中/u)')
+    expect(smoke).not.toContain('if (await prompt.count() > 0) return')
 
     const taskToolsSmoke = readText('tests/e2e/task-tools-profile.mjs')
     expect(taskToolsSmoke).toContain('task-tools-recorded-session.json')
@@ -213,6 +251,40 @@ describe('public release contract', () => {
     expect(releaseDriver).toContain('packed-manifests.json')
     expect(releaseDriver).toContain('--task-tools-only')
     expect(releaseDriver).toContain("REGISTRY_PACKAGES = ['@dsh-agent-group/host', '@dsh-agent-group/web', 'dsh-agent-group']")
+    expect(releaseDriver).toContain("'--phase', 'after-restart'")
+    expect(releaseDriver.indexOf("'--phase', 'after-restart'")).toBeLessThan(releaseDriver.lastIndexOf('uninstallProfileCommand'))
+    expect(releaseDriver).toContain('randomUUID')
+    expect(releaseDriver).toContain('cordis.after-restart.yml')
+    expect(releaseDriver).toContain('fixture.restartPath')
+    expect(releaseDriver).toContain('host-lifecycle.json')
+
+    const guide = readText('tests/e2e/README.md')
+    for (const required of [
+      'pnpm test:e2e:browser',
+      '--dsh',
+      'DSH_SOURCE',
+      'b150a551b8d465e31e418e1b2eaf5e79bbb7d28e',
+      '.release-smoke/',
+      'twice',
+      'cleanup',
+    ]) expect(guide).toContain(required)
+
+    const browserScenario = readText('tests/e2e/workspace-browser.mjs')
+    expect(browserScenario).not.toContain('waitForTimeout(')
+    expect(browserScenario).not.toContain('setTimeout(resolvePromise')
+    expect(browserScenario).toContain("const prefix = `${args.phase}-`")
+    for (const required of [
+      'V020_ROOT',
+      'V020_CHILD',
+      'V020_HOLD',
+      'Grant delegation for',
+      'Stop Alice current turn (',
+      'Unified personal memory',
+      'Save revision',
+      'Synchronize revision',
+      'zh-CN',
+      'after-restart',
+    ]) expect(browserScenario).toContain(required)
   })
 
   it('rejects incomplete registry and profile evidence before the browser smoke', async () => {

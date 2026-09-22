@@ -2,6 +2,7 @@
 
 import { createWriteStream, existsSync, readFileSync } from 'node:fs'
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -155,8 +156,11 @@ async function stageFixture(scratch) {
   const withoutTaskTools = source.replace(taskToolsRow, '')
   if (withoutTaskTools === source) throw new Error('browser fixture has no removable task-tools profile row')
   const uninstalledPath = join(scratch, 'cordis.after-uninstall.yml')
-  await writeFile(uninstalledPath, withoutTaskTools.replace("name: './scripted-llm.ts'", `name: '${absoluteAdapter}'`), 'utf8')
-  return { path, uninstalledPath, adapter: absoluteAdapter, taskToolsProfile: absoluteTaskToolsProfile }
+  const seedFree = withoutTaskTools.replace("name: './scripted-llm.ts'", `name: '${absoluteAdapter}'`)
+  const restartPath = join(scratch, 'cordis.after-restart.yml')
+  await writeFile(restartPath, seedFree, 'utf8')
+  await writeFile(uninstalledPath, seedFree, 'utf8')
+  return { path, restartPath, uninstalledPath, adapter: absoluteAdapter, taskToolsProfile: absoluteTaskToolsProfile }
 }
 
 async function waitForRegistry(version, evidence) {
@@ -322,8 +326,8 @@ async function copyProfileEvidence(dshHome, evidence) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   await verifyDshCheckout(options.dsh)
-  const artifactsRoot = join(REPO_ROOT, '.release-smoke', `${options.mode}-${options.version ?? COMPATIBILITY.candidatePluginVersion}`)
-  await rm(artifactsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+  const runId = `${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID().slice(0, 8)}`
+  const artifactsRoot = join(REPO_ROOT, '.release-smoke', `${options.mode}-${options.version ?? COMPATIBILITY.candidatePluginVersion}-${runId}`)
   await mkdir(artifactsRoot, { recursive: true })
   const scratch = await mkdtemp(join(tmpdir(), `dsh-agent-group-${options.mode}-`))
   const dshHome = join(scratch, 'dsh-home')
@@ -332,6 +336,7 @@ async function main() {
   const coreWorkspace = join(scratch, 'core-workspace')
   let server
   let hostLogFinished = Promise.resolve()
+  const hostLifecycle = []
   const failures = []
   const startServer = async (fixture, environment, logName) => {
     server = execa('pnpm', ['dsh', '--profile', 'web', '--patch', fixture.path, '--no-open', '--port', '0'], {
@@ -342,12 +347,18 @@ async function main() {
       reject: false,
     })
     hostLogFinished = captureHostLog(server, join(artifactsRoot, logName))
-    return await waitForReady(server)
+    const url = await waitForReady(server)
+    hostLifecycle.push({ phase: logName, pid: server.pid, startedAt: new Date().toISOString() })
+    await writeFile(join(artifactsRoot, 'host-lifecycle.json'), `${JSON.stringify(hostLifecycle, null, 2)}\n`, 'utf8')
+    return url
   }
   const stopServer = async () => {
     if (server === undefined) return
+    const pid = server.pid
     await stopTree(server)
     await hostLogFinished
+    hostLifecycle.push({ phase: 'stopped', pid, stoppedAt: new Date().toISOString(), exitCode: server.exitCode, signal: server.signal })
+    await writeFile(join(artifactsRoot, 'host-lifecycle.json'), `${JSON.stringify(hostLifecycle, null, 2)}\n`, 'utf8')
     server = undefined
     hostLogFinished = Promise.resolve()
   }
@@ -417,6 +428,19 @@ async function main() {
       await stopServer()
       await copyProfileEvidence(dshHome, join(artifactsRoot, 'installed'))
 
+      const restartUrl = await startServer({ ...fixture, path: fixture.restartPath }, environment, 'host-after-restart.log')
+      await run(process.execPath, [BROWSER_DRIVER,
+        '--url', restartUrl,
+        '--dsh-home', dshHome,
+        '--evidence', artifactsRoot,
+        '--gate', gate,
+        '--workspace', coreWorkspace,
+        '--phase', 'after-restart',
+        '--task-tools-fixture', environment.DSH_AGENT_GROUP_TASK_TOOLS_FIXTURE,
+      ], { cwd: REPO_ROOT, env: environment })
+      await stopServer()
+      await copyProfileEvidence(dshHome, join(artifactsRoot, 'after-restart'))
+
       const sessionsRoot = join(dshHome, 'sessions')
       const sessionsBefore = await manifestFileTree(sessionsRoot)
       if (sessionsBefore.length === 0) throw new Error('the installed Browser run persisted no Session files')
@@ -448,9 +472,9 @@ async function main() {
       }, null, 2)}\n`, 'utf8')
       await copyProfileEvidence(dshHome, join(artifactsRoot, 'uninstalled'))
 
-      const restartUrl = await startServer({ ...fixture, path: fixture.uninstalledPath }, environment, 'host-after-uninstall.log')
+      const afterUninstallUrl = await startServer({ ...fixture, path: fixture.uninstalledPath }, environment, 'host-after-uninstall.log')
       await run(process.execPath, [BROWSER_DRIVER,
-        '--url', restartUrl,
+        '--url', afterUninstallUrl,
         '--dsh-home', dshHome,
         '--evidence', artifactsRoot,
         '--gate', gate,

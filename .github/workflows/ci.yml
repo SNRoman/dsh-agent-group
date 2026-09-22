@@ -111,3 +111,53 @@ jobs:
       - name: Test verified Harness source compatibility
         working-directory: plugin/dsh-agent-group
         run: pnpm test:dsh-source -- --dsh "$GITHUB_WORKSPACE/deepseek-harness"
+
+  browser-e2e:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+        with:
+          path: plugin/dsh-agent-group
+
+      - name: Checkout verified DeepSeek Harness source
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: b150a551b8d465e31e418e1b2eaf5e79bbb7d28e # 0.1.1-rc.2
+          path: deepseek-harness
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: plugin/dsh-agent-group/pnpm-lock.yaml
+
+      - name: Install plugin dependencies
+        working-directory: plugin/dsh-agent-group
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        working-directory: plugin/dsh-agent-group
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run assembled Browser workflow
+        working-directory: plugin/dsh-agent-group
+        run: pnpm test:e2e:browser -- --dsh "$GITHUB_WORKSPACE/deepseek-harness"
+
+      - name: Upload Browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-e2e
+          path: plugin/dsh-agent-group/.release-smoke/
+          if-no-files-found: error

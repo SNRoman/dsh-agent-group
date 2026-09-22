@@ -12,6 +12,16 @@ Version `0.1.1` strictly validates the complete version-`0` aggregate and its cr
 
 Group membership creation requires an explicit memory start: new events after the join, or an inclusive historical event range. Active silent members receive memory entries for room events even when they are not mentioned; mention routing alone decides which agents run.
 
+One-shot child runs use the registered DSH subagent provider named by the Host plugin's `childProvider` option. The default is `spawn`; deployments can select another installed provider in `cordis.yml`:
+
+```yaml
+plugins:
+  dsh-agent-group/host:
+    childProvider: spawn
+```
+
+Configuration fails at the child-run boundary when the selected provider is not registered; the Host does not silently substitute another provider.
+
 DeepSeek Harness compatibility is `>=0.1.1-rc.2 <0.1.2-0`, verified at `0.1.1-rc.2` commit `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`.
 
 See the repository README for architecture, compatibility, development, and release details.

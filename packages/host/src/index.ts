@@ -8,6 +8,7 @@
  */
 
 import { Context, Service } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentHandle, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
@@ -68,6 +69,14 @@ export const LOCAL_WORKSPACE_ID = WorkspaceId('local')
 /** MVP mention-chain and recall bounds fixed by the specification. */
 const DISPATCHER_LIMITS: DispatcherLimits = { maxAgentHops: 3, maxRepliesPerRoot: 8, recallCharacterBudget: 4000 }
 
+/** Host deployment settings. */
+export interface Config {
+  /** Registered DSH subagent provider used for one-shot child runs. */
+  childProvider?: string
+}
+
+type ResolvedConfig = Required<Config>
+
 /** Optional Host Connection shape used by the Browser adapter. */
 interface WorkspaceHostConnection {
   readonly rpc: {
@@ -120,7 +129,11 @@ interface MutableRoomRuntimeStatus {
  */
 export class AgentWorkspaceDomainService extends Service {
   static inject = ['storageDomain']
+  static Config: z<Config> = z.object({
+    childProvider: z.string().default('spawn'),
+  })
 
+  private readonly config: ResolvedConfig
   private table?: KvTable<WorkspaceId, WorkspaceState>
   private pool: EmployeeAgentPool | undefined
   private dispatcher: WorkspaceDispatcher | undefined
@@ -135,8 +148,9 @@ export class AgentWorkspaceDomainService extends Service {
     await this.apply(current => finishChildRun(current, request).state)
   })
 
-  constructor(ctx: Context) {
+  constructor(ctx: Context, config: Config) {
     super(ctx, 'agentWorkspace')
+    this.config = config as ResolvedConfig
   }
 
   /** Open the domain, materialize the local aggregate, and assemble the employee runtime. */
@@ -222,7 +236,7 @@ export class AgentWorkspaceDomainService extends Service {
       const dispatcher = new WorkspaceDispatcher(
         dispatcherHost,
         () => this.ctx.get('subagents') as SubagentRuntimeLike | undefined,
-        'spawn-in-process',
+        this.config.childProvider,
         DISPATCHER_LIMITS,
         taskDelivery,
         this.childControllers,
@@ -663,6 +677,9 @@ export class AgentWorkspaceDomainService extends Service {
     if (admittedAgent === undefined || admittedAgent.employmentStatus !== 'employed') {
       throw new Error(`agent '${agentId}' is not employed`)
     }
+    const queuedActivityId = source === undefined
+      ? undefined
+      : this.activityStream.queue({ agentId, messageId: delivery.id, source })
     const run = async (handle: AgentHandle): Promise<WorkspaceTurnOutcome> => {
       const durableAgent = this.snapshot().agents[agentId]
       if (durableAgent === undefined || durableAgent.employmentStatus !== 'employed') {
@@ -681,6 +698,14 @@ export class AgentWorkspaceDomainService extends Service {
     }
     const result = pool.runDelivery(agentId, run)
     return await result.catch(error => {
+      const queued = queuedActivityId === undefined
+        ? undefined
+        : this.activityStream.snapshot().activities.find(activity => activity.activityId === queuedActivityId)
+      if (queuedActivityId !== undefined && queued?.status === 'queued') {
+        this.activityStream.discard(queuedActivityId, {
+          code: 'delivery-discarded', summary: 'Agent delivery was discarded before its turn was claimed.',
+        })
+      }
       if (this.pool?.handleFor(agentId) === undefined) {
         this.activityStream.recordAgentFailureIfAbsent(agentId, {
           code: 'agent-materialization-failed',

@@ -932,6 +932,34 @@ describe('WorkspaceTurnTracker', () => {
 })
 
 describe('AgentWorkspaceDomainService delivery failures', () => {
+  test('publishes a queued activity before the employee delivery lane opens', () => {
+    const created = mutateWorkspace(createInitialState(WorkspaceId('local')), {
+      type: 'definition/create', name: 'Engineer', description: '', instructions: '',
+    })
+    const hired = mutateWorkspace(created.state, {
+      type: 'agent/create', definitionId: created.definitionId, name: 'Alice',
+    })
+    const service = new AgentWorkspaceDomainService(new Context(), { childProvider: 'spawn' })
+    const delivery = text('queued')
+    const never = new Promise<never>(() => {})
+    const internals = service as unknown as {
+      table: { get(id: WorkspaceId): typeof hired.state | undefined }
+      pool: { runDelivery(): Promise<never> }
+    }
+    internals.table = { get: () => hired.state }
+    internals.pool = { runDelivery: () => never }
+
+    void service.deliver(hired.agentId, delivery, undefined, {
+      kind: 'task', taskId: TaskId('task-queued'), attemptId: TaskDeliveryAttemptId('attempt-queued'),
+    })
+
+    expect(service.activitySnapshot().activities).toContainEqual(expect.objectContaining({
+      agentId: hired.agentId,
+      messageId: delivery.id,
+      status: 'queued',
+    }))
+  })
+
   test('returns a committed revision and retires its resident after role refresh fails', async () => {
     const created = mutateWorkspace(createInitialState(WorkspaceId('local')), {
       type: 'definition/create', name: 'Engineer', description: 'v1', instructions: 'one',
@@ -943,7 +971,7 @@ describe('AgentWorkspaceDomainService delivery failures', () => {
     const stable = handle()
     const refreshRole = vi.fn(async () => { throw new Error('refresh failed') })
     const dispose = vi.fn(async () => {})
-    const service = new AgentWorkspaceDomainService(new Context())
+    const service = new AgentWorkspaceDomainService(new Context(), { childProvider: 'spawn' })
     const internals = service as unknown as {
       table: {
         get(id: WorkspaceId): typeof state | undefined
@@ -980,7 +1008,7 @@ describe('AgentWorkspaceDomainService delivery failures', () => {
   })
 
   test('materialization failure remains display-safe until acknowledged', async () => {
-    const service = new AgentWorkspaceDomainService(new Context())
+    const service = new AgentWorkspaceDomainService(new Context(), { childProvider: 'spawn' })
     const secretCanary = 'API_KEY=FAKE_REVIEW_CANARY'
     const agentId = AgentId('alice')
     vi.spyOn(service, 'ensureEmployee').mockRejectedValue(new Error(secretCanary))
@@ -1000,7 +1028,7 @@ describe('AgentWorkspaceDomainService delivery failures', () => {
   })
 
   test('session flush failure remains display-safe until acknowledged', async () => {
-    const service = new AgentWorkspaceDomainService(new Context())
+    const service = new AgentWorkspaceDomainService(new Context(), { childProvider: 'spawn' })
     const secretCanary = 'API_KEY=FAKE_REVIEW_CANARY'
     const agentId = AgentId('alice')
     const session = {} as Agent['session']
@@ -1033,7 +1061,7 @@ describe('AgentWorkspaceDomainService delivery failures', () => {
   })
 
   test('flush failure preserves a more specific tracker failure', async () => {
-    const service = new AgentWorkspaceDomainService(new Context())
+    const service = new AgentWorkspaceDomainService(new Context(), { childProvider: 'spawn' })
     const agentId = AgentId('alice')
     const session = {} as Agent['session']
     const agent = { id: SessionId('alice-session'), session } as Agent

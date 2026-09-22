@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkspaceApiError } from '../packages/web/src/client/api.ts'
 import type { WorkspaceApiClient } from '../packages/web/src/client/api.ts'
 import type { WorkspaceActivitySnapshot, WorkspaceSnapshot } from '../packages/web/src/client/contracts.ts'
-import { en } from '../packages/web/src/client/locales.ts'
+import { en, zh } from '../packages/web/src/client/locales.ts'
 import { projectWorkspaceActivity } from '../packages/web/src/client/activity-view-model.ts'
 import { WorkspaceActivityDrawer } from '../packages/web/src/client/WorkspaceActivityDrawer.tsx'
 import { WorkspaceOverlay } from '../packages/web/src/client/WorkspaceUi.tsx'
@@ -60,9 +60,13 @@ function activity(status: 'responding' | 'stopping' | 'settled' = 'responding', 
   }
 }
 
-function t(key: string, params?: Readonly<Record<string, string | number>>): string {
-  return Object.entries(params ?? {}).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), en[key] ?? key)
+function translate(dictionary: Readonly<Record<string, string>>) {
+  return (key: string, params?: Readonly<Record<string, string | number>>): string => (
+    Object.entries(params ?? {}).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), dictionary[key] ?? key)
+  )
 }
+
+const t = translate(en)
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -71,7 +75,7 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-async function mount(api: WorkspaceApiClient, state = snapshot(), stream = activity(), selectedActivityId = 'activity') {
+async function mount(api: WorkspaceApiClient, state = snapshot(), stream = activity(), selectedActivityId = 'activity', dictionary: Readonly<Record<string, string>> = en) {
   const container = document.createElement('div')
   document.body.append(container)
   const root = createRoot(container)
@@ -91,7 +95,7 @@ async function mount(api: WorkspaceApiClient, state = snapshot(), stream = activ
     await act(async () => root.render(createElement(WorkspaceActivityDrawer, {
       projection: projectWorkspaceActivity(state, currentStream), snapshot: state, api,
       selectedActivityId: selection, onSelectActivity, onSnapshot, onActivity,
-      onClose, returnFocusRef, t: t as never,
+      onClose, returnFocusRef, t: translate(dictionary) as never,
     })))
   }
   await render()
@@ -184,6 +188,24 @@ function button(container: HTMLElement, name: string): HTMLButtonElement {
 }
 
 describe('runtime activity drawer real DOM interactions', () => {
+  it('localizes known Host errors and terminal reasons instead of rendering raw summaries', async () => {
+    const interrupted = activity('settled')
+    const stream = {
+      ...interrupted,
+      agents: interrupted.agents.map(agent => agent.agentId === 'bob'
+        ? { ...agent, error: { code: 'interrupted', summary: 'Delivery was interrupted before a terminal result.' } }
+        : agent),
+      activities: interrupted.activities.map(item => ({
+        ...item,
+        error: { code: 'interrupted', summary: 'Delivery was interrupted before a terminal result.' },
+      })),
+    }
+    const { container } = await mount({} as WorkspaceApiClient, snapshot(), stream, 'activity', zh)
+    expect(container.textContent).toContain('任务投递在产生最终结果前中断。')
+    expect(container.textContent).toContain('结束原因：已完成')
+    expect(container.textContent).not.toContain('Delivery was interrupted before a terminal result.')
+  })
+
   it('renders safe details and restores the exact trigger on close', async () => {
     const api = {} as WorkspaceApiClient
     const { container, trigger, onClose } = await mount(api)

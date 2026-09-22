@@ -8,6 +8,7 @@ import type { AgentId, WorkspaceActivitySnapshot, WorkspaceSnapshot } from './co
 import { projectTaskRoots } from './task-view-model.ts'
 import { WorkspaceRuntimeBadge } from './WorkspaceActivityDrawer.tsx'
 import type { TaskProjection, TaskRootProjection } from './task-view-model.ts'
+import { workspaceRuntimeErrorText } from './runtime-copy.ts'
 
 interface WorkspaceTasksProps {
   readonly snapshot: WorkspaceSnapshot
@@ -190,7 +191,7 @@ function TaskFacts({ task, t }: { readonly task: TaskProjection; readonly t: Tra
     {task.assignment ? <span>{t('task.assignedBy', { actor: task.assignment.assigningActor?.label ?? t('actor.unavailable'), assignee: task.assignment.assignee.label })}</span> : null}
     {task.cancellation ? <span>{t(cancellationLocaleKey(task.cancellation.scope), { sequence: task.cancellation.eventSequence })}</span> : null}
     <span>{t(`task.delivery.${task.delivery.phase}`)}</span>
-    {task.delivery.failure ? <span>{task.delivery.failure.summary}</span> : null}
+    {task.delivery.failure ? <span>{workspaceRuntimeErrorText(task.delivery.failure, t)}</span> : null}
     {task.delivery.result ? <details><summary aria-label={t('task.resultNamed', { task: task.title, id: task.id })}>{t('task.result')}</summary><p>{task.delivery.result}</p></details> : null}
     <EventTrace sequences={task.eventSequences} t={t} />
   </div>

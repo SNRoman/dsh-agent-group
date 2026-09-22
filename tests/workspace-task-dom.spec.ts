@@ -179,6 +179,12 @@ function stale(): WorkspaceApiError {
 }
 
 describe('task center real DOM interactions', () => {
+  it('localizes known Host delivery failures instead of rendering their English summary', async () => {
+    const { container } = await mount(createApi(), zh)
+    expect(container.textContent).toContain('任务投递在产生最终结果前中断。')
+    expect(container.textContent).not.toContain('Interrupted.')
+  })
+
   it('rejects an older durable snapshot after a newer mutation or stream replacement', () => {
     const older = snapshot()
     const newer = { ...older, revision: older.revision + 1 }

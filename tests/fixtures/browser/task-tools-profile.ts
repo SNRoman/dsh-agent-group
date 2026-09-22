@@ -1,6 +1,8 @@
 /** Profile-only human-task seed for the real task-tool release smoke. */
 
 import { access, writeFile } from 'node:fs/promises'
+import { watch } from 'node:fs'
+import { basename, dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { AgentWorkspaceDomainService } from '../../../packages/host/src/index.ts'
 import { HumanId } from '../../../packages/host/src/ids.ts'
@@ -59,18 +61,34 @@ function scriptedReadyPath(fixturePath: string): string {
 
 async function waitForScriptedLlmAdapter(fixturePath: string): Promise<void> {
   const readyPath = scriptedReadyPath(fixturePath)
-  const deadline = Date.now() + SCRIPTED_LLM_READY_TIMEOUT_MS
-  while (Date.now() < deadline) {
-    try {
-      await access(readyPath)
-      return
-    } catch (error) {
-      if (!isMissingFile(error)) throw error
-      if (Date.now() >= deadline) break
-      await new Promise(resolve => setTimeout(resolve, 25))
+  await new Promise<void>((resolveReady, reject) => {
+    let settled = false
+    let watcher: ReturnType<typeof watch> | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = (error?: unknown): void => {
+      if (settled) return
+      settled = true
+      watcher?.close()
+      if (timer !== undefined) clearTimeout(timer)
+      if (error === undefined) resolveReady()
+      else reject(error)
     }
-  }
-  throw new Error('profile task-tools seed timed out waiting for the scripted LLM adapter')
+    const check = async (): Promise<void> => {
+      try {
+        await access(readyPath)
+        finish()
+      } catch (error) {
+        if (!isMissingFile(error)) finish(error)
+      }
+    }
+    watcher = watch(dirname(readyPath), (_event, filename) => {
+      if (filename === null || String(filename) === basename(readyPath)) void check()
+    })
+    watcher.once('error', finish)
+    timer = setTimeout(() => finish(new Error('profile task-tools seed timed out waiting for the scripted LLM adapter')), SCRIPTED_LLM_READY_TIMEOUT_MS)
+    timer.unref()
+    void check()
+  })
 }
 
 function isMissingFile(error: unknown): boolean {

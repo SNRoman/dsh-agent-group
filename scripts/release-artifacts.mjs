@@ -47,6 +47,7 @@ function smokeInputFiles(root) {
   const paths = [
     'scripts/release-smoke.mjs',
     'scripts/release-smoke-contract.mjs',
+    'tests/e2e/README.md',
     'tests/e2e/workspace-browser.mjs',
   ].map(name => join(root, name))
   const fixtureRoot = join(root, 'tests', 'fixtures', 'browser')

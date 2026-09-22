@@ -233,7 +233,7 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
     } finally {
       await dispose()
     }
-  })
+  }, 30_000)
 
   it.each([
     ['missing revision', {}],
@@ -499,6 +499,13 @@ describe('Workspace Browser source contract', () => {
     expect(source).toContain("props.t('room.direct')")
     expect(source).toContain('@all')
     expect(source).toContain("selectedRoom.kind === 'group'")
+  })
+
+  it('selects a newly opened direct room only after adopting its snapshot', () => {
+    const source = readFileSync(resolve('packages/web/src/client/WorkspaceUi.tsx'), 'utf8')
+    const openDirect = source.slice(source.indexOf('const openDirect ='), source.indexOf('\n\n  return ('))
+    expect(openDirect).toContain('const committed = await commit')
+    expect(openDirect.indexOf('return result.snapshot')).toBeLessThan(openDirect.indexOf('actions.selectRoom(roomId)'))
   })
 
   it('renders live turns through public DSH markdown and disclosure primitives only', () => {

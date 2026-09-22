@@ -278,3 +278,222 @@ export function assertBrowserDurableEvidence(durable) {
     throw new Error('durable Browser evidence contains LIVE_PARTIAL')
   }
 }
+
+/** Return the recorded refusal, rejecting duplicate results, leaked ids, and unsafe payloads. */
+export function inspectSafeDelegationDenial(rows, workspace) {
+  const results = rows.filter(row => row.type === 'tool/result'
+    && row.data?.message?.source?.kind === 'tool'
+    && row.data.message.source.callId === 'v020-safe-failure')
+  if (results.length === 0) return undefined
+  if (results.length !== 1) throw new Error('expected exactly one authoritative delegation denial')
+  const result = results[0]
+  const serialized = JSON.stringify(result.data)
+  const ids = new Set()
+  const collectIds = value => {
+    if (value === null || typeof value !== 'object') return
+    for (const [key, entry] of Object.entries(value)) {
+      if ((key === 'id' || key.endsWith('Id')) && typeof entry === 'string' && entry !== '') {
+        ids.add(entry)
+      } else if (key.endsWith('Ids') && Array.isArray(entry)) {
+        for (const id of entry) if (typeof id === 'string' && id !== '') ids.add(id)
+      } else {
+        collectIds(entry)
+      }
+    }
+  }
+  collectIds(workspace)
+  for (const id of ids) if (serialized.includes(id)) throw new Error('delegation denial leaked an actual workspace identifier')
+  if (result.data.meta !== undefined) throw new Error('delegation denial included Host metadata')
+  const blocks = result.data.message.content
+  const refusal = blocks?.[0]
+  if (blocks?.length !== 1 || refusal?.type !== 'tool-result' || refusal.toolCallId !== 'v020-safe-failure'
+    || refusal.isError !== true || JSON.stringify(refusal.content) !== JSON.stringify([{ type: 'text', text: 'Error: Workspace task request is not permitted.' }])) {
+    throw new Error('recorded delegation result was not a safe policy denial')
+  }
+  return result
+}
+
+const RESTART_DURABLE_KEYS = [
+  'definitions', 'definitionRevisions', 'agents', 'rooms', 'memberships', 'events',
+  'memoryEntries', 'tasks', 'taskAssignments', 'delegationGrants', 'childRuns', 'sessionBindings',
+]
+
+/** Require a seed-free Host restart to preserve every durable product record exactly. */
+export function assertRestartPersistence(before, after) {
+  for (const key of RESTART_DURABLE_KEYS) {
+    if (JSON.stringify(after[key]) !== JSON.stringify(before[key])) {
+      throw new Error(`Host restart changed durable ${key}`)
+    }
+  }
+}
+
+function equalEvidence(actual, expected, description) {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(description)
+}
+
+function exactlyOne(items, description) {
+  if (items.length !== 1) throw new Error(`expected exactly one ${description}; found ${items.length}`)
+  return items[0]
+}
+
+/** Verify exact subset pins and preservation of every existing business record. */
+export function assertSubsetRevisionEvidence(before, after) {
+  const definition = exactlyOne(Object.values(before.definitions).filter(item => item.name === 'Release engineer'), 'release definition')
+  const previousRevisionId = definition.currentRevisionId
+  equalEvidence(definition.revisionIds, [previousRevisionId], 'expected one previous revision')
+  const next = after.definitions[definition.id]
+  const currentRevisionId = next?.currentRevisionId
+  if (!currentRevisionId || currentRevisionId === previousRevisionId) throw new Error('missing new revision')
+  equalEvidence(next.revisionIds, [previousRevisionId, currentRevisionId], 'revision sequence changed')
+  equalEvidence(after.definitionRevisions[previousRevisionId], before.definitionRevisions[previousRevisionId], 'previous revision was not preserved')
+  if (after.definitionRevisions[currentRevisionId]?.definitionId !== definition.id || after.definitionRevisions[currentRevisionId]?.number !== 2) throw new Error('new revision belongs to another definition')
+  const pins = { [previousRevisionId]: [], [currentRevisionId]: [] }
+  for (const name of ['Alice', 'Bob', 'Charlie']) {
+    const agent = exactlyOne(Object.values(before.agents).filter(item => item.name === name), name)
+    if (agent.definitionRevisionId !== previousRevisionId) throw new Error('unexpected original pin')
+    const expectedPin = name === 'Alice' ? currentRevisionId : previousRevisionId
+    if (after.agents[agent.id]?.definitionRevisionId !== expectedPin) throw new Error(`unexpected ${name} pin`)
+    equalEvidence(after.agents[agent.id], { ...agent, definitionRevisionId: expectedPin }, `${name} business data was not preserved`)
+    pins[expectedPin].push(agent.id)
+  }
+  for (const key of ['rooms', 'memberships', 'sessionBindings', 'memoryEntries', 'tasks', 'taskAssignments', 'delegationGrants', 'childRuns']) {
+    equalEvidence(after[key], before[key], `${key} was not preserved`)
+  }
+  equalEvidence(after.events.slice(0, before.events.length), before.events, 'existing events were not preserved')
+  const appended = after.events.slice(before.events.length)
+  const revisionEvent = exactlyOne(appended.filter(event => event.type === 'definition/revised'), 'new revision event')
+  const assignmentEvent = exactlyOne(appended.filter(event => event.type === 'agent/definition-revision-assigned'), 'new revision assignment event')
+  if (appended.length !== 2) throw new Error(`expected only revision and assignment events; found ${appended.length}`)
+  if (revisionEvent.subjectId !== definition.id || revisionEvent.definitionRevisionId !== currentRevisionId || revisionEvent.actor !== undefined) {
+    throw new Error('new revision event identity changed')
+  }
+  const alice = exactlyOne(Object.values(before.agents).filter(item => item.name === 'Alice'), 'Alice')
+  if (assignmentEvent.subjectId !== alice.id || assignmentEvent.definitionRevisionId !== currentRevisionId || assignmentEvent.actor !== undefined) {
+    throw new Error('new revision assignment event identity changed')
+  }
+  const previousSequence = before.events.at(-1)?.sequence
+  if (!Number.isSafeInteger(previousSequence)
+    || revisionEvent.sequence !== previousSequence + 1
+    || assignmentEvent.sequence !== revisionEvent.sequence + 1) {
+    throw new Error('new revision event order changed')
+  }
+  if (typeof revisionEvent.id !== 'string' || revisionEvent.id === '' || typeof assignmentEvent.id !== 'string' || assignmentEvent.id === '' || revisionEvent.id === assignmentEvent.id) {
+    throw new Error('new revision event ids changed')
+  }
+  return {
+    definitionId: definition.id,
+    previousRevisionId,
+    currentRevisionId,
+    revisionEventId: revisionEvent.id,
+    revisionEventSequence: revisionEvent.sequence,
+    assignmentEventId: assignmentEvent.id,
+    assignmentEventSequence: assignmentEvent.sequence,
+    pins,
+  }
+}
+
+/** Join accessible event labels to canonical ids and reject duplicate acquisitions or rows. */
+export function assertMemoryRows(workspace, agentId, labels, expectedIds) {
+  const entries = workspace.memoryEntries.filter(entry => entry.agentId === agentId)
+  if (new Set(entries.map(entry => entry.eventId)).size !== entries.length) throw new Error('duplicate durable memory event')
+  const ids = labels.map(label => {
+    const event = exactlyOne(workspace.events.filter(event => label === `Event ${event.sequence}: ${event.type}`), 'visible memory event')
+    if (!entries.some(entry => entry.eventId === event.id)) throw new Error('visible memory belongs to another agent')
+    return event.id
+  })
+  if (new Set(ids).size !== ids.length) throw new Error('duplicate visible memory event')
+  equalEvidence([...ids].sort(), [...expectedIds].sort(), 'visible memory rows do not match expected event ids')
+  return ids
+}
+
+/** Require observed stop ordering, terminal delivery, and preservation of queued work and Session. */
+export function assertExactStopEvidence({ protocol, identity, terminalActivityId, before, after, sessionRows }) {
+  equalEvidence(protocol, ['held', 'responding-observed', 'queued-observed', 'stop-clicked', 'abort-received', 'stopping-observed', 'released', 'settled-observed'], 'invalid stop protocol order')
+  if (terminalActivityId !== identity.activityId) throw new Error('a different activity settled')
+  const heldAttempt = after.events.filter(event => 'taskId' in event
+    && event.taskId === identity.taskId
+    && 'taskDeliveryAttemptId' in event
+    && event.taskDeliveryAttemptId === identity.attemptId
+    && ['task/delivery-started', 'task/delivery-accepted', 'task/delivery-failed'].includes(event.type))
+  equalEvidence(heldAttempt.map(event => event.type), ['task/delivery-started', 'task/delivery-accepted', 'task/delivery-failed'], 'held attempt lifecycle changed')
+  if (!heldAttempt.every(event => event.messageId === identity.messageId)) throw new Error('held attempt message identity changed')
+  const terminal = heldAttempt[2]
+  if (terminal.failureCode !== 'interrupted') throw new Error('held attempt did not record an interrupted failure')
+  if (!(heldAttempt[0].sequence < heldAttempt[1].sequence && heldAttempt[1].sequence < terminal.sequence)) throw new Error('held attempt event order changed')
+  if (after.tasks[identity.taskId]?.status !== 'open') throw new Error('stopped task is not open and retryable')
+  if (after.events.some(event => event.type === 'task/result' && event.taskId === identity.taskId)) throw new Error('stopped activity recorded a task result')
+  equalEvidence(after.sessionBindings, before.sessionBindings, 'Session bindings were not preserved')
+  if (after.sessionBindings[identity.agentId] !== identity.sessionId) throw new Error('held Session identity changed')
+  if (before.tasks[identity.queuedTaskId]?.status !== 'open' || after.tasks[identity.queuedTaskId]?.status !== 'completed') throw new Error('unrelated queued work was not preserved')
+  const queuedStarted = exactlyOne(after.events.filter(event => event.type === 'task/delivery-started' && event.taskId === identity.queuedTaskId), 'queued attempt start')
+  const queuedAccepted = exactlyOne(after.events.filter(event => event.type === 'task/delivery-accepted' && event.taskId === identity.queuedTaskId), 'queued attempt acceptance')
+  const queuedResult = exactlyOne(after.events.filter(event => event.type === 'task/result' && event.taskId === identity.queuedTaskId), 'queued attempt result')
+  const queuedCompleted = exactlyOne(after.events.filter(event => event.type === 'task/completed' && event.subjectId === identity.queuedTaskId), 'queued attempt completion')
+  if (queuedAccepted.taskDeliveryAttemptId !== queuedStarted.taskDeliveryAttemptId
+    || queuedResult.taskDeliveryAttemptId !== queuedStarted.taskDeliveryAttemptId
+    || queuedAccepted.messageId !== queuedStarted.messageId
+    || !(queuedStarted.sequence < queuedAccepted.sequence && queuedAccepted.sequence < queuedResult.sequence && queuedResult.sequence < queuedCompleted.sequence)) {
+    throw new Error('queued attempt identity or event order changed')
+  }
+  const partialMessages = sessionRows.filter(row => row.data?.message?.role === 'assistant'
+    && JSON.stringify(row.data.message.content).includes('V020_STOP_PARTIAL'))
+  if (partialMessages.length !== 1 || partialMessages[0]?.data?.interrupted !== true) {
+    throw new Error('stopped partial assistant message was not retained exactly once as interrupted evidence')
+  }
+}
+
+/** Verify the Browser's root/grant/derived/child chain against immutable events and Session logs. */
+export function assertTaskCausality(workspace, sessions) {
+  const alice = exactlyOne(Object.values(workspace.agents).filter(agent => agent.name === 'Alice'), 'Alice')
+  const bob = exactlyOne(Object.values(workspace.agents).filter(agent => agent.name === 'Bob'), 'Bob')
+  const root = exactlyOne(Object.values(workspace.tasks).filter(task => task.title === 'V020_ROOT V020_DELEGATE'), 'root task')
+  const derived = exactlyOne(Object.values(workspace.tasks).filter(task => task.title === 'V020_CHILD'), 'derived task')
+  if (root.rootTaskId !== root.id || derived.rootTaskId !== root.id) throw new Error('rootTaskId association changed')
+  const grant = exactlyOne(Object.values(workspace.delegationGrants).filter(grant => grant.rootTaskId === root.id), 'root grant')
+  if (grant.granteeAgentId !== alice.id || grant.status !== 'expired') throw new Error('wrong grantee or unexpired terminal grant')
+  const grantEvent = exactlyOne(workspace.events.filter(event => event.type === 'task/delegation-granted' && event.subjectId === grant.id), 'grant event')
+  equalEvidence(grantEvent.actor, { type: 'human', id: grant.grantedByHumanId }, 'grant actor changed')
+  const attempts = {}
+  for (const [task, assignee, marker] of [[root, alice, 'V020_ROOT_RESULT'], [derived, bob, 'V020_CHILD_RESULT']]) {
+    if (task.status !== 'completed') throw new Error('task is not completed')
+    const assignment = exactlyOne(Object.values(workspace.taskAssignments).filter(item => item.taskId === task.id), 'task assignment')
+    if (assignment.rootTaskId !== root.id || assignment.assigneeAgentId !== assignee.id || (task === derived && assignment.grantId !== grant.id)) throw new Error('assignment association changed')
+    const assigned = exactlyOne(workspace.events.filter(event => event.subjectId === assignment.id && event.type === (task === root ? 'task/assigned' : 'task/delegated')), 'assignment event')
+    equalEvidence(assigned.actor, task === root ? { type: 'human', id: grant.grantedByHumanId } : { type: 'agent', id: alice.id }, 'delegator association changed')
+    if (task === derived && assigned.sequence <= grantEvent.sequence) throw new Error('delegation preceded grant')
+    const started = exactlyOne(workspace.events.filter(event => event.type === 'task/delivery-started' && event.taskId === task.id), 'attempt start')
+    const accepted = exactlyOne(workspace.events.filter(event => event.type === 'task/delivery-accepted' && event.taskId === task.id), 'attempt acceptance')
+    const result = exactlyOne(workspace.events.filter(event => event.type === 'task/result' && event.taskId === task.id), 'task result')
+    const completed = exactlyOne(workspace.events.filter(event => event.type === 'task/completed' && event.subjectId === task.id), 'task completion')
+    if (accepted.taskDeliveryAttemptId !== started.taskDeliveryAttemptId || result.taskDeliveryAttemptId !== started.taskDeliveryAttemptId || accepted.messageId !== started.messageId || result.definitionRevisionId !== accepted.definitionRevisionId || result.text !== marker) throw new Error('attempt/result association changed')
+    equalEvidence(completed.actor, { type: 'agent', id: assignee.id }, 'completion actor changed')
+    if (!(assigned.sequence < started.sequence && started.sequence < accepted.sequence && accepted.sequence < result.sequence && result.sequence < completed.sequence)) throw new Error('task event order changed')
+    const session = exactlyOne(sessions.filter(session => session.header.id === workspace.sessionBindings[assignee.id]), 'assignee Session')
+    const delivery = exactlyOne(session.rows.filter(row => row.type === 'user/message' && row.data?.id === started.messageId), 'Session delivery')
+    if (delivery.data.source.source?.taskId !== task.id || delivery.data.source.taskDeliveryAttemptId !== started.taskDeliveryAttemptId) throw new Error('Session delivery association changed')
+    const expectedCalls = task === root
+      ? [['v020-delegate', 'workspace_delegate_task', { rootTaskId: root.id, assigneeAgentId: bob.id, title: derived.title }], ['v020-root-complete', 'workspace_complete_task', { taskId: root.id, result: marker }]]
+      : [['v020-child-run', 'workspace_run_child', { taskId: derived.id, prompt: 'V020_CHILD_EXECUTION' }], ['v020-child-complete', 'workspace_complete_task', { taskId: derived.id, result: marker }]]
+    for (const [callId, name, args] of expectedCalls) {
+      const call = exactlyOne(session.rows.filter(row => row.type === 'assistant/message').flatMap(row => row.data?.message?.content ?? []).filter(block => block.type === 'tool-call' && block.id === callId), 'tool call')
+      if (call.name !== name) throw new Error('tool name changed')
+      equalEvidence(JSON.parse(call.arguments), args, 'tool arguments association changed')
+      const toolResult = exactlyOne(session.rows.filter(row => row.type === 'tool/result' && row.data?.message?.source?.callId === callId), 'tool result')
+      const block = exactlyOne(toolResult.data.message.content, 'tool result block')
+      if (block.type !== 'tool-result' || block.toolCallId !== callId || block.isError === true) throw new Error('tool result failed or belongs to another call')
+      if (callId === 'v020-child-run') equalEvidence(block.content, [{ type: 'text', text: 'V020_CHILD_RESULT' }], 'child tool result changed')
+    }
+    attempts[task.id] = started.taskDeliveryAttemptId
+  }
+  const child = exactlyOne(Object.values(workspace.childRuns).filter(child => child.taskId === derived.id), 'child run')
+  if (child.parentAgentId !== bob.id || child.status !== 'completed' || child.result !== 'V020_CHILD_RESULT') throw new Error('child parent/result association changed')
+  const started = exactlyOne(workspace.events.filter(event => event.type === 'child/run-started' && event.subjectId === child.id), 'child start')
+  const finished = exactlyOne(workspace.events.filter(event => event.type === 'child/run-finished' && event.subjectId === child.id), 'child finish')
+  equalEvidence(started.actor, { type: 'agent', id: bob.id }, 'child start actor changed')
+  if (finished.childRunStatus !== 'completed' || finished.text !== child.result || finished.sequence <= started.sequence) throw new Error('child terminal event changed')
+  const childSession = exactlyOne(sessions.filter(session => session.header.parentSession === workspace.sessionBindings[bob.id]
+    && session.rows.some(row => row.type === 'subagent/descriptor' && row.data?.label === `workspace-child:${derived.id}`)), 'child Session')
+  const output = exactlyOne(childSession.rows.filter(row => row.type === 'assistant/message' && row.data?.message?.role === 'assistant'), 'child assistant result')
+  equalEvidence(output.data.message.content, [{ type: 'text', text: child.result }], 'child Session result changed')
+  return { rootTaskId: root.id, derivedTaskId: derived.id, grantId: grant.id, attempts, childRunId: child.id, childSessionId: childSession.header.id }
+}

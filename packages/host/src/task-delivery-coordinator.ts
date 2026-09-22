@@ -184,7 +184,12 @@ export class TaskDeliveryCoordinator {
           try {
             completion.resolve(await this.runPrepared(prepared, owner, true, flight.cancellation.signal))
           } catch (error) {
-            completion.reject(error)
+            try {
+              await this.convergeRejectedFlight(taskId)
+              completion.reject(error)
+            } catch (convergenceError) {
+              completion.reject(new AggregateError([error, convergenceError], `task '${taskId}' delivery and failure convergence both failed`))
+            }
           } finally {
             if (this.taskFlights.get(taskId) === flight) this.taskFlights.delete(taskId)
           }
@@ -229,6 +234,9 @@ export class TaskDeliveryCoordinator {
     this.taskFlights.set(taskId, flight)
     try {
       return await promise
+    } catch (error) {
+      await this.convergeRejectedFlight(taskId)
+      throw error
     } finally {
       if (this.taskFlights.get(taskId) === flight) this.taskFlights.delete(taskId)
     }
@@ -501,6 +509,20 @@ export class TaskDeliveryCoordinator {
       }
       return failTaskDelivery(current, { ...identity, failureCode, failureSummary }).state
     })
+  }
+
+  /** Ensure a rejected background flight cannot leave its latest attempt open. */
+  private async convergeRejectedFlight(taskId: TaskId): Promise<void> {
+    const inspection = inspectTaskDelivery(this.host.snapshot(), taskId)
+    if (inspection.attemptId === undefined || (inspection.phase !== 'started' && inspection.phase !== 'accepted')) return
+    const started = latestStartedEvent(this.host.snapshot(), taskId, inspection.attemptId)
+    if (started === undefined) return
+    const accepted = inspection.phase === 'accepted'
+    await this.failIfOpen(
+      { taskId, attemptId: inspection.attemptId, messageId: started.messageId },
+      accepted ? 'interrupted' : 'delivery-rejected',
+      accepted ? 'Delivery was interrupted before a terminal result.' : 'Agent delivery could not be queued.',
+    )
   }
 }
 
