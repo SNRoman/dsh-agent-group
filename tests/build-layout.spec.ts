@@ -23,6 +23,19 @@ async function pack(directory: string, destination: string): Promise<void> {
 }
 
 describe('workspace manifests', () => {
+  test('publishes the frozen forward exporter from the built Host entry', async () => {
+    const host = JSON.parse(await readFile('packages/host/package.json', 'utf8')) as {
+      dependencies: Record<string, string>
+      files: string[]
+    }
+    expect(host.dependencies.canonicalize).toBe('2.1.0')
+    expect(host.files).toContain('lib/index.js')
+
+    const built = await import('../packages/host/lib/index.js') as Record<string, unknown>
+    expect(built.WORKSPACE_EXPORT_FORMAT_VERSION).toBe(1)
+    expect(built.createForwardWorkspaceExportV1).toBeTypeOf('function')
+  })
+
   test('builds Host before Browser so generated Remote types exist', async () => {
     const root = JSON.parse(await readFile('package.json', 'utf8')) as { scripts: Record<string, string> }
     expect(root.scripts.build).toBe('pnpm build:host && pnpm build:web && pnpm build:bundle')

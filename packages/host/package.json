@@ -1,6 +1,6 @@
 {
   "name": "@dsh-agent-group/host",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Durable multi-agent workspace domain and employee runtime for DeepSeek Harness.",
   "license": "MIT",
   "repository": {
@@ -49,6 +49,7 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.2",
+    "canonicalize": "2.1.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -1074,3 +1074,16 @@ export type {
   MemorySource,
   MemorySubject,
 } from './memory-query.ts'
+export {
+  AGENT_WORKSPACE_PLUGIN_VERSION,
+  createForwardWorkspaceExportV1,
+  WORKSPACE_EXPORT_COMPATIBLE_IMPORT_RANGE,
+  WORKSPACE_EXPORT_FORMAT,
+  WORKSPACE_EXPORT_FORMAT_VERSION,
+} from './forward-export.ts'
+export type {
+  ForwardWorkspaceAggregateV1,
+  ForwardWorkspaceDescriptorV1,
+  ForwardWorkspaceExportDocumentV1,
+  ForwardWorkspaceExportEnvelopeV1,
+} from './forward-export.ts'

@@ -1,0 +1,1122 @@
+{
+  "unit": {
+    "name": "agent_workspace",
+    "version": 0
+  },
+  "global": null,
+  "tables": {
+    "workspaces": {
+      "local": {
+        "workspaceId": "local",
+        "revision": 60,
+        "nextId": 81,
+        "nextSequence": 66,
+        "definitions": {
+          "definition-1": {
+            "id": "definition-1",
+            "name": "Task tools profile engineer",
+            "revisionIds": [
+              "definition-revision-2"
+            ],
+            "currentRevisionId": "definition-revision-2"
+          },
+          "definition-12": {
+            "id": "definition-12",
+            "name": "Release engineer",
+            "revisionIds": [
+              "definition-revision-13",
+              "definition-revision-80"
+            ],
+            "currentRevisionId": "definition-revision-80"
+          }
+        },
+        "definitionRevisions": {
+          "definition-revision-2": {
+            "id": "definition-revision-2",
+            "definitionId": "definition-1",
+            "number": 1,
+            "description": "Executes the deterministic task tools smoke scenario.",
+            "instructions": "Use the requested task tool and return its result."
+          },
+          "definition-revision-13": {
+            "id": "definition-revision-13",
+            "definitionId": "definition-12",
+            "number": 1,
+            "description": "Verify the release workspace",
+            "instructions": "Reply with the deterministic marker."
+          },
+          "definition-revision-80": {
+            "id": "definition-revision-80",
+            "definitionId": "definition-12",
+            "number": 2,
+            "description": "Verify the revised release workspace",
+            "instructions": "Reply with the deterministic marker."
+          }
+        },
+        "agents": {
+          "agent-3": {
+            "id": "agent-3",
+            "name": "Task tools Alice",
+            "definitionId": "definition-1",
+            "definitionRevisionId": "definition-revision-2",
+            "employmentStatus": "employed",
+            "employmentPeriods": [
+              {
+                "id": "employment-4",
+                "startedEventId": "event-2"
+              }
+            ]
+          },
+          "agent-5": {
+            "id": "agent-5",
+            "name": "Task tools Bob",
+            "definitionId": "definition-1",
+            "definitionRevisionId": "definition-revision-2",
+            "employmentStatus": "employed",
+            "employmentPeriods": [
+              {
+                "id": "employment-6",
+                "startedEventId": "event-3"
+              }
+            ]
+          },
+          "agent-14": {
+            "id": "agent-14",
+            "name": "Alice",
+            "definitionId": "definition-12",
+            "definitionRevisionId": "definition-revision-80",
+            "employmentStatus": "employed",
+            "employmentPeriods": [
+              {
+                "id": "employment-15",
+                "startedEventId": "event-11",
+                "endedEventId": "event-57"
+              },
+              {
+                "id": "employment-75",
+                "startedEventId": "event-58"
+              }
+            ]
+          },
+          "agent-16": {
+            "id": "agent-16",
+            "name": "Bob",
+            "definitionId": "definition-12",
+            "definitionRevisionId": "definition-revision-13",
+            "employmentStatus": "employed",
+            "employmentPeriods": [
+              {
+                "id": "employment-17",
+                "startedEventId": "event-12"
+              }
+            ]
+          },
+          "agent-18": {
+            "id": "agent-18",
+            "name": "Charlie",
+            "definitionId": "definition-12",
+            "definitionRevisionId": "definition-revision-13",
+            "employmentStatus": "employed",
+            "employmentPeriods": [
+              {
+                "id": "employment-19",
+                "startedEventId": "event-13"
+              }
+            ]
+          }
+        },
+        "rooms": {
+          "room-20": {
+            "id": "room-20",
+            "kind": "group",
+            "name": "Release room"
+          },
+          "room-60": {
+            "id": "room-60",
+            "kind": "direct"
+          },
+          "room-76": {
+            "id": "room-76",
+            "kind": "direct"
+          }
+        },
+        "memberships": {
+          "membership-21": {
+            "id": "membership-21",
+            "roomId": "room-20",
+            "agentId": "agent-14",
+            "memoryStart": {
+              "type": "new-events"
+            },
+            "joinedEventId": "event-16",
+            "leftEventId": "event-57"
+          },
+          "membership-22": {
+            "id": "membership-22",
+            "roomId": "room-20",
+            "agentId": "agent-16",
+            "memoryStart": {
+              "type": "event-range",
+              "startSequence": 15,
+              "endSequence": 15
+            },
+            "joinedEventId": "event-17"
+          },
+          "membership-24": {
+            "id": "membership-24",
+            "roomId": "room-20",
+            "agentId": "agent-18",
+            "memoryStart": {
+              "type": "new-events"
+            },
+            "joinedEventId": "event-18"
+          },
+          "membership-61": {
+            "id": "membership-61",
+            "roomId": "room-60",
+            "agentId": "agent-14",
+            "memoryStart": {
+              "type": "new-events"
+            },
+            "joinedEventId": "event-43",
+            "leftEventId": "event-57"
+          },
+          "membership-77": {
+            "id": "membership-77",
+            "roomId": "room-76",
+            "agentId": "agent-14",
+            "memoryStart": {
+              "type": "new-events"
+            },
+            "joinedEventId": "event-60"
+          }
+        },
+        "events": [
+          {
+            "id": "event-1",
+            "sequence": 1,
+            "subjectId": "definition-1",
+            "definitionRevisionId": "definition-revision-2",
+            "type": "definition/created"
+          },
+          {
+            "id": "event-2",
+            "sequence": 2,
+            "subjectId": "agent-3",
+            "type": "agent/created"
+          },
+          {
+            "id": "event-3",
+            "sequence": 3,
+            "subjectId": "agent-5",
+            "type": "agent/created"
+          },
+          {
+            "id": "event-4",
+            "sequence": 4,
+            "subjectId": "task-assignment-8",
+            "actor": {
+              "type": "human",
+              "id": "profile-task-human"
+            },
+            "text": "PROFILE_TASK_TOOLS_REQUEST",
+            "type": "task/assigned"
+          },
+          {
+            "id": "event-5",
+            "sequence": 5,
+            "subjectId": "agent-3",
+            "type": "runtime/session-bound"
+          },
+          {
+            "id": "event-6",
+            "sequence": 6,
+            "type": "task/delivery-started",
+            "taskId": "task-7",
+            "taskDeliveryAttemptId": "task-delivery-attempt-10",
+            "messageId": "agent-workspace-task:local:task-delivery-attempt-10"
+          },
+          {
+            "id": "event-7",
+            "sequence": 7,
+            "definitionRevisionId": "definition-revision-2",
+            "type": "task/delivery-accepted",
+            "taskId": "task-7",
+            "taskDeliveryAttemptId": "task-delivery-attempt-10",
+            "messageId": "agent-workspace-task:local:task-delivery-attempt-10"
+          },
+          {
+            "id": "event-8",
+            "sequence": 8,
+            "definitionRevisionId": "definition-revision-2",
+            "text": "PROFILE_TASK_TOOL_RESULT",
+            "type": "task/result",
+            "taskId": "task-7",
+            "taskDeliveryAttemptId": "task-delivery-attempt-10"
+          },
+          {
+            "id": "event-9",
+            "sequence": 9,
+            "subjectId": "task-7",
+            "actor": {
+              "type": "agent",
+              "id": "agent-3"
+            },
+            "text": "PROFILE_TASK_TOOLS_REQUEST",
+            "type": "task/completed"
+          },
+          {
+            "id": "event-10",
+            "sequence": 10,
+            "subjectId": "definition-12",
+            "definitionRevisionId": "definition-revision-13",
+            "type": "definition/created"
+          },
+          {
+            "id": "event-11",
+            "sequence": 11,
+            "subjectId": "agent-14",
+            "type": "agent/created"
+          },
+          {
+            "id": "event-12",
+            "sequence": 12,
+            "subjectId": "agent-16",
+            "type": "agent/created"
+          },
+          {
+            "id": "event-13",
+            "sequence": 13,
+            "subjectId": "agent-18",
+            "type": "agent/created"
+          },
+          {
+            "id": "event-14",
+            "sequence": 14,
+            "subjectId": "room-20",
+            "type": "room/created"
+          },
+          {
+            "id": "event-15",
+            "sequence": 15,
+            "subjectId": "room-20",
+            "actor": {
+              "type": "human",
+              "id": "web-user"
+            },
+            "text": "HISTORY_BEFORE_JOIN",
+            "mentions": [],
+            "type": "room/message"
+          },
+          {
+            "id": "event-16",
+            "sequence": 16,
+            "subjectId": "membership-21",
+            "type": "room/member-joined"
+          },
+          {
+            "id": "event-17",
+            "sequence": 17,
+            "subjectId": "membership-22",
+            "type": "room/member-joined"
+          },
+          {
+            "id": "event-18",
+            "sequence": 18,
+            "subjectId": "membership-24",
+            "type": "room/member-joined"
+          },
+          {
+            "id": "event-19",
+            "sequence": 19,
+            "subjectId": "task-assignment-26",
+            "actor": {
+              "type": "human",
+              "id": "web-user"
+            },
+            "text": "V020_ROOT V020_DELEGATE",
+            "type": "task/assigned"
+          },
+          {
+            "id": "event-20",
+            "sequence": 20,
+            "subjectId": "agent-14",
+            "type": "runtime/session-bound"
+          },
+          {
+            "id": "event-21",
+            "sequence": 21,
+            "type": "task/delivery-started",
+            "taskId": "task-25",
+            "taskDeliveryAttemptId": "task-delivery-attempt-28",
+            "messageId": "agent-workspace-task:local:task-delivery-attempt-28"
+          },
+          {
+            "id": "event-22",
+            "sequence": 22,
+            "definitionRevisionId": "definition-revision-13",
+            "type": "task/delivery-accepted",
+            "taskId": "task-25",
+            "taskDeliveryAttemptId": "task-delivery-attempt-28",
+            "messageId": "agent-workspace-task:local:task-delivery-attempt-28"
+          },
+          {
+            "id": "event-23",
+            "sequence": 23,
+            "subjectId": "delegation-grant-29",
+            "actor": {
+              "type": "human",
+              "id": "web-user"
+            },
+            "type": "task/delegation-granted"
+          },
+          {
+            "id": "event-24",
+            "sequence": 24,
+            "subjectId": "task-assignment-31",
+            "actor": {
+              "type": "agent",
+              "id": "agent-14"
+            },
+            "text": "V020_CHILD",
+            "type": "task/delegated"
+          },
+          {
+            "id": "event-25",
+            "sequence": 25,
+            "subjectId": "agent-16",
+            "type": "runtime/session-bound"
+          },
+          {
+            "id": "event-26",
+            "sequence": 26,
+            "type": "task/delivery-started",
+            "taskId": "task-30",
+            "taskDeliveryAttemptId": "task-delivery-attempt-33",
+            "messageId": "agent-workspace-task:local:task-delivery-attempt-33"
+          },
+          {
+            "id": "event-27",
+            "sequence": 27,
+            "definitionRevisionId": "definition-revision-13",
+            "type": "task/delivery-accepted",
+            "taskId": "task-30",
+            "taskDeliveryAttemptId": "task-delivery-attempt-33",
+            "messageId": "agent-workspace-task:local:task-delivery-attempt-33"
+          },
+          {
+            "id": "event-28",
+            "sequence": 28,
+            "subjectId": "child-run-34",
+            "actor": {
+              "type": "agent",
+              "id": "agent-16"
+            },
+            "type": "child/run-started"
+          },
+          {
+            "id": "event-29",
+            "sequence": 29,
+            "subjectId": "child-run-34",
+            "text": "V020_CHILD_RESULT",
+            "type": "child/run-finished",
+            "childRunStatus": "completed"
+          },
+          {
+            "id": "event-30",
+            "sequence": 30,
+            "definitionRevisionId": "definition-revision-13",
+            "text": "V020_CHILD_RESULT",
+            "type": "task/result",
+            "taskId": "task-30",
+            "taskDeliveryAttemptId": "task-delivery-attempt-33"
+          },
+          {
+            "id": "event-31",
+            "sequence": 31,
+            "subjectId": "task-30",
+            "actor": {
+              "type": "agent",
+              "id": "agent-16"
+            },
+            "text": "V020_CHILD",
+            "type": "task/completed"
+          },
+          {
+            "id": "event-32",
+            "sequence": 32,
+            "definitionRevisionId": "definition-revision-13",
+            "text": "V020_ROOT_RESULT",
+            "type": "task/result",
+            "taskId": "task-25",
+            "taskDeliveryAttemptId": "task-delivery-attempt-28"
+          },
+          {
+            "id": "event-33",
+            "sequence": 33,
+            "subjectId": "task-25",
+            "actor": {
+              "type": "agent",
+              "id": "agent-14"
+            },
+            "text": "V020_ROOT V020_DELEGATE",
+            "type": "task/completed"
+          },
+          {
+            "id": "event-34",
+            "sequence": 34,
+            "subjectId": "room-20",
+            "actor": {
+              "type": "human",
+              "id": "web-user"
+            },
+            "text": "MEMORY_SEED no wake",
+            "mentions": [],
+            "type": "room/message"
+          },
+          {
+            "id": "event-35",
+            "sequence": 35,
+            "subjectId": "room-20",
+            "actor": {
+              "type": "human",
+              "id": "web-user"
+            },
+            "text": "@Alice NAMED_WAKE",
+            "mentions": [
+              "agent-14"
+            ],
+            "type": "room/message"
+          },
+          {
+            "id": "event-36",
+            "sequence": 36,
+            "subjectId": "room-20",
+            "definitionRevisionId": "definition-revision-13",
+            "actor": {
+              "type": "agent",
+              "id": "agent-14"
+            },
+            "text": "NAMED_REPLY Alice",
+            "mentions": [],
+            "type": "room/message"
+          },
+          {
+            "id": "event-37",
+            "sequence": 37,
+            "subjectId": "room-20",
+            "actor": {
+              "type": "human",
+              "id": "web-user"
+            },
+            "text": "@all ALL_WAKE",
+            "mentions": [
+              "agent-14",
+              "agent-16",
+              "agent-18"
+            ],
+            "type": "room/message"
+          },
+          {
+            "id": "event-38",
+            "sequence": 38,
+            "subjectId": "room-20",
+            "definitionRevisionId": "definition-revision-13",
+            "actor": {
+              "type": "agent",
+              "id": "agent-14"
+            },
+            "text": "ALL_REPLY Alice",
+            "mentions": [],
+            "type": "room/message"
+          },
+          {
+            "id": "event-39",
+            "sequence": 39,
+            "subjectId": "room-20",
+            "definitionRevisionId": "definition-revision-13",
+            "actor": {
+              "type": "agent",
+              "id": "agent-16"
+            },
+            "text": "ALL_REPLY Bob",
+            "mentions": [],
+            "type": "room/message"
+          },
+          {
+            "id": "event-40",
+            "sequence": 40,
+            "subjectId": "agent-18",
+            "type": "runtime/session-bound"
+          },
+          {
+            "id": "event-41",
+            "sequence": 41,
+            "subjectId": "room-20",
+            "definitionRevisionId": "definition-revision-13",
+            "actor": {
+              "type": "agent",
+              "id": "agent-18"
+            },
+            "text": "ALL_REPLY Charlie",
+            "mentions": [],
+            "type": "room/message"
+          },
+          {
+            "id": "event-42",
+            "sequence": 42,
+            "subjectId": "room-60",
+            "type": "room/created"
+          },
+          {
+            "id": "event-43",
+            "sequence": 43,
+            "subjectId": "membership-61",
+            "type": "room/member-joined"
+          },
+          {
+            "id": "event-44",
+            "sequence": 44,
+            "subjectId": "room-60",
+            "actor": {
+              "type": "human",
+              "id": "web-user"
+            },
+            "text": "DIRECT_WAKE",
+            "mentions": [
+              "agent-14"
+            ],
+            "type": "room/message"
+          },
+          {
+            "id": "event-45",
+            "sequence": 45,
+            "subjectId": "room-60",
+            "definitionRevisionId": "definition-revision-13",
+            "actor": {
+              "type": "agent",
+              "id": "agent-14"
+            },
+            "text": "DIRECT_REPLY Alice",
+            "mentions": [],
+            "type": "room/message"
+          },
+          {
+            "id": "event-46",
+            "sequence": 46,
+            "subjectId": "room-60",
+            "actor": {
+              "type": "human",
+              "id": "web-user"
+            },
+            "text": "HOLD_WAKE",
+            "mentions": [
+              "agent-14"
+            ],
+            "type": "room/message"
+          },
+          {
+            "id": "event-47",
+            "sequence": 47,
+            "subjectId": "room-60",
+            "definitionRevisionId": "definition-revision-13",
+            "actor": {
+              "type": "agent",
+              "id": "agent-14"
+            },
+            "text": "HOLD_REPLY Alice",
+            "mentions": [],
+            "type": "room/message"
+          },
+          {
+            "id": "event-48",
+            "sequence": 48,
+            "subjectId": "task-assignment-67",
+            "actor": {
+              "type": "human",
+              "id": "web-user"
+            },
+            "text": "V020_HOLD",
+            "type": "task/assigned"
+          },
+          {
+            "id": "event-49",
+            "sequence": 49,
+            "type": "task/delivery-started",
+            "taskId": "task-66",
+            "taskDeliveryAttemptId": "task-delivery-attempt-69",
+            "messageId": "agent-workspace-task:local:task-delivery-attempt-69"
+          },
+          {
+            "id": "event-50",
+            "sequence": 50,
+            "definitionRevisionId": "definition-revision-13",
+            "type": "task/delivery-accepted",
+            "taskId": "task-66",
+            "taskDeliveryAttemptId": "task-delivery-attempt-69",
+            "messageId": "agent-workspace-task:local:task-delivery-attempt-69"
+          },
+          {
+            "id": "event-51",
+            "sequence": 51,
+            "subjectId": "task-assignment-71",
+            "actor": {
+              "type": "human",
+              "id": "web-user"
+            },
+            "text": "V020_QUEUED",
+            "type": "task/assigned"
+          },
+          {
+            "id": "event-52",
+            "sequence": 52,
+            "type": "task/delivery-started",
+            "taskId": "task-70",
+            "taskDeliveryAttemptId": "task-delivery-attempt-73",
+            "messageId": "agent-workspace-task:local:task-delivery-attempt-73"
+          },
+          {
+            "id": "event-53",
+            "sequence": 53,
+            "definitionRevisionId": "definition-revision-13",
+            "type": "task/delivery-accepted",
+            "taskId": "task-70",
+            "taskDeliveryAttemptId": "task-delivery-attempt-73",
+            "messageId": "agent-workspace-task:local:task-delivery-attempt-73"
+          },
+          {
+            "id": "event-54",
+            "sequence": 54,
+            "type": "task/delivery-failed",
+            "taskId": "task-66",
+            "taskDeliveryAttemptId": "task-delivery-attempt-69",
+            "messageId": "agent-workspace-task:local:task-delivery-attempt-69",
+            "failureCode": "interrupted",
+            "failureSummary": "Delivery was interrupted before a terminal result."
+          },
+          {
+            "id": "event-55",
+            "sequence": 55,
+            "definitionRevisionId": "definition-revision-13",
+            "text": "SCRIPTED_REPLY Alice",
+            "type": "task/result",
+            "taskId": "task-70",
+            "taskDeliveryAttemptId": "task-delivery-attempt-73"
+          },
+          {
+            "id": "event-56",
+            "sequence": 56,
+            "subjectId": "task-70",
+            "actor": {
+              "type": "agent",
+              "id": "agent-14"
+            },
+            "text": "V020_QUEUED",
+            "type": "task/completed"
+          },
+          {
+            "id": "event-57",
+            "sequence": 57,
+            "subjectId": "agent-14",
+            "type": "agent/departed"
+          },
+          {
+            "id": "event-58",
+            "sequence": 58,
+            "subjectId": "agent-14",
+            "type": "agent/employed"
+          },
+          {
+            "id": "event-59",
+            "sequence": 59,
+            "subjectId": "room-76",
+            "type": "room/created"
+          },
+          {
+            "id": "event-60",
+            "sequence": 60,
+            "subjectId": "membership-77",
+            "type": "room/member-joined"
+          },
+          {
+            "id": "event-61",
+            "sequence": 61,
+            "subjectId": "room-76",
+            "actor": {
+              "type": "human",
+              "id": "web-user"
+            },
+            "text": "CHECK_MEMORY",
+            "mentions": [
+              "agent-14"
+            ],
+            "type": "room/message"
+          },
+          {
+            "id": "event-62",
+            "sequence": 62,
+            "subjectId": "room-76",
+            "definitionRevisionId": "definition-revision-13",
+            "actor": {
+              "type": "agent",
+              "id": "agent-14"
+            },
+            "text": "MEMORY_OK Alice",
+            "mentions": [],
+            "type": "room/message"
+          },
+          {
+            "id": "event-63",
+            "sequence": 63,
+            "subjectId": "definition-12",
+            "definitionRevisionId": "definition-revision-80",
+            "type": "definition/revised"
+          },
+          {
+            "id": "event-64",
+            "sequence": 64,
+            "subjectId": "agent-14",
+            "definitionRevisionId": "definition-revision-80",
+            "type": "agent/definition-revision-assigned"
+          },
+          {
+            "id": "event-65",
+            "sequence": 65,
+            "type": "task/cancelled",
+            "subjectId": "task-66",
+            "actor": {
+              "type": "human",
+              "id": "owner"
+            },
+            "cancellationScope": "root-cascade"
+          }
+        ],
+        "memoryEntries": [
+          {
+            "id": "memory-9",
+            "agentId": "agent-3",
+            "eventId": "event-4",
+            "acquiredBy": "task"
+          },
+          {
+            "id": "memory-11",
+            "agentId": "agent-3",
+            "eventId": "event-8",
+            "acquiredBy": "task"
+          },
+          {
+            "id": "memory-23",
+            "agentId": "agent-16",
+            "eventId": "event-15",
+            "acquiredBy": "history-sync"
+          },
+          {
+            "id": "memory-27",
+            "agentId": "agent-14",
+            "eventId": "event-19",
+            "acquiredBy": "task"
+          },
+          {
+            "id": "memory-32",
+            "agentId": "agent-16",
+            "eventId": "event-24",
+            "acquiredBy": "task"
+          },
+          {
+            "id": "memory-35",
+            "agentId": "agent-16",
+            "eventId": "event-28",
+            "acquiredBy": "task"
+          },
+          {
+            "id": "memory-36",
+            "agentId": "agent-16",
+            "eventId": "event-29",
+            "acquiredBy": "child-result"
+          },
+          {
+            "id": "memory-37",
+            "agentId": "agent-16",
+            "eventId": "event-30",
+            "acquiredBy": "task"
+          },
+          {
+            "id": "memory-38",
+            "agentId": "agent-14",
+            "eventId": "event-32",
+            "acquiredBy": "task"
+          },
+          {
+            "id": "memory-39",
+            "agentId": "agent-14",
+            "eventId": "event-34",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-40",
+            "agentId": "agent-16",
+            "eventId": "event-34",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-41",
+            "agentId": "agent-18",
+            "eventId": "event-34",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-42",
+            "agentId": "agent-14",
+            "eventId": "event-35",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-43",
+            "agentId": "agent-16",
+            "eventId": "event-35",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-44",
+            "agentId": "agent-18",
+            "eventId": "event-35",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-45",
+            "agentId": "agent-14",
+            "eventId": "event-36",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-46",
+            "agentId": "agent-16",
+            "eventId": "event-36",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-47",
+            "agentId": "agent-18",
+            "eventId": "event-36",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-48",
+            "agentId": "agent-14",
+            "eventId": "event-37",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-49",
+            "agentId": "agent-16",
+            "eventId": "event-37",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-50",
+            "agentId": "agent-18",
+            "eventId": "event-37",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-51",
+            "agentId": "agent-14",
+            "eventId": "event-38",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-52",
+            "agentId": "agent-16",
+            "eventId": "event-38",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-53",
+            "agentId": "agent-18",
+            "eventId": "event-38",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-54",
+            "agentId": "agent-14",
+            "eventId": "event-39",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-55",
+            "agentId": "agent-16",
+            "eventId": "event-39",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-56",
+            "agentId": "agent-18",
+            "eventId": "event-39",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-57",
+            "agentId": "agent-14",
+            "eventId": "event-41",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-58",
+            "agentId": "agent-16",
+            "eventId": "event-41",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-59",
+            "agentId": "agent-18",
+            "eventId": "event-41",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-62",
+            "agentId": "agent-14",
+            "eventId": "event-44",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-63",
+            "agentId": "agent-14",
+            "eventId": "event-45",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-64",
+            "agentId": "agent-14",
+            "eventId": "event-46",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-65",
+            "agentId": "agent-14",
+            "eventId": "event-47",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-68",
+            "agentId": "agent-14",
+            "eventId": "event-48",
+            "acquiredBy": "task"
+          },
+          {
+            "id": "memory-72",
+            "agentId": "agent-14",
+            "eventId": "event-51",
+            "acquiredBy": "task"
+          },
+          {
+            "id": "memory-74",
+            "agentId": "agent-14",
+            "eventId": "event-55",
+            "acquiredBy": "task"
+          },
+          {
+            "id": "memory-78",
+            "agentId": "agent-14",
+            "eventId": "event-61",
+            "acquiredBy": "room-membership"
+          },
+          {
+            "id": "memory-79",
+            "agentId": "agent-14",
+            "eventId": "event-62",
+            "acquiredBy": "room-membership"
+          }
+        ],
+        "tasks": {
+          "task-7": {
+            "id": "task-7",
+            "rootTaskId": "task-7",
+            "title": "PROFILE_TASK_TOOLS_REQUEST",
+            "status": "completed"
+          },
+          "task-25": {
+            "id": "task-25",
+            "rootTaskId": "task-25",
+            "title": "V020_ROOT V020_DELEGATE",
+            "status": "completed"
+          },
+          "task-30": {
+            "id": "task-30",
+            "rootTaskId": "task-25",
+            "title": "V020_CHILD",
+            "status": "completed"
+          },
+          "task-66": {
+            "id": "task-66",
+            "rootTaskId": "task-66",
+            "title": "V020_HOLD",
+            "status": "cancelled"
+          },
+          "task-70": {
+            "id": "task-70",
+            "rootTaskId": "task-70",
+            "title": "V020_QUEUED",
+            "status": "completed"
+          }
+        },
+        "taskAssignments": {
+          "task-assignment-8": {
+            "id": "task-assignment-8",
+            "taskId": "task-7",
+            "rootTaskId": "task-7",
+            "assigneeAgentId": "agent-3"
+          },
+          "task-assignment-26": {
+            "id": "task-assignment-26",
+            "taskId": "task-25",
+            "rootTaskId": "task-25",
+            "assigneeAgentId": "agent-14"
+          },
+          "task-assignment-31": {
+            "id": "task-assignment-31",
+            "taskId": "task-30",
+            "rootTaskId": "task-25",
+            "assigneeAgentId": "agent-16",
+            "grantId": "delegation-grant-29"
+          },
+          "task-assignment-67": {
+            "id": "task-assignment-67",
+            "taskId": "task-66",
+            "rootTaskId": "task-66",
+            "assigneeAgentId": "agent-14"
+          },
+          "task-assignment-71": {
+            "id": "task-assignment-71",
+            "taskId": "task-70",
+            "rootTaskId": "task-70",
+            "assigneeAgentId": "agent-14"
+          }
+        },
+        "delegationGrants": {
+          "delegation-grant-29": {
+            "id": "delegation-grant-29",
+            "rootTaskId": "task-25",
+            "granteeAgentId": "agent-14",
+            "grantedByHumanId": "web-user",
+            "status": "expired"
+          }
+        },
+        "childRuns": {
+          "child-run-34": {
+            "id": "child-run-34",
+            "parentAgentId": "agent-16",
+            "taskId": "task-30",
+            "status": "completed",
+            "result": "V020_CHILD_RESULT"
+          }
+        },
+        "sessionBindings": {
+          "agent-3": "5af34abd-1e1d-4d02-8bbb-c8618f33ff03",
+          "agent-14": "72f2a3f2-5f6f-4be0-92bc-16d3ab983ba8",
+          "agent-16": "249359b9-41da-4fe7-8434-04524aae6b96",
+          "agent-18": "58a0cbd8-520c-4a0a-b4c3-8175ea0159a1"
+        }
+      }
+    }
+  }
+}

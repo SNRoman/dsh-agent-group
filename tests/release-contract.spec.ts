@@ -27,6 +27,28 @@ const dshRange = '>=0.1.1-rc.2 <0.1.2-0'
 const CONCURRENT_LANE_TEST_TIMEOUT_MS = 15_000
 
 describe('public release contract', () => {
+  it('aligns the v0.2.0 candidate and exposes only the forward export surface', () => {
+    const manifests = packages.map(path => readJson(path))
+    const compatibility = readJson('compatibility.json')
+    expect(manifests.map(manifest => manifest.version)).toEqual(['0.2.0', '0.2.0', '0.2.0'])
+    expect(compatibility.candidatePluginVersion).toBe('0.2.0')
+    expect(readText('packages/host/src/forward-export.ts')).toContain("AGENT_WORKSPACE_PLUGIN_VERSION = '0.2.0'")
+
+    const root = readJson('package.json')
+    expect(root.scripts['export:forward-v1']).toBe('node scripts/export-forward-v1.mjs')
+    expect(existsSync(new URL('../scripts/export-forward-v1.mjs', import.meta.url))).toBe(true)
+    expect(existsSync(new URL('../tests/fixtures/v0.2.0/agent-workspace.json', import.meta.url))).toBe(true)
+    expect(existsSync(new URL('../tests/fixtures/v0.2.0/portable-workspace-v1.json', import.meta.url))).toBe(true)
+
+    const publicSources = [
+      readText('packages/host/src/forward-export.ts'),
+      readText('packages/host/src/index.ts'),
+      readText('packages/web/src/client/api.ts'),
+    ].join('\n')
+    expect(publicSources).not.toMatch(/workspace\/import|importForwardWorkspace|importWorkspace/)
+    expect(readText('packages/web/src/client/WorkspaceUi.tsx')).not.toMatch(/backup|export workspace|import workspace/i)
+  })
+
   it('ships an MIT license and public installation instructions', () => {
     expect(existsSync(new URL('../LICENSE', import.meta.url))).toBe(true)
     expect(readText('LICENSE')).toContain('MIT License')
