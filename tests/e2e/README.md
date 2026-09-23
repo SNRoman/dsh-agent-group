@@ -1,6 +1,6 @@
 # Assembled Browser workflow
 
-`pnpm test:e2e:browser -- --dsh <checkout>` is the single local and CI entry for the packed Agent Workspace Browser scenario. `DSH_SOURCE=<checkout> pnpm test:e2e:browser` supplies the same checkout through the environment. The checkout must be the supported DeepSeek Harness commit `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` (`0.1.1-rc.2`).
+`pnpm test:e2e:browser -- --dsh <checkout>` is the single local and CI entry for the packed Agent Workspace Browser scenario. `DSH_SOURCE=<checkout> pnpm test:e2e:browser` supplies the same checkout through the environment. The checkout must be the supported DeepSeek Harness commit `00102833dfaee1da9f48a3a8eae9d34005a75218` (`0.1.7-alpha.2`).
 
 Use Node.js 24 and pnpm 11.7.0, then install repository dependencies and Chromium with `pnpm install --frozen-lockfile` and `pnpm exec playwright install chromium`. The command rebuilds, tests, and packs all three local packages before installing only those tarballs into a clean temporary Web profile. It uses a deterministic local scripted provider and makes no model or credential-bearing network request.
 

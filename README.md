@@ -19,13 +19,20 @@ A persistent multi-agent workspace for [DeepSeek Harness](https://github.com/dee
 
 ## Requirements
 
-- DeepSeek Harness on the `0.1.1` release line, starting at `0.1.1-rc.2`.
+- DeepSeek Harness on the `0.1.7` prerelease line, starting at `0.1.7-alpha.2`.
 - Node.js `^22.19.0` or `>=24.0.0`.
 - `pnpm` available on `PATH`. The official `dsh plugin` command delegates profile package management to pnpm.
 
-DeepSeek Harness compatibility: >=0.1.1-rc.2 <0.1.2-0; registry development: 0.1.1-rc.2; verified source: 0.1.1-rc.2 (b150a551b8d465e31e418e1b2eaf5e79bbb7d28e).
+DeepSeek Harness compatibility: >=0.1.7-alpha.2 <0.1.8-0; registry development: 0.1.7-alpha.2; verified source: 0.1.7-alpha.2 (00102833dfaee1da9f48a3a8eae9d34005a75218).
 
-The current package manifests intentionally stop before the `0.1.2` prerelease line. Upgrade the plugin only after that Harness line has been verified.
+### Compatibility matrix
+
+| Plugin line | Supported DeepSeek Harness | Verified point |
+|---|---|---|
+| `0.2.x` | `>=0.1.1-rc.2 <0.1.2-0` | `0.1.1-rc.2` (`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`) |
+| `0.3.x` | `>=0.1.7-alpha.2 <0.1.8-0` | `0.1.7-alpha.2` (`00102833dfaee1da9f48a3a8eae9d34005a75218`) |
+
+Install `0.2.x` when the Harness deployment remains on the `0.1.1` line. The current `0.3.x` package intentionally targets the newer client module system and does not include a dual-runtime compatibility layer.
 
 ## Install
 
@@ -81,7 +88,7 @@ Runtime activity is intentionally ephemeral. The durable task attempt and result
 
 ## Forward export
 
-v0.2.0 freezes portable format `dsh-agent-workspace` version `1` for the future v0.3 compatibility matrix. Build the Host package, then export an explicit storage-domain document:
+v0.2.0 introduced portable format `dsh-agent-workspace` version `1`; v0.3.0 preserves that read-only exporter. Build the Host package, then export an explicit storage-domain document:
 
 ```sh
 pnpm build:host
@@ -116,7 +123,7 @@ Before publishing, run the packed release gate:
 ```sh
 pnpm exec playwright install chromium
 pnpm release:pack
-pnpm smoke:packed -- --dsh <absolute-path-to-deepseek-harness-0.1.1-rc.2>
+pnpm smoke:packed -- --dsh <absolute-path-to-deepseek-harness-0.1.7-alpha.2>
 ```
 
 The Playwright command installs the Chromium runtime used by the smoke. `release:pack` runs build, typecheck, tests, packs the three npm artifacts in dependency order into `release/`, clears any earlier smoke receipt, and records their hashes together with the deterministic build-input hash. `smoke:packed` rejects stale or changed artifacts, verifies the named Harness checkout, builds its host and Browser artifacts, installs only those packed plugin artifacts into a new Web profile, starts it through `pnpm dsh --profile web`, and runs `tests/e2e/workspace-browser.mjs` against the assembled UI. A successful full smoke writes a receipt bound to the source hash, the Browser smoke driver and fixtures, all three tarball hashes, and the verified DSH commit. `release:publish` requires that receipt and publishes those exact tarballs instead of repacking the workspaces.
@@ -124,13 +131,13 @@ The Playwright command installs the Chromium runtime used by the smoke. `release
 After all three packages are published, verify the exact immutable registry version:
 
 ```sh
-pnpm smoke:registry -- --version 0.2.0 --dsh <absolute-path-to-deepseek-harness-0.1.1-rc.2>
+pnpm smoke:registry -- --version 0.3.0 --dsh <absolute-path-to-deepseek-harness-0.1.7-alpha.2>
 ```
 
 Before publishing a candidate, maintainers may prove registry-only installation and startup mechanics against the existing public version without applying newer Browser assertions:
 
 ```sh
-pnpm smoke:registry -- --version 0.1.0 --installation-only --dsh <absolute-path-to-deepseek-harness-0.1.1-rc.2>
+pnpm smoke:registry -- --version 0.2.0 --installation-only --dsh <absolute-path-to-deepseek-harness-0.1.1-rc.2>
 ```
 
 Publishing is intentionally ordered so the bundle never references packages that do not exist yet:
@@ -153,7 +160,7 @@ pnpm release:publish -- --tag next
 
 The `Release smoke` GitHub Actions workflow runs the packed command above and retains assembled configuration, Host logs, ARIA milestones, console diagnostics, and the final durable aggregate. The manual `Registry smoke` workflow waits with bounded retries for all three exact package manifests, then runs the same installation, startup, and Browser scenario from registry specifications only.
 
-See the [v0.2.0 release notes](docs/releases/v0.2.0.md) for the complete product closure, verified compatibility point, forward-export handoff, and publication checkpoint. The earlier [v0.1.1 release notes](docs/releases/v0.1.1.md) remain available for the stabilization release.
+See the [v0.3.0 release notes](docs/releases/v0.3.0.md) for the current DSH compatibility migration. The [v0.2.0 release notes](docs/releases/v0.2.0.md) remain the product-closure record for the older Harness line, and the earlier [v0.1.1 release notes](docs/releases/v0.1.1.md) remain available for the stabilization release.
 
 ## Known limitations
 

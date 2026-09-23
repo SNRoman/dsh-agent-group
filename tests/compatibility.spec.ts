@@ -8,8 +8,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { pnpmInvocation, prepareSourceCompatibility, sanitizeChildEnvironment } from '../scripts/source-compatibility.mjs'
 
 const execFile = promisify(execFileCallback)
-const peerRange = '>=0.1.1-rc.2 <0.1.2-0'
-const developmentVersion = '0.1.1-rc.2'
+const peerRange = '>=0.1.7-alpha.2 <0.1.8-0'
+const developmentVersion = '0.1.7-alpha.2'
 const PROCESS_TEST_TIMEOUT_MS = 30_000
 const temporaryDirectories: string[] = []
 const verifyCompatibilityScript = fileURLToPath(new URL('../scripts/verify-compatibility.mjs', import.meta.url))
@@ -86,7 +86,7 @@ async function createDshFixture(
 function declaration(commit: string): Compatibility {
   return {
     schemaVersion: 1,
-    candidatePluginVersion: '0.2.0',
+    candidatePluginVersion: '0.3.0',
     forwardExport: { format: 'dsh-agent-workspace', formatVersion: 1 },
     peerRange,
     registryDevelopmentVersion: developmentVersion,
@@ -121,7 +121,7 @@ describe('compatibility declaration', { timeout: PROCESS_TEST_TIMEOUT_MS }, () =
     await expect(execFile(process.execPath, [verifyCompatibilityScript], { cwd: plugin, encoding: 'utf8' }))
       .rejects.toMatchObject({
         stderr: expect.stringContaining(
-          'packages/web/package.json: @deepseek-ai/dsh-agent expected >=0.1.1-rc.2 <0.1.2-0, actual ^0.1.1',
+          'packages/web/package.json: @deepseek-ai/dsh-agent expected >=0.1.7-alpha.2 <0.1.8-0, actual ^0.1.1',
         ),
       })
   })
@@ -145,16 +145,16 @@ describe('compatibility declaration', { timeout: PROCESS_TEST_TIMEOUT_MS }, () =
     const plugin = await createPluginFixture(compatibility)
 
     await expect(prepareSourceCompatibility({ pluginDirectory: plugin, dshDirectory: dsh.root }))
-      .rejects.toThrow('required DSH package manifest: @deepseek-ai/dsh-agent expected 0.1.1-rc.2, actual missing')
+      .rejects.toThrow('required DSH package manifest: @deepseek-ai/dsh-agent expected 0.1.7-alpha.2, actual missing')
   })
 
   it('rejects an unsupported source version and commit', async () => {
-    const dsh = await createDshFixture('0.1.1-rc.1')
+    const dsh = await createDshFixture('0.1.7-alpha.1')
     const compatibility = declaration('0000000000000000000000000000000000000000')
     const plugin = await createPluginFixture(compatibility)
 
     await expect(prepareSourceCompatibility({ pluginDirectory: plugin, dshDirectory: dsh.root }))
-      .rejects.toThrow('package.json: deepseek-harness expected 0.1.1-rc.2, actual 0.1.1-rc.1')
+      .rejects.toThrow('package.json: deepseek-harness expected 0.1.7-alpha.2, actual 0.1.7-alpha.1')
 
     await writeJson(join(dsh.root, 'package.json'), { name: 'deepseek-harness', version: developmentVersion })
     await expect(prepareSourceCompatibility({ pluginDirectory: plugin, dshDirectory: dsh.root }))
