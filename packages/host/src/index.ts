@@ -917,9 +917,7 @@ export class AgentWorkspaceDomainService extends Service {
       ...(mode === 'create'
         ? { meta: { cwd: process.cwd(), ...(createPresetId === undefined ? {} : { agentPreset: createPresetId }) } }
         : {}),
-      setup: async (agentCtx) => {
-        const scopedAgent = agentCtx.agent
-        if (scopedAgent === undefined) throw new Error(`agent '${agentId}' setup has no scoped DSH agent`)
+      setup: async (agentCtx, scopedAgent) => {
         let picked: ModelSelection | undefined
         const selectionRef: ModelSelectionRef = {
           get current(): ModelSelection {

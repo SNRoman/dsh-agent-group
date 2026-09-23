@@ -298,8 +298,8 @@ export class EmployeeAgentPool {
     const setup = options?.setup
     const revisionId = options?.roleRevisionId
     if (revisionId === undefined || this.roleInstaller === undefined) return setup
-    return async (agentCtx): Promise<AgentSetupCommit | void> => {
-      const commit = await setup?.(agentCtx)
+    return async (agentCtx, agent): Promise<AgentSetupCommit | void> => {
+      const commit = await setup?.(agentCtx, agent)
       const dispose = this.roleInstaller!(agentId, revisionId, agentCtx)
       this.roles.set(agentId, { revisionId, dispose })
       return commit
@@ -308,10 +308,8 @@ export class EmployeeAgentPool {
 
   private resumeSetup(agentId: AgentId, setup: AgentSetup | undefined): AgentSetup | undefined {
     if (this.recover === undefined) return setup
-    return async (agentCtx): Promise<AgentSetupCommit | void> => {
-      const commit = await setup?.(agentCtx)
-      const agent = agentCtx.agent
-      if (agent === undefined) throw new Error(`agent '${agentId}' resume setup has no scoped DSH agent`)
+    return async (agentCtx, agent): Promise<AgentSetupCommit | void> => {
+      const commit = await setup?.(agentCtx, agent)
       await this.recover?.(agentId, agent)
       return commit
     }

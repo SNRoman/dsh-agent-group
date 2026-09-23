@@ -7,8 +7,8 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { ContentBlock, MessageId, UserMessage } from '@deepseek-ai/dsh-llm'
+import type { Agent, AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
+import type { ContentBlock, LlmAttemptId, MessageId, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, SessionId, TurnEndReason } from '@deepseek-ai/dsh-session'
 import type { AgentId, DefinitionRevisionId, WorkspaceActivityId } from './ids.ts'
 import type { WorkspaceActivityIdentity, WorkspaceActivitySource, WorkspaceActivityStream } from './activity-stream.ts'
@@ -71,6 +71,7 @@ interface PreStepEnter {
 export class WorkspaceTurnTracker {
   private readonly byMessage = new Map<MessageId, PendingDelivery>()
   private readonly byTurn = new Map<number, PendingDelivery>()
+  private readonly byAttempt = new Map<LlmAttemptId, PendingDelivery>()
 
   constructor(private readonly options?: WorkspaceTurnTrackerOptions) {}
 
@@ -141,6 +142,19 @@ export class WorkspaceTurnTracker {
       }
     }) as never)
 
+    events.on('agent/assistant-stream', ((payload: { frame: AssistantStreamFrame }) => {
+      const { frame } = payload
+      if (frame.type === 'start') {
+        const pending = this.byTurn.get(frame.turn)
+        if (pending !== undefined) this.byAttempt.set(frame.attemptId, pending)
+        return
+      }
+      const pending = this.byAttempt.get(frame.attemptId)
+      if (frame.type === 'end') this.byAttempt.delete(frame.attemptId)
+      if (pending?.activity === undefined || this.options === undefined) return
+      this.options.stream.acceptAssistantFrame({ ...pending.activity, frame })
+    }) as never)
+
     events.on('session/event', ((_session: unknown, event: SessionEvent) => {
       const turn = 'turn' in event.data && typeof event.data.turn === 'number'
         ? event.data.turn
@@ -152,7 +166,7 @@ export class WorkspaceTurnTracker {
       if (event.type === 'assistant/message') {
         const content = event.data.message.content
         if (content.length > 0) {
-          pending.output = content
+          pending.output = [...content]
           pending.interrupted = event.data.interrupted === true
         }
       }
@@ -298,5 +312,8 @@ export class WorkspaceTurnTracker {
   private removePending(pending: PendingDelivery): void {
     this.byMessage.delete(pending.messageId)
     if (pending.turn !== undefined) this.byTurn.delete(pending.turn)
+    for (const [attemptId, candidate] of this.byAttempt) {
+      if (candidate === pending) this.byAttempt.delete(attemptId)
+    }
   }
 }

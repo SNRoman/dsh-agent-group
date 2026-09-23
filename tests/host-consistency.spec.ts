@@ -518,12 +518,12 @@ describe('durable service boundary', () => {
     const dispose = vi.fn(async () => {})
     const resumedAgent = {
       id: SessionId('resumed-employee'),
-      inbox: { nextTurn: [], nextStep: [], hasPending: false },
-      session: { events: [] },
+      inbox: { nextTurn: [], nextStep: [] },
+      session: { snapshotEvents: () => [] },
     } as unknown as Agent
     const resumedHandle = { agent: resumedAgent, dispose }
     const resume = vi.fn(async (options: { setup?: (ctx: Context) => Promise<unknown> }) => {
-      await options.setup?.({ agent: resumedAgent } as unknown as Context)
+      await options.setup?.({} as Context, resumedAgent)
       return resumedHandle
     })
     const source: EmployeeSessionSource = {
@@ -636,8 +636,8 @@ describe('durable service boundary', () => {
     const recovery = coordinator.recoverAgent(agentId, {
       agent: {
         id: SessionId('already-resuming'),
-        inbox: { nextTurn: [], nextStep: [], hasPending: false },
-        session: { events: [] },
+        inbox: { nextTurn: [], nextStep: [] },
+        session: { snapshotEvents: () => [] },
       } as unknown as Agent,
     })
     await recoveryPaused.promise

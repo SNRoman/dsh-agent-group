@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
-import { CallId, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, LlmAttemptId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import Storage from '@deepseek-ai/dsh-storage'
 import { apply as domainApply, Config as DomainConfig, inject as domainInject } from '@deepseek-ai/dsh-storage-domain'
@@ -192,7 +192,7 @@ describe('EmployeeAgentPool', () => {
     const pool = new EmployeeAgentPool(
       {
         create: vi.fn(async options => {
-          await options.setup?.(agentCtx)
+          await options.setup?.(agentCtx, agent)
           return stable
         }),
         resume: vi.fn(),
@@ -272,7 +272,7 @@ describe('EmployeeAgentPool', () => {
       const pool = new EmployeeAgentPool(
         {
           create: vi.fn(async options => {
-            await options.setup?.(agentCtx)
+            await options.setup?.(agentCtx, handle.agent)
             return created
           }),
           resume: vi.fn(),
@@ -487,7 +487,7 @@ describe('EmployeeAgentPool', () => {
     const pool = new EmployeeAgentPool(
       {
         create: vi.fn(async options => {
-          await options.setup?.(agentCtx)
+          await options.setup?.(agentCtx, handle.agent)
           return stableHandle
         }),
         resume: vi.fn(),
@@ -561,7 +561,7 @@ describe('EmployeeAgentPool', () => {
     const pool = new EmployeeAgentPool(
       {
         create: vi.fn(async options => {
-          await options.setup?.(agentCtx)
+          await options.setup?.(agentCtx, handle.agent)
           return { agent, dispose: vi.fn(async () => {}) }
         }),
         resume: vi.fn(),
@@ -601,7 +601,7 @@ describe('EmployeeAgentPool', () => {
     const pool = new EmployeeAgentPool(
       {
         create: vi.fn(async options => {
-          await options.setup?.(agentCtx)
+          await options.setup?.(agentCtx, handle.agent)
           return { agent, dispose: vi.fn(async () => {}) }
         }),
         resume: vi.fn(),
@@ -705,7 +705,7 @@ describe('AgentWorkspaceDomainService task-tool lifecycle', () => {
 
       const schemas = ctx.tools.schemas(employee)
       const execution = await ctx.tools.execute({
-        callId: CallId('employee-complete-call'),
+        callId: ToolCallId('employee-complete-call'),
         name: 'workspace_complete_task',
         arguments: { taskId: assigned.taskId, result: 'REAL_TOOL_RESULT' },
         agent: employee,
@@ -784,6 +784,28 @@ describe('WorkspaceTurnTracker', () => {
       stopReason: { kind: 'completed' },
       interrupted: false,
     })
+  })
+
+  test('projects the current live assistant stream before its durable settlement', () => {
+    const events = fakeEvents()
+    const stream = new WorkspaceActivityStream()
+    const tracker = new WorkspaceTurnTracker({
+      agentId: AgentId('alice'),
+      sessionId: SessionId('alice-session'),
+      stream,
+    })
+    tracker.install(events as unknown as Context)
+    const delivery = text('stream this')
+    void tracker.deliver({ followup: vi.fn() } as unknown as Agent, delivery, undefined, { kind: 'room', roomId: RoomId('room-1') })
+    events.emit('agent/inbox/claimed', { message: delivery, turn: 4 })
+    const attemptId = LlmAttemptId('alice-session:1')
+    events.emit('agent/assistant-stream', { agent: {}, frame: { type: 'start', attemptId, revision: 1, turn: 4, step: 1 } })
+    events.emit('agent/assistant-stream', { agent: {}, frame: {
+      type: 'chunk', attemptId, revision: 2, index: 0, time: 1,
+      chunk: { type: 'text-delta', index: 0, text: 'live' },
+    } })
+
+    expect(stream.snapshot().activities[0]?.blocks).toEqual([{ kind: 'text', index: 0, text: 'live' }])
   })
 
   test('ignores assistant output from other turns', async () => {

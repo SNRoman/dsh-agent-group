@@ -5,11 +5,12 @@ import { basename, dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import {
   LlmAdapter,
-  CallId,
+  ToolCallId,
   type GenerateOptions,
   type LlmResolvedModelInfo,
   type StreamChunk,
-  type Message,
+  type ToolResultMessage,
+  type UserMessage,
 } from '@deepseek-ai/dsh-llm'
 
 const PROVIDER = 'deepseek-official'
@@ -40,8 +41,9 @@ function textOf(options: GenerateOptions): string {
 }
 
 /** Select the latest delivery, excluding recalled history and tool results. */
-export function currentRequest(options: GenerateOptions): Message {
-  const message = options.messages.findLast(message => message.role === 'user'
+export function currentRequest(options: GenerateOptions): UserMessage {
+  const message = options.messages.findLast((message): message is UserMessage => message.role === 'user'
+    && 'source' in message
     && (String(message.source.kind) === 'user' || String(message.source.kind) === 'agent-workspace-delivery'))
   if (message === undefined) throw new Error('scripted fixture requires a current request')
   return message
@@ -67,7 +69,7 @@ export function taskIdentity(options: GenerateOptions): { taskId: string; attemp
 export function protocolStep(options: GenerateOptions, calls: readonly string[]): number {
   const request = currentRequest(options)
   const results = options.messages.slice(options.messages.indexOf(request) + 1)
-    .flatMap(message => message.content).filter(block => block.type === 'tool-result')
+    .filter((message): message is ToolResultMessage => message.role === 'tool')
   for (const [index, result] of results.entries()) {
     if (result.toolCallId !== calls[index]) throw new Error('scripted task received an unexpected tool result')
   }
@@ -242,7 +244,7 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
       const step = protocolStep(options, ['v020-hold-tool', 'v020-hold-unreachable'])
       if (step === 0) {
         const bob = requiredWorkspaceItem(workspaceFixture().agents, 'Bob')
-        const tool = { id: CallId('v020-hold-tool'), name: 'workspace_delegate_task', arguments: JSON.stringify({ rootTaskId: identity.taskId, assigneeAgentId: bob.id, title: 'V020_HOLD_SAFE_FAILURE' }) }
+        const tool = { id: ToolCallId('v020-hold-tool'), name: 'workspace_delegate_task', arguments: JSON.stringify({ rootTaskId: identity.taskId, assigneeAgentId: bob.id, title: 'V020_HOLD_SAFE_FAILURE' }) }
         yield { type: 'block-start', index: 0, blockType: 'tool-call' }
         yield { type: 'tool-call-delta', index: 0, id: tool.id, name: tool.name, argumentsDelta: tool.arguments }
         yield { type: 'block-end', index: 0, block: { type: 'tool-call', ...tool } }
@@ -304,13 +306,13 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
     }
     const tool = isChild
       ? step === 0
-        ? { id: CallId('v020-child-run'), name: 'workspace_run_child', arguments: JSON.stringify({ taskId: task.id, prompt: V020_CHILD_EXECUTION }) }
-        : { id: CallId('v020-child-complete'), name: 'workspace_complete_task', arguments: JSON.stringify({ taskId: task.id, result: 'V020_CHILD_RESULT' }) }
+        ? { id: ToolCallId('v020-child-run'), name: 'workspace_run_child', arguments: JSON.stringify({ taskId: task.id, prompt: V020_CHILD_EXECUTION }) }
+        : { id: ToolCallId('v020-child-complete'), name: 'workspace_complete_task', arguments: JSON.stringify({ taskId: task.id, result: 'V020_CHILD_RESULT' }) }
       : step === 0
-        ? { id: CallId('v020-safe-failure'), name: 'workspace_delegate_task', arguments: JSON.stringify({ rootTaskId: root.id, assigneeAgentId: bob.id, title: V020_SAFE_FAILURE }) }
+        ? { id: ToolCallId('v020-safe-failure'), name: 'workspace_delegate_task', arguments: JSON.stringify({ rootTaskId: root.id, assigneeAgentId: bob.id, title: V020_SAFE_FAILURE }) }
         : step === 1
           ? await this.grantedDelegation(root.id, alice.id, bob.id, options.signal)
-          : { id: CallId('v020-root-complete'), name: 'workspace_complete_task', arguments: JSON.stringify({ taskId: root.id, result: 'V020_ROOT_RESULT' }) }
+          : { id: ToolCallId('v020-root-complete'), name: 'workspace_complete_task', arguments: JSON.stringify({ taskId: root.id, result: 'V020_ROOT_RESULT' }) }
     yield { type: 'block-start', index: 0, blockType: 'tool-call' }
     yield { type: 'tool-call-delta', index: 0, id: tool.id, name: tool.name, argumentsDelta: tool.arguments }
     yield { type: 'block-end', index: 0, block: { type: 'tool-call', ...tool } }
@@ -327,7 +329,7 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
       grant.rootTaskId === rootTaskId && grant.granteeAgentId === aliceId && grant.status === 'active'
     )), signal)
     if (requiredWorkspaceItem(state.agents, 'Bob').id !== bobId) throw new Error('the v0.2 Browser task fixture resolved an unstable peer identity')
-    return { id: CallId('v020-delegate'), name: 'workspace_delegate_task', arguments: JSON.stringify({ rootTaskId, assigneeAgentId: bobId, title: V020_CHILD }) }
+    return { id: ToolCallId('v020-delegate'), name: 'workspace_delegate_task', arguments: JSON.stringify({ rootTaskId, assigneeAgentId: bobId, title: V020_CHILD }) }
   }
 
   private async * taskToolResponse(options: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -344,7 +346,7 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
     const step = protocolStep(options, ['profile-policy-denial', 'profile-complete-task'])
     const tool = step === 0
       ? {
-          id: CallId('profile-policy-denial'),
+          id: ToolCallId('profile-policy-denial'),
           name: 'workspace_delegate_task',
           arguments: JSON.stringify({
             rootTaskId: fixture.taskId,
@@ -353,7 +355,7 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
           }),
         }
       : {
-          id: CallId('profile-complete-task'),
+          id: ToolCallId('profile-complete-task'),
           name: 'workspace_complete_task',
           arguments: JSON.stringify({ taskId: fixture.taskId, result: 'PROFILE_TASK_TOOL_RESULT' }),
         }

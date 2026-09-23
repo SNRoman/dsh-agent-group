@@ -590,7 +590,7 @@ function inspectAgentDelivery(handle: Pick<AgentHandle, 'agent'>, messageId: Mes
     .find(message => message.id === messageId)
   if (pending !== undefined) return { status: 'pending', message: pending }
 
-  const folded = foldDeliveryEvents(handle.agent.session.events, messageId)
+  const folded = foldDeliveryEvents(handle.agent.session.snapshotEvents(), messageId)
   if (folded.message === undefined || folded.turn === undefined || !folded.entered) return { status: 'interrupted' }
   if (folded.reason?.kind !== 'completed' || folded.interrupted || folded.output === undefined) {
     return { status: 'interrupted' }

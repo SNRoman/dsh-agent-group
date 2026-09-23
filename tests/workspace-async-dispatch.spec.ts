@@ -164,7 +164,7 @@ describe('non-blocking browser workspace dispatch', () => {
       {
         create: async () => handle,
         resume: async options => {
-          await options.setup?.({ agent: handle.agent } as Context)
+          await options.setup?.({} as Context, handle.agent)
           resumePublished = true
           return handle
         },

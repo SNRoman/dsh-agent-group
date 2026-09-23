@@ -1,6 +1,5 @@
 import { describe, expect, test, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
-import { Inbox } from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, TurnEndReason } from '@deepseek-ai/dsh-session'
@@ -39,8 +38,8 @@ function recoveredHandle(nextTurn: readonly UserMessage[], events: readonly Sess
   return {
     agent: {
       id: SessionId('session'),
-      inbox: { nextTurn, nextStep: [], hasPending: nextTurn.length > 0 },
-      session: { events },
+      inbox: { nextTurn, nextStep: [] },
+      session: { snapshotEvents: () => events },
     } as unknown as Agent,
     dispose: async () => {},
   }
@@ -357,7 +356,7 @@ describe('TaskDeliveryCoordinator', () => {
       {
         create: vi.fn(async () => { throw new Error('must resume the bound employee') }),
         resume: vi.fn(async options => {
-          await options.setup?.({ agent: resumed.agent } as unknown as Context)
+          await options.setup?.({} as Context, resumed.agent)
           return { ...resumed, dispose }
         }),
       },
@@ -584,12 +583,12 @@ describe('TaskDeliveryCoordinator', () => {
     expect(state.events.filter(event => event.type === 'task/delivery-accepted')).toHaveLength(1)
   })
 
-  test('recovery reads the real DSH Inbox projection and Session event log', async () => {
+  test('recovery reads the public Inbox state and real DSH Session event log', async () => {
     const built = startedTask()
     let state = built.state
     const session = Session.create(SessionId('persisted-session'))
-    const inbox = new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} })
-    inbox.append('next-turn', built.message)
+    const inbox = { nextTurn: [built.message], nextStep: [] }
+    session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [built.message] })
     const tracked = deferred<WorkspaceTurnOutcome>()
     const host: TaskDeliveryCoordinatorHost = {
       snapshot: () => structuredClone(state),
@@ -602,7 +601,7 @@ describe('TaskDeliveryCoordinator', () => {
     const agent = { id: session.id, inbox, session } as unknown as Agent
 
     expect(inbox.nextTurn).toEqual([built.message])
-    expect(session.events).toEqual([
+    expect(session.snapshotEvents()).toEqual([
       expect.objectContaining({
         type: 'agent/inbox/spliced',
         data: expect.objectContaining({ target: 'next-turn', inserted: [built.message] }),

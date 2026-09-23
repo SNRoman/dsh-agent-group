@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { CallId, createToolResultMessage, createUserMessage, type GenerateOptions, type LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import { createToolResultMessage, createUserMessage, ToolCallId, type GenerateOptions, type LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it } from 'vitest'
 import { apply, protocolStep, taskIdentity, waitForObservedStop } from './fixtures/browser/scripted-llm.ts'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -59,7 +59,7 @@ describe('Browser scripted request protocol', () => {
   })
   it('does not carry the previous task step into another request in the same session', () => {
     const previous = request('V020_ROOT V020_DELEGATE')
-    previous.messages.push(createToolResultMessage({ callId: CallId('v020-safe-failure'), content: [{ type: 'text', text: 'denied' }], isError: true }))
+    previous.messages.push(createToolResultMessage({ callId: ToolCallId('v020-safe-failure'), content: [{ type: 'text', text: 'denied' }], isError: true }))
     expect(protocolStep(previous, ['v020-safe-failure', 'v020-delegate'])).toBe(1)
     previous.messages.push(...request('V020_CHILD').messages)
     expect(protocolStep(previous, ['v020-child-run', 'v020-child-complete'])).toBe(0)
@@ -67,7 +67,7 @@ describe('Browser scripted request protocol', () => {
 
   it('rejects tool results from a different protocol and a completed protocol', () => {
     const options = request('V020_CHILD')
-    options.messages.push(createToolResultMessage({ callId: CallId('v020-child-run'), content: [], isError: false }))
+    options.messages.push(createToolResultMessage({ callId: ToolCallId('v020-child-run'), content: [], isError: false }))
     expect(() => protocolStep(options, ['v020-safe-failure', 'v020-delegate'])).toThrow('unexpected tool result')
     expect(() => protocolStep(options, ['v020-child-run'])).toThrow('already completed')
   })

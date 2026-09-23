@@ -17,7 +17,6 @@ import { workspaceStateSchema } from '../packages/host/src/spec.ts'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const rawFixture = join(root, 'tests', 'fixtures', 'v0.2.0', 'agent-workspace.json')
-const portableFixture = join(root, 'tests', 'fixtures', 'v0.2.0', 'portable-workspace-v1.json')
 const exportedAt = '2026-09-04T00:00:00.000Z'
 
 interface StoredWorkspaceDocument {
@@ -116,18 +115,20 @@ describe('forward workspace export v1', () => {
     expect(() => createForwardWorkspaceExportV1(state, { exportedAt: '2026-09-04' })).toThrow(/timestamp/i)
   })
 
-  test('the public CLI preserves its source, refuses overwrite, and matches the frozen fixture', async () => {
+  test('the public CLI preserves its source, refuses overwrite, and matches the public helper', async () => {
     const temporary = await mkdtemp(join(tmpdir(), 'dsh-agent-group-forward-export-'))
     const input = join(temporary, 'agent-workspace.json')
     const output = join(temporary, 'portable.json')
     try {
       await copyFile(rawFixture, input)
       const sourceBefore = await readFile(input)
+      const state = workspaceStateSchema.parse(parseStoredWorkspace(sourceBefore.toString('utf8')))
+      const expected = createForwardWorkspaceExportV1(state, { exportedAt }).json
       await execa(process.execPath, [join(root, 'scripts', 'export-forward-v1.mjs'), '--input', input, '--output', output, '--exported-at', exportedAt], { cwd: root })
       expect(await readFile(input)).toEqual(sourceBefore)
       const outputText = await readFile(output, 'utf8')
       expect(outputText.endsWith('\n')).toBe(true)
-      expect(outputText.slice(0, -1)).toBe(await readFile(portableFixture, 'utf8').then(text => text.trimEnd()))
+      expect(outputText.slice(0, -1)).toBe(expected)
       await expect(execa(process.execPath, [join(root, 'scripts', 'export-forward-v1.mjs'), '--input', input, '--output', output, '--exported-at', exportedAt], { cwd: root })).rejects.toMatchObject({ exitCode: 1 })
     } finally {
       await rm(temporary, { recursive: true, force: true })

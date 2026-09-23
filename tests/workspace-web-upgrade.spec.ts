@@ -51,7 +51,11 @@ async function realConnectionApi(): Promise<{
   const webRequire = createRequire(new URL('../packages/web/package.json', import.meta.url))
   const connectionNodePath = webRequire.resolve('@deepseek-ai/dsh-client-connection')
   const { HostConnectionService } = await import(connectionNodePath) as {
-    readonly HostConnectionService: new (ctx: Context, trustedHosts: readonly string[]) => {
+    readonly HostConnectionService: new (
+      ctx: Context,
+      trustedHosts: readonly string[],
+      browserAuth: { readonly isAuthenticated: () => boolean },
+    ) => {
       readonly rpc: {
         handle(
           channel: string,
@@ -63,7 +67,7 @@ async function realConnectionApi(): Promise<{
   }
   let hostConnection: InstanceType<typeof HostConnectionService> | undefined
   const fiber = hostContext.plugin((pluginContext) => {
-    hostConnection = new HostConnectionService(pluginContext, [])
+    hostConnection = new HostConnectionService(pluginContext, [], { isAuthenticated: () => true })
   })
   await fiber.await()
   cleanups.push(() => fiber.dispose())
@@ -133,8 +137,8 @@ async function realConnectionApi(): Promise<{
         configurable: true,
         value: {
           createApiClient: () => ({}),
-          fetch: async (input: URL, init: RequestInit) => {
-            const target = new URL(input.pathname + input.search, base)
+          fetch: async (input: string | URL, init: RequestInit) => {
+            const target = new URL(input, base)
             const response = await fetch(target, init)
             wireResponses.push(await response.clone().json())
             return response

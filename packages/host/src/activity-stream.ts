@@ -4,6 +4,7 @@
  * @module @dsh-agent-group/host/activity-stream
  */
 
+import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
 import type { MessageId } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { WorkspaceActivityId } from './ids.ts'
@@ -283,9 +284,6 @@ export class WorkspaceActivityStream {
 
     let changed = false
     switch (input.event.type) {
-      case 'assistant/chunk':
-        changed = this.acceptAssistantChunk(activity, data)
-        break
       case 'assistant/message':
         changed = this.acceptAssistantMessage(activity, data)
         break
@@ -303,6 +301,15 @@ export class WorkspaceActivityStream {
     }
     if (!changed) return
     this.retireSettledOverflow()
+    this.publish()
+  }
+
+  /** Fold one process-local assistant chunk into its claimed activity. */
+  acceptAssistantFrame(input: WorkspaceActivityIdentity & { readonly frame: AssistantStreamFrame }): void {
+    if (input.frame.type !== 'chunk') return
+    const activity = this.requireClaimed(input)
+    if (activity.status === 'settled') return
+    if (!this.acceptAssistantChunk(activity, { chunk: input.frame.chunk })) return
     this.publish()
   }
 

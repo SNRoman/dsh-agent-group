@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MessageId } from '@deepseek-ai/dsh-llm'
+import { LlmAttemptId, MessageId } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { AgentId, RoomId, TaskDeliveryAttemptId, TaskId } from '../packages/host/src/ids.ts'
@@ -92,9 +92,13 @@ describe('WorkspaceActivityStream', () => {
     const stream = new WorkspaceActivityStream()
     const identity = claimed(stream, MessageId('message-lifecycle'), 3)
 
-    stream.acceptSessionEvent({ ...identity, event: event('assistant/chunk', {
-      turn: 3, step: 1, chunk: { type: 'text-delta', index: 0, text: '你好' },
-    }, 1) })
+    stream.acceptAssistantFrame({
+      ...identity,
+      frame: {
+        type: 'chunk', attemptId: LlmAttemptId('attempt-1'), revision: 2, index: 0, time: 1,
+        chunk: { type: 'text-delta', index: 0, text: '你好' },
+      },
+    })
     stream.acceptSessionEvent({ ...identity, event: event('tool/call', {
       turn: 3, step: 1, callId: 'call-1', name: 'read_file', arguments: '{"path":"a.md"}',
     }, 2) })
