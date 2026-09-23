@@ -606,7 +606,7 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
                   <div className="dsh-agent-group-message-body">
                     <div className="dsh-agent-group-message-meta"><strong>{name}</strong><span>#{event.sequence}</span></div>
                     <div className="dsh-agent-group-message-text">
-                      {event.actor?.type === 'agent' ? <WorkspaceMarkdownMessage text={text} /> : text}
+                      {event.actor?.type === 'agent' ? <WorkspaceMarkdownMessage text={text} t={props.t} /> : text}
                     </div>
                   </div>
                 </article>

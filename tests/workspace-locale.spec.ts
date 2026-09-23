@@ -6,7 +6,7 @@ import { WorkspaceApiError } from '../packages/web/src/client/api.ts'
 import type { WorkspaceTurnProjection } from '../packages/web/src/client/contracts.ts'
 import { apply, inject } from '../packages/web/src/client/index.ts'
 import { WorkspaceFooterAction, WorkspaceOverlay } from '../packages/web/src/client/WorkspaceUi.tsx'
-import { WorkspaceLiveTurn } from '../packages/web/src/client/WorkspaceTurn.tsx'
+import { WorkspaceLiveTurn, WorkspaceMarkdownMessage } from '../packages/web/src/client/WorkspaceTurn.tsx'
 import { WorkspaceTasks } from '../packages/web/src/client/WorkspaceTasks.tsx'
 import { WorkspaceMemory } from '../packages/web/src/client/WorkspaceMemory.tsx'
 import { WorkspaceDefinitionHistory } from '../packages/web/src/client/WorkspaceDefinitionHistory.tsx'
@@ -24,9 +24,10 @@ const browserRuntime = vi.hoisted(() => {
       __ModuleLoader__: {
         load(module: { readonly factory: (require: (id: string) => unknown) => Record<string, unknown> }) {
           const bundle = module as { readonly id?: string; readonly factory: (require: (id: string) => unknown) => Record<string, unknown> }
-          if (bundle.id === '@deepseek-ai/dsh-client-runtime') return
           if (bundle.id === '@deepseek-ai/dsh-client-locale') {
-            Object.assign(publishedLocale, bundle.factory(() => ({})))
+            Object.assign(publishedLocale, bundle.factory(id => id === '@deepseek-ai/dsh-client-store'
+              ? { defineStore: (definition: unknown) => ({ definition }) }
+              : {}))
             return
           }
           throw new Error(`unexpected client bundle: ${bundle.id ?? 'unknown'}`)
@@ -61,7 +62,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   MarkdownText: ({ text }: { readonly text: string }) => text,
 }))
 
-vi.mock('@deepseek-ai/dsh-client-runtime/client', () => ({
+vi.mock('@deepseek-ai/dsh-client-store', () => ({
   defineStore: (definition: { readonly init: () => unknown }) => ({ definition }),
 }))
 
@@ -169,6 +170,19 @@ const liveTurn: WorkspaceTurnProjection = {
 }
 
 describe('Agent Workspace locale runtime', () => {
+  it.each([
+    ['zh', { code: { copyLabel: '复制', copiedLabel: '已复制' }, footnotes: '脚注' }],
+    ['en', { code: { copyLabel: 'Copy', copiedLabel: 'Copied' }, footnotes: 'Footnotes' }],
+  ] as const)('supplies current Markdown chrome labels in %s', (localeId, expected) => {
+    const locale = new LocaleRuntime(new Context())
+    locale.setLocale(localeId)
+    const registered = registerPlugin(locale)
+    const t = locale.bind('agentWorkspace' as never)
+    const markdown = WorkspaceMarkdownMessage({ text: 'hello', t } as never)
+    expect(markdown.props.labels).toEqual(expected)
+    registered.dispose()
+  })
+
   it.each([
     ['zh', ['智能体工作区', '打开智能体工作区', '会话', '同事', '任务', '记忆', '打开运行状态', '正在读取智能体工作区…', '正在回复…', '正在思考…', '工作区请求失败。']],
     ['en', ['Agent Workspace', 'Open Agent Workspace', 'Conversations', 'Colleagues', 'Tasks', 'Memory', 'Open runtime activity', 'Loading Agent Workspace…', 'Replying…', 'Thinking…', 'Workspace request failed.']],

@@ -11,4 +11,6 @@ Baseline: `pnpm build` passed on v0.2.0. Full `pnpm test` passed 767/768 and tim
 
 Task 1: complete. RED: the focused compatibility/release-contract run failed on the old candidate version, peer range, source point, and missing `v0.3.0` note. GREEN: `pnpm verify:compatibility` passed and `pnpm vitest run tests/compatibility.spec.ts tests/release-contract.spec.ts` passed 30 tests after updating all current CI/smoke source refs, manifests, lockfile, documentation, and producer metadata.
 
-Task 2: in progress
+Task 2: complete. RED: the built bundle requested `@deepseek-ai/dsh-client-runtime/client` and the new compatibility test did not observe `@deepseek-ai/dsh-client-store`; the latest Web build also rejected missing slots type augmentation and required Markdown labels. GREEN: `pnpm build:web` passed, the built artifact requests `@deepseek-ai/dsh-client-store`, and five focused Browser suites passed 93 tests. The migration imports Cordis `Context`, the renderer service merge, current store APIs, and locale-owned Markdown chrome labels.
+
+Task 3: in progress

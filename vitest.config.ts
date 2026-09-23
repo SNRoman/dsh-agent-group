@@ -24,7 +24,7 @@ export default defineConfig({
       {
         resolve: {
           alias: {
-            '@deepseek-ai/dsh-client-runtime/client': fileURLToPath(new URL('./tests/fixtures/client-runtime.ts', import.meta.url)),
+            '@deepseek-ai/dsh-client-store': fileURLToPath(new URL('./tests/fixtures/client-store.ts', import.meta.url)),
             '@deepseek-ai/dsh-client-ui-primitives': fileURLToPath(new URL('./tests/fixtures/client-ui-primitives.ts', import.meta.url)),
           },
         },
@@ -36,7 +36,7 @@ export default defineConfig({
       {
         resolve: {
           alias: {
-            '@deepseek-ai/dsh-client-runtime/client': fileURLToPath(new URL('./tests/fixtures/client-runtime.ts', import.meta.url)),
+            '@deepseek-ai/dsh-client-store': fileURLToPath(new URL('./tests/fixtures/client-store.ts', import.meta.url)),
             '@deepseek-ai/dsh-client-ui-primitives': fileURLToPath(new URL('./tests/fixtures/client-ui-primitives.ts', import.meta.url)),
           },
         },

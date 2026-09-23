@@ -1,9 +1,10 @@
 /** Browser entry for the additive Agent Workspace UI. */
 
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context } from '@deepseek-ai/cordis'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import { WorkspaceApiClient } from './api.ts'
 import { createWorkspaceUiStore } from './store.ts'
@@ -19,7 +20,7 @@ export const inject = ['slots', 'connection', 'locale']
  * `sidebar`, `conversation`, or `details` single slots, so the existing DSH UI
  * keeps its render authority and unload restores the page exactly.
  */
-export function apply(ctx: ClientContext): void {
+export function apply(ctx: Context): void {
   const store = createWorkspaceUiStore()
   const connection = ctx.get('connection') as ConnectionHandle
   const api = new WorkspaceApiClient(connection)

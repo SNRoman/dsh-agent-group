@@ -1,6 +1,6 @@
 /** Shared root-scoped UI state for the footer entry and workspace overlay. */
 
-import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-runtime/client'
+import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-store'
 import type { WorkspaceApiError } from './api.ts'
 import type { AgentDefinitionId, RoomId, WorkspaceActivityId, WorkspaceSnapshot } from './contracts.ts'
 import { selectNewerWorkspaceSnapshot } from './task-view-model.ts'

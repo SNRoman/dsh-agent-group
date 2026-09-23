@@ -1,7 +1,7 @@
 /** DSH-native rendering for durable assistant Markdown and transient live turns. */
 
 import { useState } from 'react'
-import { DisclosureRow, MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
+import { DisclosureRow, MarkdownText, type MarkdownLabels } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   WorkspaceActivityBlock,
@@ -13,8 +13,15 @@ import type {
 } from './contracts.ts'
 
 /** Render final room-message text through DSH's public Markdown renderer. */
-export function WorkspaceMarkdownMessage({ text }: { readonly text: string }) {
-  return <MarkdownText text={text} />
+export function WorkspaceMarkdownMessage({ text, t }: { readonly text: string } & PropsLocale<'agentWorkspace'>) {
+  return <MarkdownText text={text} labels={workspaceMarkdownLabels(t)} />
+}
+
+function workspaceMarkdownLabels(t: PropsLocale<'agentWorkspace'>['t']): MarkdownLabels {
+  return {
+    code: { copyLabel: t('turn.markdown.copy'), copiedLabel: t('turn.markdown.copied') },
+    footnotes: t('turn.markdown.footnotes'),
+  }
 }
 
 /** Render one authoritative, transient DSH employee turn while it is in flight. */
@@ -53,9 +60,10 @@ export function WorkspaceActivityDetails({ blocks, streaming, t }: {
   readonly blocks: readonly (WorkspaceActivityBlock | WorkspaceTurnProjection['blocks'][number])[]
   readonly streaming: boolean
 } & PropsLocale<'agentWorkspace'>) {
+  const labels = workspaceMarkdownLabels(t)
   return <>
     {blocks.map(block => {
-      if (block.kind === 'text') return <MarkdownText key={`text:${block.index}`} text={block.text} streaming={streaming} />
+      if (block.kind === 'text') return <MarkdownText key={`text:${block.index}`} text={block.text} streaming={streaming} labels={labels} />
       if (block.kind === 'reasoning') return <ReasoningDisclosure key={`reasoning:${block.index}`} block={block} streaming={streaming} t={t} />
       if (block.kind === 'tool') return <ToolDisclosure key={`tool:${block.callId}:${block.index}`} block={block} t={t} />
       return <UnknownDisclosure key={`unknown:${block.index}`} block={block} t={t} />
@@ -80,7 +88,7 @@ function ReasoningDisclosure({ block, streaming, t }: {
       collapsedContent={<span className="dsh-agent-group-disclosure-status">{streaming ? t('turn.generating') : t('turn.completed')}</span>}
     >
       <div className="dsh-agent-group-disclosure-content">
-        <MarkdownText text={block.text} streaming={streaming} />
+        <MarkdownText text={block.text} streaming={streaming} labels={workspaceMarkdownLabels(t)} />
       </div>
     </DisclosureRow>
   )
