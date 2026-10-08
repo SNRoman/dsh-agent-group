@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { watch, existsSync, readFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { chromium } from 'playwright'
-import { assertBrowserDurableEvidence, inspectSafeDelegationDenial, assertTaskCausality, assertMemoryRows, assertSubsetRevisionEvidence, assertExactStopEvidence, assertRestartPersistence } from '../../scripts/release-smoke-contract.mjs'
+import { assertBrowserDurableEvidence, inspectSafeDelegationDenial, isRecordedToolError, assertTaskCausality, assertMemoryRows, assertSubsetRevisionEvidence, assertExactStopEvidence, assertRestartPersistence } from '../../scripts/release-smoke-contract.mjs'
 
 const STEP_TIMEOUT_MS = 30_000
 const CORE_SESSION_SENTINEL = 'CORE_SESSION_SENTINEL'
@@ -83,6 +83,15 @@ async function waitForDurableMessage(dshHome, text) {
   ), `record ${JSON.stringify(text)}`)
 }
 
+async function waitForDurableAgentMemory(dshHome, agentName, text) {
+  return await waitForDurableWorkspace(dshHome, workspace => {
+    const agent = Object.values(workspace.agents).find(candidate => candidate.name === agentName)
+    const event = workspace.events.find(candidate => candidate.type === 'room/message' && candidate.text === text)
+    return agent !== undefined && event !== undefined
+      && workspace.memoryEntries.some(entry => entry.agentId === agent.id && entry.eventId === event.id)
+  }, `record ${JSON.stringify(text)} in ${agentName}'s memory`)
+}
+
 async function waitForDurableWorkspace(dshHome, predicate, description) {
   const paths = [
     join(dshHome, 'storages', 'agent_workspace.json'),
@@ -141,7 +150,7 @@ async function jsonlFiles(root) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name)
       if (entry.isDirectory()) await visit(path)
-      else if (entry.isFile() && entry.name === 'session.jsonl') files.push(path)
+      else if (entry.isFile() && /^session(?:\.v\d+)?\.jsonl$/u.test(entry.name)) files.push(path)
     }
   }
   await visit(root)
@@ -159,6 +168,20 @@ async function durableSessions(dshHome) {
     if (header?.type !== 'session') throw new Error('missing durable Session header')
     return { header, rows }
   }))
+}
+
+async function waitForTaskCausality(dshHome, workspace) {
+  const deadline = Date.now() + STEP_TIMEOUT_MS
+  let lastError
+  while (Date.now() < deadline) {
+    try {
+      return assertTaskCausality(workspace, await durableSessions(dshHome))
+    } catch (error) {
+      lastError = error
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+  }
+  throw new Error(`durable task Session evidence did not settle: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
 }
 
 function waitForFixtureReceipt(path) {
@@ -188,7 +211,13 @@ async function openRuntime(dialog, taskTitle) {
   await dialog.getByRole('button', { name: 'Open runtime activity', exact: true }).click()
   const drawer = dialog.getByRole('dialog', { name: 'Runtime activity', exact: true })
   const source = `Task: ${taskTitle}`
-  await drawer.getByRole('button', { name: new RegExp(`^${source} (Responding|Stopping|Settled|Queued)$`, 'u') }).click()
+  const activity = drawer.getByRole('button', { name: new RegExp(`^${source} (Responding|Stopping|Settled|Queued)$`, 'u') })
+  await activity.click()
+  await dialog.page().waitForFunction(
+    element => element.getAttribute('aria-pressed') === 'true',
+    await activity.elementHandle(),
+    { timeout: STEP_TIMEOUT_MS },
+  )
   return drawer
 }
 
@@ -209,11 +238,11 @@ async function assertTaskToolEvidence(durable, args) {
     if (!serializedRows.some(row => row.includes(name))) throw new Error(`recorded Session omitted model-visible ${name} schema or call`)
   }
   if (!serializedRows.some(row => row.includes(expected.result))) throw new Error('recorded Session omitted successful task-tool result')
-  const denied = rows.filter(row => row.type === 'tool/result' && row.data?.message?.content?.some(block => (
-    block.type === 'tool-result'
-      && block.toolCallId === 'profile-policy-denial'
-      && JSON.stringify(block.content).includes(expected.policyError)
-  )))
+  const denied = rows.filter(row => isRecordedToolError(
+    row,
+    'profile-policy-denial',
+    `Error: ${expected.policyError}`,
+  ))
   if (denied.length !== 1) throw new Error(`expected one recorded policy denial; found ${denied.length}`)
   for (const id of [fixture.taskId, fixture.deniedAssigneeAgentId]) {
     if (JSON.stringify(denied[0]).includes(id)) throw new Error('recorded policy denial leaked a workspace identifier')
@@ -280,7 +309,10 @@ async function startV020Task(dialog, args, state) {
   await drawer.getByText(/V020_CHILD_EXECUTION/u).waitFor({ timeout: STEP_TIMEOUT_MS })
   await capture(state, 'task-child-tool-running', drawer, ['Using tool', 'Tool: workspace_run_child', 'V020_CHILD_EXECUTION'])
   await drawer.getByRole('button', { name: 'Close runtime activity', exact: true }).click()
-  const running = await readDurableWorkspace(dshHome)
+  const running = await waitForDurableWorkspace(dshHome, workspace => {
+    const derived = Object.values(workspace.tasks).find(task => task.title === V020_CHILD)
+    return Object.values(workspace.childRuns).some(child => child.taskId === derived?.id && child.status === 'running')
+  }, 'the child run to enter its durable running state')
   const derivedTask = Object.values(running.tasks).find(task => task.title === V020_CHILD)
   const childRun = Object.values(running.childRuns).find(child => child.taskId === derivedTask?.id)
   if (childRun === undefined || childRun.status !== 'running') throw new Error('child detail was not observed while running')
@@ -311,7 +343,7 @@ async function startV020Task(dialog, args, state) {
   await dialog.getByText('V020_ROOT_RESULT', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   await dialog.getByText('V020_CHILD_RESULT', { exact: true }).first().waitFor({ timeout: STEP_TIMEOUT_MS })
   await capture(state, 'task-results', dialog, ['V020_ROOT_RESULT', 'V020_CHILD_RESULT', 'Parent agent: Bob'])
-  const causal = assertTaskCausality(durable, await durableSessions(dshHome))
+  const causal = await waitForTaskCausality(dshHome, durable)
   await writeFile(join(args.evidence, 'v020-task-causality.json'), `${JSON.stringify(causal, null, 2)}\n`, 'utf8')
   await dialog.getByRole('button', { name: 'Conversations', exact: true }).click()
   await dialog.getByRole('button', { name: /^Release room \d+$/u }).click()
@@ -518,7 +550,7 @@ async function createCoreConversation(page, args, state) {
   await picker.getByRole('button', { name: 'Open', exact: true }).click()
   await picker.waitFor({ state: 'hidden', timeout: STEP_TIMEOUT_MS })
 
-  const composer = page.getByRole('textbox', { name: /^(?:Describe what you want to build|Message the agent)$/u })
+  const composer = page.getByRole('textbox', { name: /^(?:Describe what you want to build|Message or run a task)(?:, \/ commands, @ files or sessions)?$|^Message the agent$/u })
   await composer.waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS })
   const sendButton = page.getByRole('button', { name: 'Send message', exact: true })
   await composer.fill(CORE_SESSION_SENTINEL)
@@ -556,7 +588,7 @@ async function runAfterUninstall(page, args, state) {
   await reopenCoreSession(page, args.workspace)
   await page.getByText(CORE_SESSION_SENTINEL, { exact: true }).last().waitFor({ timeout: STEP_TIMEOUT_MS })
   await page.getByText(CORE_REPLY, { exact: true }).last().waitFor({ timeout: STEP_TIMEOUT_MS })
-  await page.getByRole('textbox', { name: /^(?:Describe what you want to build|Message the agent)$/u })
+  await page.getByRole('textbox', { name: /^(?:Describe what you want to build|Message or run a task)(?:, \/ commands, @ files or sessions)?$|^Message the agent$/u })
     .waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS })
   if (await page.getByRole('button', { name: 'Open Agent Workspace', exact: true }).count() !== 0) {
     throw new Error('Agent Workspace entry remained visible after uninstall')
@@ -697,6 +729,7 @@ async function runInstalledScenario(page, args, state) {
   await alice.getByRole('button', { name: 'Direct', exact: true }).click()
   await send(dialog, 'CHECK_MEMORY')
   await dialog.getByText('MEMORY_OK Alice', { exact: true }).last().waitFor({ timeout: STEP_TIMEOUT_MS })
+  await waitForDurableAgentMemory(args['dsh-home'], 'Alice', 'MEMORY_OK Alice')
   await capture(state, '04-settled', dialog, ['CHECK_MEMORY', 'MEMORY_OK Alice'])
   await inspectV020Memory(dialog, args['dsh-home'], state)
   await reviseV020Definition(dialog, args['dsh-home'], state)
@@ -755,10 +788,17 @@ async function main() {
     try {
       const page = await context.newPage()
       const consoleFailures = []
+      const networkFailures = []
       page.on('console', message => {
-        if (message.type() === 'error' || message.type() === 'warning') consoleFailures.push(`${message.type()}: ${message.text()}`)
+        if (message.type() === 'error' || message.type() === 'warning') {
+          const location = message.location().url
+          consoleFailures.push(`${message.type()}: ${message.text()}${location ? ` (${redact(location)})` : ''}`)
+        }
       })
       page.on('pageerror', error => consoleFailures.push(`pageerror: ${String(error)}`))
+      page.on('response', response => {
+        if (response.status() >= 400) networkFailures.push(`${response.status()} ${redact(response.url())}`)
+      })
 
       try {
         if (args.phase === 'installed') await runInstalledScenario(page, args, state)
@@ -767,6 +807,12 @@ async function main() {
         if (consoleFailures.length > 0) throw new Error(`browser console failures:\n${consoleFailures.join('\n')}`)
         await writeFile(join(args.evidence, `${prefix}browser-console.json`), '[]\n', 'utf8')
       } catch (error) {
+        const activityButton = page.getByRole('button', { name: 'Open runtime activity', exact: true })
+        const activityDrawer = page.getByRole('dialog', { name: 'Runtime activity', exact: true })
+        if (await activityButton.count() > 0 && await activityDrawer.count() === 0) {
+          await activityButton.click().catch(() => {})
+          await activityDrawer.waitFor({ state: 'visible', timeout: 2_000 }).catch(() => {})
+        }
         await page.screenshot({ path: join(args.evidence, `${prefix}browser-failure.png`), fullPage: true }).catch(() => {})
         const aria = await page.locator('body').ariaSnapshot().catch(snapshotError => `ARIA capture failed: ${String(snapshotError)}`)
         let durable
@@ -775,6 +821,7 @@ async function main() {
           error: redact(error instanceof Error ? error.stack ?? error.message : String(error)),
           aria,
           consoleFailures: consoleFailures.map(redact),
+          networkFailures,
           durable,
         }, null, 2)}\n`, 'utf8')
         throw error

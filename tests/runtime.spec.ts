@@ -52,6 +52,29 @@ function fakeEvents(): FakeEvents {
 }
 
 describe('EmployeeAgentPool', () => {
+  test.each(['options', 'idle', 'archive'])('cleans up failed resume during %s', async (stage) => {
+    const dispose = vi.fn(async () => {})
+    const restored = handle(dispose)
+    restored.agent.whenIdle = vi.fn(async () => {
+      if (stage === 'idle') throw new Error('idle failed')
+    })
+    const hideSession = vi.fn(async () => {})
+    if (stage === 'archive') hideSession.mockRejectedValueOnce(new Error('archive failed'))
+    const resume = vi.fn(async () => restored)
+    const pool = new EmployeeAgentPool({ create: vi.fn(), resume }, {
+      sessionIdFor: () => SessionId('bound'),
+      recordSessionId: vi.fn(async () => {}),
+      unhideSession: vi.fn(async () => {}),
+      hideSession,
+    }, async () => {
+      if (stage === 'options') throw new Error('options failed')
+      return {}
+    })
+    await expect(pool.ensure(AgentId('alice'))).rejects.toThrow(`${stage} failed`)
+    expect(hideSession).toHaveBeenCalledWith(SessionId('bound'))
+    expect(dispose).toHaveBeenCalledTimes(stage === 'options' ? 0 : 1)
+    await pool.disposeAll()
+  })
   test('concurrent ensure calls create one handle and retain it', async () => {
     const create = vi.fn(async () => handle())
     const resume = vi.fn(async () => handle())
@@ -134,14 +157,77 @@ describe('EmployeeAgentPool', () => {
     await activeStarted.promise
     const queued = pool.runDelivery(AgentId('alice'), queuedDelivery)
 
-    await pool.dispose(AgentId('alice'))
+    let departureSettled = false
+    const departure = pool.dispose(AgentId('alice')).then(() => { departureSettled = true })
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(departureSettled).toBe(false)
     releaseActive.resolve()
+    await departure
     await expect(active).resolves.toBe('active')
     await expect(queued).rejects.toThrow(/invalidated by disposal/)
     expect(queuedDelivery).not.toHaveBeenCalled()
     expect(create).toHaveBeenCalledTimes(1)
     expect(recordSessionId).toHaveBeenCalledTimes(1)
     expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
+  })
+
+  test('one delivery temporarily restores its internal session and archives it after idle', async () => {
+    const calls: string[] = []
+    const agent = {
+      id: SessionId('employee-session'),
+      whenIdle: vi.fn(async () => { calls.push('idle') }),
+    } as unknown as Agent
+    const source: EmployeeSessionSource = {
+      sessionIdFor: () => undefined,
+      recordSessionId: vi.fn(async () => {}),
+      async unhideSession() {
+        expect(this).toBe(source)
+        calls.push('unhide')
+      },
+      async hideSession() {
+        expect(this).toBe(source)
+        calls.push('hide')
+      },
+    }
+    const pool = new EmployeeAgentPool(
+      { create: vi.fn(async () => ({ agent, dispose: vi.fn(async () => {}) })), resume: vi.fn() },
+      source,
+    )
+    await pool.ensure(AgentId('alice'))
+    calls.length = 0
+
+    await expect(pool.runDelivery(AgentId('alice'), async () => {
+      calls.push('delivery')
+      return 'done'
+    })).resolves.toBe('done')
+
+    expect(calls).toEqual(['unhide', 'delivery', 'idle', 'hide'])
+  })
+
+  test('a failed delivery is archived again after the agent becomes idle', async () => {
+    const calls: string[] = []
+    const agent = {
+      id: SessionId('employee-session'),
+      whenIdle: vi.fn(async () => { calls.push('idle') }),
+    } as unknown as Agent
+    const pool = new EmployeeAgentPool(
+      { create: vi.fn(async () => ({ agent, dispose: vi.fn(async () => {}) })), resume: vi.fn() },
+      {
+        sessionIdFor: () => undefined,
+        recordSessionId: vi.fn(async () => {}),
+        unhideSession: vi.fn(async () => { calls.push('unhide') }),
+        hideSession: vi.fn(async () => { calls.push('hide') }),
+      },
+    )
+    await pool.ensure(AgentId('alice'))
+    calls.length = 0
+
+    await expect(pool.runDelivery(AgentId('alice'), async () => {
+      calls.push('delivery')
+      throw new Error('delivery failed')
+    })).rejects.toThrow('delivery failed')
+
+    expect(calls).toEqual(['unhide', 'delivery', 'idle', 'hide'])
   })
 
   test('whole-pool teardown invalidates queued refresh and drains its operation lane', async () => {
@@ -206,9 +292,10 @@ describe('EmployeeAgentPool', () => {
     const refresh = pool.refreshRole(AgentId('alice'), DefinitionRevisionId('revision-2'))
     await maintenanceStarted.promise
 
-    await pool.dispose(AgentId('alice'))
+    const disposing = pool.dispose(AgentId('alice'))
     releaseMaintenance.resolve()
 
+    await expect(disposing).resolves.toBeUndefined()
     await expect(refresh).rejects.toThrow(/invalidated by disposal/)
     expect(install).toHaveBeenCalledTimes(1)
     expect(pool.roleRevisionFor(AgentId('alice'))).toBeUndefined()
@@ -380,24 +467,39 @@ describe('EmployeeAgentPool', () => {
     expect(recordSessionId).toHaveBeenCalledWith(AgentId('alice'), createdId)
   })
 
-  test('a compatible bound session is hidden and resumed without rebinding', async () => {
+  test('a compatible archived session is restored for resume and archived again after recovery becomes idle', async () => {
     const create = vi.fn(async () => handle())
-    const resume = vi.fn(async () => handle())
+    const calls: string[] = []
+    const resumed = {
+      agent: {
+        id: SessionId('bound'),
+        whenIdle: vi.fn(async () => { calls.push('idle') }),
+      } as unknown as Agent,
+      dispose: vi.fn(async () => {}),
+    }
+    const resume = vi.fn(async () => {
+      calls.push('resume')
+      return resumed
+    })
     const recordSessionId = vi.fn(async () => {})
     const classifySession = vi.fn(async () => 'resume' as const)
-    const hideSession = vi.fn(async () => {})
+    const unhideSession = vi.fn(async () => { calls.push('unhide') })
+    const hideSession = vi.fn(async () => { calls.push('hide') })
     const source: EmployeeSessionSource = {
       sessionIdFor: () => SessionId('bound'),
       recordSessionId,
       classifySession,
+      unhideSession,
       hideSession,
     }
     const pool = new EmployeeAgentPool({ create, resume }, source)
 
     await pool.ensure(AgentId('alice'))
 
+    expect(unhideSession).toHaveBeenCalledWith(SessionId('bound'))
     expect(hideSession).toHaveBeenCalledWith(SessionId('bound'))
     expect(resume).toHaveBeenCalledWith(expect.objectContaining({ resumeSessionId: SessionId('bound') }))
+    expect(calls).toEqual(['unhide', 'resume', 'idle', 'hide'])
     expect(create).not.toHaveBeenCalled()
     expect(recordSessionId).not.toHaveBeenCalled()
   })
@@ -621,6 +723,27 @@ describe('EmployeeAgentPool', () => {
 })
 
 describe('AgentWorkspaceDomainService task-tool lifecycle', () => {
+  test('classifies current persisted session metadata through stat', async () => {
+    const ctx = new Context()
+    ctx.provide('sessionPersistence', {
+      stat: async (sessionId: SessionId) => ({
+        header: {
+          id: sessionId,
+          version: 4,
+          cwd: 'E:\\workspace',
+          createdAt: 1,
+          updatedAt: 1,
+          isSeeded: false,
+        },
+        revision: 'revision-1',
+      }),
+    } as never)
+    const service = new AgentWorkspaceDomainService(ctx)
+
+    await expect(service.classifySession(AgentId('alice'), SessionId('employee-session')))
+      .resolves.toBe('resume')
+  })
+
   test('registers all task tools and removes them with the Host fiber', async () => {
     const root = await mkdtemp(join(tmpdir(), 'agent-workspace-task-tools-'))
     const registered: string[] = []

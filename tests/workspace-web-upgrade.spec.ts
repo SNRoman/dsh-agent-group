@@ -6,11 +6,33 @@ import { resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
 import { createWorkspaceRpcHandler } from '../packages/host/src/rpc.ts'
+import { apply as applyWorkspaceWebRpc, inject as workspaceWebRpcInject } from '../packages/host/src/web-rpc.ts'
 import { WorkspaceApi, WorkspaceApiClient } from '../packages/web/src/client/api.ts'
 
 interface RegisteredRoute {
   readonly handler: (request: IncomingMessage, response: ServerResponse) => Promise<void>
 }
+
+it('unregisters the workspace route on disposal and allows remounting', async () => {
+  const ctx = new Context()
+  let route: RegisteredRoute | undefined
+  ctx.provide('webServer', {
+    register(next: RegisteredRoute) {
+      if (route !== undefined) throw new Error('duplicate route')
+      route = next
+      return () => { route = undefined }
+    },
+  } as never)
+  ctx.provide('agentWorkspace', {} as never)
+  ctx.provide('connection', {} as never)
+  for (let index = 0; index < 2; index++) {
+    const fiber = ctx.plugin({ inject: [...workspaceWebRpcInject], apply: applyWorkspaceWebRpc })
+    await fiber.await()
+    expect(route).toBeDefined()
+    await fiber.dispose()
+    expect(route).toBeUndefined()
+  }
+})
 
 interface BrowserConnectionHandle {
   readonly rpc: {
@@ -47,6 +69,9 @@ async function realConnectionApi(): Promise<{
       return () => { route = undefined }
     },
   } as never)
+  hostContext.provide('agentWorkspace', {
+    acknowledgeAgentFailure: async () => ({ revision: 2, value: undefined }),
+  } as never)
 
   const webRequire = createRequire(new URL('../packages/web/package.json', import.meta.url))
   const connectionNodePath = webRequire.resolve('@deepseek-ai/dsh-client-connection')
@@ -60,7 +85,6 @@ async function realConnectionApi(): Promise<{
         handle(
           channel: string,
           handler: ReturnType<typeof createWorkspaceRpcHandler>,
-          options: { readonly authority: 'trusted-host' },
         ): () => Promise<void>
       }
     }
@@ -75,16 +99,22 @@ async function realConnectionApi(): Promise<{
     await dispose()
     throw new Error('Connection Host service did not mount')
   }
-  let disposeRoute: () => Promise<void>
+  let routeFiber: { readonly await: () => Promise<void>, readonly dispose: () => Promise<void> } | undefined
   try {
-    disposeRoute = hostConnection.rpc.handle('/agent-workspace', createWorkspaceRpcHandler({
-      acknowledgeAgentFailure: async () => ({ revision: 2, value: undefined }),
-    } as never), { authority: 'trusted-host' })
+    routeFiber = hostContext.plugin({
+      inject: [...workspaceWebRpcInject],
+      apply: applyWorkspaceWebRpc,
+    })
+    await routeFiber.await()
   } catch (error) {
     await dispose()
     throw error
   }
-  cleanups.push(disposeRoute)
+  if (routeFiber === undefined) {
+    await dispose()
+    throw new Error('Connection Host route consumer did not mount')
+  }
+  cleanups.push(() => routeFiber.dispose())
   if (route === undefined) {
     await dispose()
     throw new Error('Connection Host route did not register')

@@ -21,6 +21,17 @@ export function activeRoomMembers(state: WorkspaceSnapshot, roomId: RoomId): Age
   return members
 }
 
+/** Stable direct room whose sole active membership belongs to one agent. */
+export function directRoomForAgent(state: WorkspaceSnapshot, agentId: AgentId): RoomId | undefined {
+  for (const room of Object.values(state.rooms)) {
+    if (room.kind !== 'direct') continue
+    const active = Object.values(state.memberships)
+      .filter(membership => membership.roomId === room.id && membership.leftEventId === undefined)
+    if (active.length === 1 && active[0]?.agentId === agentId) return room.id
+  }
+  return undefined
+}
+
 /** Canonical room-message events for one selected room in sequence order. */
 export function roomMessageEvents(state: WorkspaceSnapshot, roomId: RoomId): WorkspaceEventView[] {
   return state.events

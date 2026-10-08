@@ -10,6 +10,7 @@ import type { WorkspaceTurnStreamSnapshot } from '../packages/web/src/client/con
 import {
   activeRoomMembers,
   appendDisplayMention,
+  directRoomForAgent,
   parseMentionIds,
   parseRoomMentionIds,
   roomMessageEvents,
@@ -1195,6 +1196,21 @@ describe('workspace UI view model', () => {
     expect(membership).toBeDefined()
     const left = mutateWorkspace(fixture.state, { type: 'room/leave', membershipId: membership!.id }).state
     expect(activeRoomMembers(left, fixture.roomId).map(agent => agent.name)).toEqual(['Alice'])
+  })
+
+  it('reuses only a direct room whose sole active membership is the requested agent', () => {
+    const fixture = workspaceFixture()
+    const direct = mutateWorkspace(fixture.state, { type: 'room/create', kind: 'direct' })
+    const joined = mutateWorkspace(direct.state, {
+      type: 'room/join', roomId: direct.roomId, agentId: fixture.aliceId, memoryStart: { type: 'new-events' },
+    }).state
+    expect(directRoomForAgent(joined, fixture.aliceId)).toBe(direct.roomId)
+    expect(directRoomForAgent(joined, fixture.bobId)).toBeUndefined()
+
+    const second = mutateWorkspace(joined, {
+      type: 'room/join', roomId: direct.roomId, agentId: fixture.bobId, memoryStart: { type: 'new-events' },
+    }).state
+    expect(directRoomForAgent(second, fixture.aliceId)).toBeUndefined()
   })
 
   it('projects only room message events for the selected room', () => {

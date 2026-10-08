@@ -3,18 +3,17 @@ import { rm } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { pnpmInvocation, prepareSourceCompatibility, sanitizeChildEnvironment } from './source-compatibility.mjs'
 
-const argumentsAfterSeparator = process.argv.slice(2)
-const dshFlag = argumentsAfterSeparator.indexOf('--dsh')
-const dshDirectory = dshFlag === -1 ? undefined : argumentsAfterSeparator[dshFlag + 1]
+const options = parseArgs(process.argv.slice(2))
 
-if (!dshDirectory || !isAbsolute(dshDirectory) || dshFlag !== argumentsAfterSeparator.length - 2) {
-  console.error('Usage: pnpm test:dsh-source -- --dsh <absolute-path>')
+if (!options.dsh || !isAbsolute(options.dsh) || (options.scratchRoot !== undefined && !isAbsolute(options.scratchRoot))) {
+  console.error('Usage: pnpm test:dsh-source -- --dsh <absolute-path> [--scratch-root <absolute-path>]')
   process.exit(2)
 }
 
 const prepared = await prepareSourceCompatibility({
   pluginDirectory: resolve('.'),
-  dshDirectory,
+  dshDirectory: options.dsh,
+  scratchRoot: options.scratchRoot,
 })
 
 try {
@@ -33,4 +32,15 @@ function runPnpm(cwd, args) {
   const result = spawnSync(invocation.command, invocation.args, { cwd, env: environment, stdio: 'inherit' })
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error(`pnpm ${args.join(' ')} exited with status ${String(result.status)}`)
+}
+
+function parseArgs(argv) {
+  const options = {}
+  for (let index = 0; index < argv.length; index += 2) {
+    const name = argv[index]
+    const value = argv[index + 1]
+    if ((name !== '--dsh' && name !== '--scratch-root') || value === undefined) return {}
+    options[name === '--dsh' ? 'dsh' : 'scratchRoot'] = value
+  }
+  return options
 }

@@ -166,7 +166,7 @@ function taskFixture() {
   }
 }
 
-function taskSessions() {
+function taskSessions(current = false) {
   const sessions = [
     ...[['session-a', 'root', 'attempt-root', 'msg-root'], ['session-b', 'derived', 'attempt-derived', 'msg-derived']].map(([id, taskId, attempt, message]) => ({ header: { id }, rows: [{ type: 'user/message', data: { id: message, source: { kind: 'agent-workspace-delivery', source: { kind: 'task', taskId }, taskDeliveryAttemptId: attempt } } }] })),
     { header: { id: 'session-child', parentSession: 'session-b', origin: 'subagent' }, rows: [{ type: 'subagent/descriptor', data: { label: 'workspace-child:derived' } }, { type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: 'V020_CHILD_RESULT' }] } } }] },
@@ -180,7 +180,10 @@ function taskSessions() {
   for (const call of calls) {
     const rows: unknown[] = sessions[call.session]!.rows
     rows.push({ type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'tool-call', id: call.id, name: call.name, arguments: JSON.stringify(call.args) }] } } })
-    rows.push({ type: 'tool/result', data: { message: { source: { kind: 'tool', callId: call.id }, content: [{ type: 'tool-result', toolCallId: call.id, isError: false, content: [{ type: 'text', text: call.id === 'v020-child-run' ? 'V020_CHILD_RESULT' : 'ok' }] }] } } })
+    const content = [{ type: 'text', text: call.id === 'v020-child-run' ? 'V020_CHILD_RESULT' : 'ok' }]
+    rows.push({ type: 'tool/result', data: { message: current
+      ? { source: { kind: 'tool', callId: call.id }, toolCallId: call.id, isError: false, content }
+      : { source: { kind: 'tool', callId: call.id }, content: [{ type: 'tool-result', toolCallId: call.id, isError: false, content }] } } })
   }
   return sessions
 }
@@ -188,6 +191,7 @@ function taskSessions() {
 describe('Browser task causality evidence', () => {
   it('accepts the exact root, grant, derived attempt, parent and child Session', () => {
     expect(evidence.assertTaskCausality(taskFixture(), taskSessions())).toMatchObject({ rootTaskId: 'root', derivedTaskId: 'derived', childRunId: 'child', childSessionId: 'session-child' })
+    expect(evidence.assertTaskCausality(taskFixture(), taskSessions(true))).toMatchObject({ rootTaskId: 'root', derivedTaskId: 'derived', childRunId: 'child', childSessionId: 'session-child' })
   })
   it('rejects wrong root, assignee, grantee, attempt, child parent and duplicate completion', () => {
     const mutations = [

@@ -7,5 +7,12 @@
     - id: agent-workspace
       name: '@dsh-agent-group/host'
 
+    - id: agent-workspace-rpc
+      name: '@dsh-agent-group/host/web-rpc'
+      inject:
+        - agentWorkspace
+        - connection
+        - webServer
+
     - id: agent-workspace-web
       name: '@dsh-agent-group/web'

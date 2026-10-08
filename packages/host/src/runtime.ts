@@ -30,6 +30,8 @@ export interface EmployeeSessionSource {
    * compatibility migration, never a fallback from a failed resume.
    */
   classifySession?(agentId: AgentId, sessionId: SessionId): Promise<EmployeeBoundSessionDisposition>
+  /** Restore one internal employee session while it is allowed to execute. */
+  unhideSession?(sessionId: SessionId): Promise<void>
   /** Hide one internal employee session from ordinary DSH grouping surfaces. */
   hideSession?(sessionId: SessionId): Promise<void>
 }
@@ -138,7 +140,22 @@ export class EmployeeAgentPool {
 
   /** Run one plugin-owned delivery in per-agent request order. */
   async runDelivery<T>(agentId: AgentId, delivery: (handle: AgentHandle) => Promise<T>): Promise<T> {
-    return await this.serialize(agentId, async () => await delivery(await this.ensure(agentId)))
+    return await this.serialize(agentId, async () => {
+      const handle = await this.ensure(agentId)
+      const unhide = this.source.unhideSession
+      const hide = this.source.hideSession
+      if (unhide === undefined && hide === undefined) return await delivery(handle)
+      if (unhide === undefined || hide === undefined) {
+        throw new Error('employee session visibility requires both unhideSession and hideSession')
+      }
+      await unhide.call(this.source, handle.agent.id)
+      try {
+        return await delivery(handle)
+      } finally {
+        await handle.agent.whenIdle()
+        await hide.call(this.source, handle.agent.id)
+      }
+    })
   }
 
   /**
@@ -202,6 +219,7 @@ export class EmployeeAgentPool {
     this.generations.set(agentId, this.generationOf(agentId) + 1)
     const handle = this.handles.get(agentId)
     const pending = this.inFlight.get(agentId)
+    const operation = this.operations.get(agentId)
     this.handles.delete(agentId)
     this.roles.delete(agentId)
     if (handle !== undefined) this.agentIds.delete(handle.agent)
@@ -221,6 +239,7 @@ export class EmployeeAgentPool {
         // The stale admission rejects after disposing its unpublished handle.
       }
     }
+    await operation
     if (disposeError !== undefined) throw disposeError
   }
 
@@ -272,18 +291,37 @@ export class EmployeeAgentPool {
       const disposition = await this.source.classifySession?.(agentId, bound) ?? 'resume'
       this.assertAdmissionActive(agentId, generation)
       if (disposition === 'resume') {
-        await this.source.hideSession?.(bound)
-        this.assertAdmissionActive(agentId, generation)
-        const options = await this.optionsFactory?.(agentId, 'resume')
-        this.assertAdmissionActive(agentId, generation)
-        // A compatible materialized session never falls back to create: a
-        // resume failure remains a real persistence/runtime fault.
-        const setup = this.resumeSetup(agentId, this.roleSetup(agentId, options))
-        return await this.agents.resume({
-          resumeSessionId: bound,
-          ...(options?.agentOptions === undefined ? {} : { agentOptions: options.agentOptions }),
-          ...(setup === undefined ? {} : { setup }),
-        })
+        const unhide = this.source.unhideSession
+        const hide = this.source.hideSession
+        if ((unhide === undefined) !== (hide === undefined)) {
+          throw new Error('employee session visibility requires both unhideSession and hideSession')
+        }
+        await unhide?.call(this.source, bound)
+        let handle: AgentHandle | undefined
+        try {
+          this.assertAdmissionActive(agentId, generation)
+          const options = await this.optionsFactory?.(agentId, 'resume')
+          this.assertAdmissionActive(agentId, generation)
+          // A compatible materialized session never falls back to create.
+          const setup = this.resumeSetup(agentId, this.roleSetup(agentId, options))
+          handle = await this.agents.resume({
+            resumeSessionId: bound,
+            ...(options?.agentOptions === undefined ? {} : { agentOptions: options.agentOptions }),
+            ...(setup === undefined ? {} : { setup }),
+          })
+          if (hide !== undefined) {
+            await handle.agent.whenIdle()
+            await hide.call(this.source, bound)
+          }
+          return handle
+        } catch (error) {
+          try {
+            await handle?.dispose()
+          } finally {
+            await hide?.call(this.source, bound)
+          }
+          throw error
+        }
       }
       // Replacement is intentional only after the source positively identifies
       // a known compatibility gap. Retire the visible legacy row before minting

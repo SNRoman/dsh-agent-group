@@ -33,6 +33,7 @@ import {
   activeRoomMembers,
   actorLabel,
   appendDisplayMention,
+  directRoomForAgent,
   formatMessageText,
   parseRoomMentionIds,
   roomLabel,
@@ -303,6 +304,12 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
   }
 
   const openDirect = async (agentId: AgentId): Promise<void> => {
+    const existing = snapshot === undefined ? undefined : directRoomForAgent(snapshot, agentId)
+    if (existing !== undefined) {
+      actions.selectRoom(existing)
+      actions.setMode('conversations')
+      return
+    }
     let roomId: RoomId | undefined
     const committed = await commit(async revision => {
       const result = await api.openDirect(agentId, revision)

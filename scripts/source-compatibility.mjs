@@ -1,8 +1,8 @@
 import { execFile as execFileCallback } from 'node:child_process'
-import { cp, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { cp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { basename, join, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
+import { createScratchDirectory, resolveScratchRoot } from './scratch-paths.mjs'
 
 const execFile = promisify(execFileCallback)
 const publishableManifests = [
@@ -113,7 +113,7 @@ export async function validateCompatibility(pluginDirectory) {
  *
  * @returns The temporary directory and copied plugin directory. The caller owns removing the temporary directory.
  */
-export async function prepareSourceCompatibility({ pluginDirectory, dshDirectory }) {
+export async function prepareSourceCompatibility({ pluginDirectory, dshDirectory, scratchRoot }) {
   const absolutePluginDirectory = resolve(pluginDirectory)
   const absoluteDshDirectory = resolve(dshDirectory)
   const declaration = await validateCompatibility(absolutePluginDirectory)
@@ -123,7 +123,10 @@ export async function prepareSourceCompatibility({ pluginDirectory, dshDirectory
     throw new Error('pnpm-workspace.yaml: source overrides expected absent before preparation, actual link override')
   }
 
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'dsh-agent-group-source-'))
+  const temporaryDirectory = await createScratchDirectory(
+    resolveScratchRoot(scratchRoot),
+    'dsh-agent-group-source-',
+  )
   const copiedPluginDirectory = join(temporaryDirectory, 'plugin')
   try {
     await cp(absolutePluginDirectory, copiedPluginDirectory, {

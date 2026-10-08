@@ -469,7 +469,7 @@ export class WorkspaceActivityStream {
     const existing = activity.blocks.find((candidate): candidate is WorkspaceActivityToolBlock => candidate.kind === 'tool' && candidate.callId === callId)
     const index = existing?.index ?? nextToolIndex(activity)
     const resultText = toolResultText(content)
-    const isError = first?.isError === true || data?.error !== undefined
+    const isError = message?.isError === true || first?.isError === true || data?.error !== undefined
     return replaceBlock(activity, index, {
       kind: 'tool',
       index,

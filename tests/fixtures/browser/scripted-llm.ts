@@ -137,7 +137,8 @@ async function waitForWorkspace(predicate: (state: WorkspaceFixture) => boolean,
 }
 
 function employeeName(options: GenerateOptions): string {
-  const name = /身份是“([^”]+)”/u.exec(options.system ?? '')?.[1]
+  const prompt = [options.system, textOf(options)].filter(Boolean).join('\n')
+  const name = /身份是“([^”]+)”/u.exec(prompt)?.[1]
   if (name === undefined) throw new Error('scripted reply requires employee identity')
   return name
 }

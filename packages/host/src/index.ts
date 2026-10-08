@@ -25,7 +25,6 @@ import { joinRoomWithMemory } from './memory.ts'
 import { queryAgentMemory } from './memory-query.ts'
 import type { MemoryPage, MemoryQuery } from './memory-query.ts'
 import { assertDirectRoomTextAllowed, assertRoomMessageAuthorized, resolveHumanWakeTargets } from './room-policy.ts'
-import { AGENT_WORKSPACE_RPC_CHANNEL, createWorkspaceRpcHandler } from './rpc.ts'
 import type { WorkspaceDirectRoomResult, WorkspaceMutationResult, WorkspaceRoomRuntimeStatus, WorkspaceRuntimeStatus } from './rpc.ts'
 import { EmployeeAgentPool } from './runtime.ts'
 import type { AgentLifecycle, EmployeeBoundSessionDisposition, EmployeeMaterializationOptions } from './runtime.ts'
@@ -77,17 +76,6 @@ export interface Config {
 
 type ResolvedConfig = Required<Config>
 
-/** Optional Host Connection shape used by the Browser adapter. */
-interface WorkspaceHostConnection {
-  readonly rpc: {
-    handle(
-      channel: string,
-      handler: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>,
-      options: { readonly authority: 'trusted-host' | 'loopback' },
-    ): () => Promise<void>
-  }
-}
-
 /** Default-model seam used by the Web composition. */
 interface WorkspaceDefaultModel {
   currentSelection(): ModelSelection
@@ -106,12 +94,13 @@ interface WorkspaceSystemPrompt {
 
 /** Minimal persistence view needed to validate a bound employee session. */
 interface WorkspaceSessionPersistence {
-  inspect(sessionId: SessionId): Promise<{ readonly meta: { readonly cwd?: string } }>
+  stat(sessionId: SessionId): Promise<{ readonly header: { readonly cwd?: string } } | undefined>
 }
 
 /** Minimal DSH workspace-registry view used to hide plugin-owned sessions. */
 interface DshWorkspaceRegistry {
   archiveSession(sessionId: SessionId): Promise<void>
+  unarchiveSession(sessionId: SessionId): Promise<void>
 }
 
 /** Mutable internal counterpart of the public readonly runtime status. */
@@ -169,22 +158,6 @@ export class AgentWorkspaceDomainService extends Service {
       if (repaired !== validated) await this.table.put(LOCAL_WORKSPACE_ID, repaired)
       this.syncActivityProjection(repaired)
     }
-
-    // Browser transport is an optional child capability. Headless deployments
-    // never wait for it, while web deployments register this plugin's own RPC
-    // channel when Connection appears. No core /api endpoint is intercepted.
-    this.ctx.inject(['connection'], (rpcCtx) => {
-      const connection = rpcCtx.get('connection') as WorkspaceHostConnection | undefined
-      if (connection === undefined) return
-      rpcCtx.effect(
-        () => connection.rpc.handle(
-          AGENT_WORKSPACE_RPC_CHANNEL,
-          createWorkspaceRpcHandler(this),
-          { authority: 'trusted-host' },
-        ),
-        'agentWorkspace.rpc',
-      )
-    })
 
     this.ctx.inject(['tools'], (toolCtx) => {
       const tools = toolCtx.get('tools') as WorkspaceToolRegistry | undefined
@@ -614,14 +587,21 @@ export class AgentWorkspaceDomainService extends Service {
   async classifySession(_agentId: AgentId, sessionId: SessionId): Promise<EmployeeBoundSessionDisposition> {
     const persistence = this.ctx.get('sessionPersistence') as WorkspaceSessionPersistence | undefined
     if (persistence === undefined) return 'resume'
-    const inspected = await persistence.inspect(sessionId)
-    return inspected.meta.cwd === undefined ? 'replace' : 'resume'
+    const snapshot = await persistence.stat(sessionId)
+    if (snapshot === undefined) return 'resume'
+    return snapshot.header.cwd === undefined ? 'replace' : 'resume'
   }
 
   /** Hide one plugin-owned employee Session from the ordinary DSH grouping UI. */
   async hideSession(sessionId: SessionId): Promise<void> {
     const registry = this.ctx.get('workspaceRegistry') as DshWorkspaceRegistry | undefined
     await registry?.archiveSession(sessionId)
+  }
+
+  /** Restore one internal employee session while it executes Workspace work. */
+  async unhideSession(sessionId: SessionId): Promise<void> {
+    const registry = this.ctx.get('workspaceRegistry') as DshWorkspaceRegistry | undefined
+    await registry?.unarchiveSession(sessionId)
   }
 
   /** Admit the live DSH handle for one employed agent, creating or resuming it once. */

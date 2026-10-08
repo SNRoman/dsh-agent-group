@@ -184,6 +184,32 @@ describe('WorkspaceActivityStream', () => {
     expect(JSON.stringify(snapshot)).not.toContain(secretCanary)
   })
 
+  it('projects current top-level tool result failures without exposing their text', () => {
+    const stream = new WorkspaceActivityStream()
+    const identity = claimed(stream, MessageId('message-current-tool-failed'), 6)
+    stream.acceptSessionEvent({ ...identity, event: event('tool/call', {
+      turn: 6, callId: 'call-current', name: 'read_file', arguments: '{}',
+    }, 1) })
+    stream.acceptSessionEvent({ ...identity, event: event('tool/result', {
+      turn: 6,
+      message: {
+        role: 'tool',
+        source: { kind: 'tool', callId: 'call-current' },
+        toolCallId: 'call-current',
+        isError: true,
+        content: [{ type: 'text', text: secretCanary }],
+      },
+    }, 2) })
+
+    const snapshot = stream.snapshot()
+    expect(snapshot.activities[0]?.blocks).toContainEqual(expect.objectContaining({
+      kind: 'tool',
+      status: 'failed',
+      error: { code: 'tool-failed', summary: 'Tool call failed.' },
+    }))
+    expect(JSON.stringify(snapshot)).not.toContain(secretCanary)
+  })
+
   it('replaces task-delivery failures from each durable workspace projection', () => {
     const stream = new WorkspaceActivityStream()
     stream.setWorkspaceProjection(9, [agentId], [{

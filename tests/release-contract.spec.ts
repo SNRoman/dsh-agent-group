@@ -54,6 +54,12 @@ describe('public release contract', () => {
     ].join('\n')
     expect(publicSources).not.toMatch(/workspace\/import|importForwardWorkspace|importWorkspace/)
     expect(readText('packages/web/src/client/WorkspaceUi.tsx')).not.toMatch(/backup|export workspace|import workspace/i)
+
+    const bundlePatch = readText('packages/bundle/cordis.patch.yml')
+    expect(bundlePatch).toContain("name: '@dsh-agent-group/host/web-rpc'")
+    for (const dependency of ['agentWorkspace', 'connection', 'webServer']) {
+      expect(bundlePatch).toContain(`- ${dependency}`)
+    }
   })
 
   it('documents both compatibility lines and keeps publication as a separate authorization', () => {
@@ -212,6 +218,10 @@ describe('public release contract', () => {
     const driver = readText('scripts/release-smoke.mjs')
     expect(driver).toContain("['dsh', '--profile', 'web'")
     expect(driver).toContain("'--port', '0'")
+    expect(driver).toContain("'--scratch-root'")
+    expect(driver).toContain("DSH_AGENT_GROUP_SCRATCH_ROOT")
+    expect(driver).toContain("argument === '--scratch-root' ? 'scratchRoot'")
+    expect(driver).not.toContain('mkdtemp(join(tmpdir()')
     expect(driver).toContain('verifyReleaseArtifacts')
     const release = readText('scripts/release.mjs')
     expect(release).toContain('writeReleaseManifest')
@@ -334,7 +344,8 @@ describe('public release contract', () => {
     expect(smoke).toContain('name: /^Release room \\d+$/u')
     expect(smoke).toContain("name: /^Alice Responding Direct$/u")
     expect(smoke).toContain("row.locator('p').getByText(entry.text, { exact: true })")
-    expect(smoke).toContain("block.toolCallId === 'profile-policy-denial'")
+    expect(smoke).toContain("isRecordedToolError(")
+    expect(smoke).toContain("'profile-policy-denial'")
     expect(smoke).toContain("getByRole('article', { name: '修订 1', exact: true }).waitFor")
     expect(smoke).toContain("getByRole('article', { name: '修订 2', exact: true }).waitFor")
     expect(smoke).toContain('Creation event ${receipt.revisionEventSequence}')
@@ -347,6 +358,8 @@ describe('public release contract', () => {
     const taskToolsSmoke = readText('tests/e2e/task-tools-profile.mjs')
     expect(taskToolsSmoke).toContain('task-tools-recorded-session.json')
     expect(taskToolsSmoke).toContain('profile-session.expected.json')
+    expect(taskToolsSmoke).toContain("/^session(?:\\.v\\d+)?\\.jsonl$/u")
+    expect(smoke).toContain("/^session(?:\\.v\\d+)?\\.jsonl$/u")
 
     const registryWorkflow = readText('.github/workflows/registry-smoke.yml')
     expect(registryWorkflow).toContain('workflow_dispatch')
@@ -379,12 +392,13 @@ describe('public release contract', () => {
       '--dsh',
       'DSH_SOURCE',
       '00102833dfaee1da9f48a3a8eae9d34005a75218',
-      '.release-smoke/',
+      'evidence/',
       'twice',
       'cleanup',
     ]) expect(guide).toContain(required)
 
     const browserScenario = readText('tests/e2e/workspace-browser.mjs')
+    expect(browserScenario).toContain('Describe what you want to build|Message or run a task')
     expect(browserScenario).not.toContain('waitForTimeout(')
     expect(browserScenario).not.toContain('setTimeout(resolvePromise')
     expect(browserScenario).toContain("const prefix = `${args.phase}-`")

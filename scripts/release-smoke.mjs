@@ -5,7 +5,6 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import canonicalize from 'canonicalize'
-import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { finished } from 'node:stream/promises'
@@ -25,6 +24,7 @@ import {
   uninstallProfileCommand,
 } from './release-smoke-contract.mjs'
 import { verifyReleaseArtifacts, writeReleaseSmokeReceipt } from './release-artifacts.mjs'
+import { assertScratchDescendant, createScratchDirectory, resolveScratchRoot } from './scratch-paths.mjs'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const COMPATIBILITY = JSON.parse(readFileSync(join(REPO_ROOT, 'compatibility.json'), 'utf8'))
@@ -49,10 +49,10 @@ function parseArgs(argv) {
     else if (argument === '--task-tools-only') options.taskToolsOnly = true
     else if (argument === '--keep') options.keep = true
     else if (argument === '--skip-dsh-prepare') options.skipDshPrepare = true
-    else if (argument === '--mode' || argument === '--dsh' || argument === '--version') {
+    else if (argument === '--mode' || argument === '--dsh' || argument === '--version' || argument === '--scratch-root') {
       const value = argv[++index]
       if (value === undefined) throw new Error(`${argument} requires a value`)
-      options[argument.slice(2)] = value
+      options[argument === '--scratch-root' ? 'scratchRoot' : argument.slice(2)] = value
     } else throw new Error(`unknown release-smoke argument: ${argument}`)
   }
   if (options.mode !== 'packed' && options.mode !== 'registry') throw new Error('--mode must be packed or registry')
@@ -62,6 +62,7 @@ function parseArgs(argv) {
   if (options.installationOnly && options.taskToolsOnly) throw new Error('--installation-only and --task-tools-only cannot be combined')
   const defaultDsh = resolve(REPO_ROOT, '..', '..', 'deepseek-harness')
   options.dsh = resolve(options.dsh ?? process.env['DSH_SOURCE'] ?? defaultDsh)
+  options.scratchRoot = resolveScratchRoot(options.scratchRoot ?? process.env['DSH_AGENT_GROUP_SCRATCH_ROOT'])
   return options
 }
 
@@ -439,9 +440,10 @@ async function main() {
   const options = parseArgs(process.argv.slice(2))
   await verifyDshCheckout(options.dsh)
   const runId = `${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID().slice(0, 8)}`
-  const artifactsRoot = join(REPO_ROOT, '.release-smoke', `${options.mode}-${options.version ?? COMPATIBILITY.candidatePluginVersion}-${runId}`)
+  const artifactsRoot = join(options.scratchRoot, 'evidence', `${options.mode}-${options.version ?? COMPATIBILITY.candidatePluginVersion}-${runId}`)
+  assertScratchDescendant(options.scratchRoot, artifactsRoot)
   await mkdir(artifactsRoot, { recursive: true })
-  const scratch = await mkdtemp(join(tmpdir(), `dsh-agent-group-${options.mode}-`))
+  const scratch = await createScratchDirectory(options.scratchRoot, `dsh-agent-group-${options.mode}-`)
   const dshHome = join(scratch, 'dsh-home')
   const agentsHome = join(scratch, 'agents-home')
   const gate = join(scratch, 'release-gate')
@@ -652,6 +654,7 @@ async function main() {
     }
     if (failures.length === 0 && !options.keep) {
       try {
+        assertScratchDescendant(options.scratchRoot, scratch)
         await rm(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
       } catch (error) {
         failures.push(error)

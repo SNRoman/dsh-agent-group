@@ -280,6 +280,23 @@ export function assertBrowserDurableEvidence(durable) {
   }
 }
 
+/** Whether one recorded row is the exact safe error for a tool call. */
+export function isRecordedToolError(row, callId, text) {
+  if (row.type !== 'tool/result' || row.data?.message?.source?.kind !== 'tool'
+    || row.data.message.source.callId !== callId) return false
+  const message = row.data.message
+  const expected = JSON.stringify([{ type: 'text', text }])
+  if (message.toolCallId !== undefined) {
+    return message.toolCallId === callId && message.isError === true
+      && JSON.stringify(message.content) === expected
+  }
+  const blocks = message.content
+  const result = blocks?.[0]
+  return blocks?.length === 1 && result?.type === 'tool-result'
+    && result.toolCallId === callId && result.isError === true
+    && JSON.stringify(result.content) === expected
+}
+
 /** Return the recorded refusal, rejecting duplicate results, leaked ids, and unsafe payloads. */
 export function inspectSafeDelegationDenial(rows, workspace) {
   const results = rows.filter(row => row.type === 'tool/result'
@@ -305,10 +322,7 @@ export function inspectSafeDelegationDenial(rows, workspace) {
   collectIds(workspace)
   for (const id of ids) if (serialized.includes(id)) throw new Error('delegation denial leaked an actual workspace identifier')
   if (result.data.meta !== undefined) throw new Error('delegation denial included Host metadata')
-  const blocks = result.data.message.content
-  const refusal = blocks?.[0]
-  if (blocks?.length !== 1 || refusal?.type !== 'tool-result' || refusal.toolCallId !== 'v020-safe-failure'
-    || refusal.isError !== true || JSON.stringify(refusal.content) !== JSON.stringify([{ type: 'text', text: 'Error: Workspace task request is not permitted.' }])) {
+  if (!isRecordedToolError(result, 'v020-safe-failure', 'Error: Workspace task request is not permitted.')) {
     throw new Error('recorded delegation result was not a safe policy denial')
   }
   return result
@@ -526,9 +540,17 @@ export function assertTaskCausality(workspace, sessions) {
       if (call.name !== name) throw new Error('tool name changed')
       equalEvidence(JSON.parse(call.arguments), args, 'tool arguments association changed')
       const toolResult = exactlyOne(session.rows.filter(row => row.type === 'tool/result' && row.data?.message?.source?.callId === callId), 'tool result')
-      const block = exactlyOne(toolResult.data.message.content, 'tool result block')
-      if (block.type !== 'tool-result' || block.toolCallId !== callId || block.isError === true) throw new Error('tool result failed or belongs to another call')
-      if (callId === 'v020-child-run') equalEvidence(block.content, [{ type: 'text', text: 'V020_CHILD_RESULT' }], 'child tool result changed')
+      const message = toolResult.data.message
+      let content
+      if (message.toolCallId !== undefined) {
+        if (message.toolCallId !== callId || message.isError === true) throw new Error('tool result failed or belongs to another call')
+        content = message.content
+      } else {
+        const block = exactlyOne(message.content, 'tool result block')
+        if (block.type !== 'tool-result' || block.toolCallId !== callId || block.isError === true) throw new Error('tool result failed or belongs to another call')
+        content = block.content
+      }
+      if (callId === 'v020-child-run') equalEvidence(content, [{ type: 'text', text: 'V020_CHILD_RESULT' }], 'child tool result changed')
     }
     attempts[task.id] = started.taskDeliveryAttemptId
   }

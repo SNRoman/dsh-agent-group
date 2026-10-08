@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { createToolResultMessage, createUserMessage, ToolCallId, type GenerateOptions, type LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import { createSystemMessage, createToolResultMessage, createUserMessage, ToolCallId, type GenerateOptions, type LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it } from 'vitest'
 import { apply, protocolStep, taskIdentity, waitForObservedStop } from './fixtures/browser/scripted-llm.ts'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -86,6 +86,14 @@ describe('Browser scripted request protocol', () => {
 
   it('rejects an employee reply without employee identity', async () => {
     await expect(output({ ...request('NAMED_WAKE'), system: '' })).rejects.toThrow('employee identity')
+  })
+
+  it('reads employee identity from loop-built system history after the first turn', async () => {
+    const options = request('NAMED_WAKE')
+    options.messages.unshift(createSystemMessage('身份是“Alice”'))
+    delete options.system
+    const chunks = await output(options)
+    expect(chunks.filter(chunk => chunk.type === 'text-delta')).toEqual([{ type: 'text-delta', index: 0, text: 'NAMED_REPLY Alice' }])
   })
 
   it('still uses history as evidence for an explicit memory check', async () => {

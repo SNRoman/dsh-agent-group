@@ -15,7 +15,7 @@ A persistent multi-agent workspace for [DeepSeek Harness](https://github.com/dee
 - **Additive integration** — the Browser package registers only `sidebar.footer.action` and `shell.overlay`; it does not replace the core `sidebar`, `conversation`, or `details` surfaces and does not intercept `/api`.
 - **Localized policy feedback** — Simplified Chinese and English dictionaries own plugin UI copy, while stable Host error codes keep localization independent from exception text.
 - **Four product views** — Definitions manages reusable roles and immutable definition revision history; Tasks shows assignment, grants, attempts, cancellation, child work, and results; Memory exposes each colleague's unified event history; Runtime shows live activity and exact stop controls.
-- **Forward compatibility export** — the read-only `export:forward-v1` command creates a canonical, checksummed handoff for a future v0.3 importer while leaving the source storage untouched.
+- **Forward compatibility export** — the read-only `export:forward-v1` command creates a canonical, checksummed handoff for a future importer while leaving the source storage untouched. Version `0.3.0` does not include an importer.
 
 ## Requirements
 
@@ -111,7 +111,7 @@ pnpm test
 Maintainers can check the declared Harness source point without changing either checkout:
 
 ```sh
-pnpm test:dsh-source -- --dsh <absolute-path-to-deepseek-harness>
+pnpm test:dsh-source -- --dsh <absolute-path-to-deepseek-harness> --scratch-root E:/003code/deepseek-harness-plugins/.tmp/dsh-agent-group-source
 ```
 
 The command copies this plugin to an operating-system temporary directory, generates source overrides only in that copy, and removes it after the check. CI runs the default registry verification and this explicit source check separately.
@@ -123,7 +123,7 @@ Before publishing, run the packed release gate:
 ```sh
 pnpm exec playwright install chromium
 pnpm release:pack
-pnpm smoke:packed -- --dsh <absolute-path-to-deepseek-harness-0.1.7-alpha.2>
+pnpm smoke:packed -- --dsh <absolute-path-to-deepseek-harness-0.1.7-alpha.2> --scratch-root E:/003code/deepseek-harness-plugins/.tmp/dsh-agent-group-smoke
 ```
 
 The Playwright command installs the Chromium runtime used by the smoke. `release:pack` runs build, typecheck, tests, packs the three npm artifacts in dependency order into `release/`, clears any earlier smoke receipt, and records their hashes together with the deterministic build-input hash. `smoke:packed` rejects stale or changed artifacts, verifies the named Harness checkout, builds its host and Browser artifacts, installs only those packed plugin artifacts into a new Web profile, starts it through `pnpm dsh --profile web`, and runs `tests/e2e/workspace-browser.mjs` against the assembled UI. A successful full smoke writes a receipt bound to the source hash, the Browser smoke driver and fixtures, all three tarball hashes, and the verified DSH commit. `release:publish` requires that receipt and publishes those exact tarballs instead of repacking the workspaces.
@@ -131,7 +131,7 @@ The Playwright command installs the Chromium runtime used by the smoke. `release
 After all three packages are published, verify the exact immutable registry version:
 
 ```sh
-pnpm smoke:registry -- --version 0.3.0 --dsh <absolute-path-to-deepseek-harness-0.1.7-alpha.2>
+pnpm smoke:registry -- --version 0.3.0 --dsh <absolute-path-to-deepseek-harness-0.1.7-alpha.2> --scratch-root E:/003code/deepseek-harness-plugins/.tmp/dsh-agent-group-smoke
 ```
 
 Before publishing a candidate, maintainers may prove registry-only installation and startup mechanics against the existing public version without applying newer Browser assertions:

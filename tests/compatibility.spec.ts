@@ -1,7 +1,7 @@
 import { execFile as execFileCallback } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -249,5 +249,23 @@ describe('compatibility declaration', { timeout: PROCESS_TEST_TIMEOUT_MS }, () =
     await expect(readFile(join(prepared.pluginDirectory, 'node_modules', 'sentinel'), 'utf8')).rejects.toThrow()
     await expect(readFile(join(prepared.pluginDirectory, 'release', 'sentinel'), 'utf8')).rejects.toThrow()
     await expect(readFile(join(prepared.pluginDirectory, '.superpowers', 'sentinel'), 'utf8')).rejects.toThrow()
+  })
+
+  it('creates the source compatibility copy below an explicit scratch root', async () => {
+    const dsh = await createDshFixture()
+    const compatibility = declaration(dsh.commit)
+    const plugin = await createPluginFixture(compatibility)
+    const scratchRoot = await mkdtemp(join(tmpdir(), 'dsh-source-explicit-root-'))
+    temporaryDirectories.push(scratchRoot)
+
+    const prepared = await prepareSourceCompatibility({
+      pluginDirectory: plugin,
+      dshDirectory: dsh.root,
+      scratchRoot,
+    })
+    const child = relative(scratchRoot, prepared.temporaryDirectory)
+
+    expect(child).not.toBe('')
+    expect(child.startsWith('..')).toBe(false)
   })
 })

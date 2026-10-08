@@ -42,7 +42,7 @@ async function jsonlFiles(root) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name)
       if (entry.isDirectory()) await visit(path)
-      else if (entry.isFile() && entry.name === 'session.jsonl') files.push(path)
+      else if (entry.isFile() && /^session(?:\.v\d+)?\.jsonl$/u.test(entry.name)) files.push(path)
     }
   }
   await visit(root)
