@@ -15,7 +15,7 @@ export const WORKSPACE_EXPORT_FORMAT_VERSION = 1 as const
 /** Candidate versions allowed to consume this handoff. */
 export const WORKSPACE_EXPORT_COMPATIBLE_IMPORT_RANGE = '>=0.3.0 <0.4.0' as const
 /** Package version that owns this frozen producer. */
-export const AGENT_WORKSPACE_PLUGIN_VERSION = '0.3.0' as const
+export const AGENT_WORKSPACE_PLUGIN_VERSION = '0.4.0' as const
 
 /** Durable aggregate fields that can cross the forward-compatibility handoff. */
 export type ForwardWorkspaceAggregateV1 = Omit<WorkspaceState, 'workspaceId' | 'sessionBindings'>

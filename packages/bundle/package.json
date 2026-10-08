@@ -1,6 +1,6 @@
 {
   "name": "dsh-agent-group",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Installable multi-agent workspace profile bundle for DeepSeek Harness.",
   "license": "MIT",
   "repository": {
@@ -56,9 +56,9 @@
   "dependencies": {
     "@dsh-agent-group/host": "workspace:^",
     "@dsh-agent-group/web": "workspace:^",
-    "@deepseek-ai/dsh-storage": ">=0.1.7-alpha.2 <0.1.8-0",
-    "@deepseek-ai/dsh-storage-domain": ">=0.1.7-alpha.2 <0.1.8-0",
-    "@deepseek-ai/dsh-storage-json": ">=0.1.7-alpha.2 <0.1.8-0"
+    "@deepseek-ai/dsh-storage": ">=0.2.0-rc.2 <0.2.1-0",
+    "@deepseek-ai/dsh-storage-domain": ">=0.2.0-rc.2 <0.2.1-0",
+    "@deepseek-ai/dsh-storage-json": ">=0.2.0-rc.2 <0.2.1-0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"

@@ -1,6 +1,6 @@
 {
   "name": "@dsh-agent-group/web",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Additive Agent Workspace browser UI for DeepSeek Harness.",
   "license": "MIT",
   "repository": {
@@ -58,24 +58,24 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-client-locale": ">=0.1.7-alpha.2 <0.1.8-0",
-    "@deepseek-ai/dsh-client-connection": ">=0.1.7-alpha.2 <0.1.8-0",
-    "@deepseek-ai/dsh-client-store": ">=0.1.7-alpha.2 <0.1.8-0",
-    "@deepseek-ai/dsh-client-ui-layout": ">=0.1.7-alpha.2 <0.1.8-0",
-    "@deepseek-ai/dsh-client-ui-renderer": ">=0.1.7-alpha.2 <0.1.8-0",
-    "@deepseek-ai/dsh-client-ui-sidebar": ">=0.1.7-alpha.2 <0.1.8-0",
+    "@deepseek-ai/dsh-client-locale": ">=0.2.0-rc.2 <0.2.1-0",
+    "@deepseek-ai/dsh-client-connection": ">=0.2.0-rc.2 <0.2.1-0",
+    "@deepseek-ai/dsh-client-store": ">=0.2.0-rc.2 <0.2.1-0",
+    "@deepseek-ai/dsh-client-ui-layout": ">=0.2.0-rc.2 <0.2.1-0",
+    "@deepseek-ai/dsh-client-ui-renderer": ">=0.2.0-rc.2 <0.2.1-0",
+    "@deepseek-ai/dsh-client-ui-sidebar": ">=0.2.0-rc.2 <0.2.1-0",
     "react": "^18.2.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-client-locale": ">=0.1.7-alpha.2 <0.1.8-0",
-    "@deepseek-ai/dsh-client-connection": ">=0.1.7-alpha.2 <0.1.8-0",
-    "@deepseek-ai/dsh-client-store": ">=0.1.7-alpha.2 <0.1.8-0",
-    "@deepseek-ai/dsh-client-ui-layout": ">=0.1.7-alpha.2 <0.1.8-0",
-    "@deepseek-ai/dsh-client-ui-primitives": ">=0.1.7-alpha.2 <0.1.8-0",
-    "@deepseek-ai/dsh-client-ui-renderer": ">=0.1.7-alpha.2 <0.1.8-0",
-    "@deepseek-ai/dsh-client-ui-sidebar": ">=0.1.7-alpha.2 <0.1.8-0",
-    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.7-alpha.2 <0.1.8-0",
+    "@deepseek-ai/dsh-client-locale": ">=0.2.0-rc.2 <0.2.1-0",
+    "@deepseek-ai/dsh-client-connection": ">=0.2.0-rc.2 <0.2.1-0",
+    "@deepseek-ai/dsh-client-store": ">=0.2.0-rc.2 <0.2.1-0",
+    "@deepseek-ai/dsh-client-ui-layout": ">=0.2.0-rc.2 <0.2.1-0",
+    "@deepseek-ai/dsh-client-ui-primitives": ">=0.2.0-rc.2 <0.2.1-0",
+    "@deepseek-ai/dsh-client-ui-renderer": ">=0.2.0-rc.2 <0.2.1-0",
+    "@deepseek-ai/dsh-client-ui-sidebar": ">=0.2.0-rc.2 <0.2.1-0",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.2.0-rc.2 <0.2.1-0",
     "@types/react": "~18.3.1",
     "react": "^18.2.0"
   }

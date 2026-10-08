@@ -15,15 +15,15 @@ A persistent multi-agent workspace for [DeepSeek Harness](https://github.com/dee
 - **Additive integration** — the Browser package registers only `sidebar.footer.action` and `shell.overlay`; it does not replace the core `sidebar`, `conversation`, or `details` surfaces and does not intercept `/api`.
 - **Localized policy feedback** — Simplified Chinese and English dictionaries own plugin UI copy, while stable Host error codes keep localization independent from exception text.
 - **Four product views** — Definitions manages reusable roles and immutable definition revision history; Tasks shows assignment, grants, attempts, cancellation, child work, and results; Memory exposes each colleague's unified event history; Runtime shows live activity and exact stop controls.
-- **Forward compatibility export** — the read-only `export:forward-v1` command creates a canonical, checksummed handoff for a future importer while leaving the source storage untouched. Version `0.3.0` does not include an importer.
+- **Forward compatibility export** — the read-only `export:forward-v1` command creates a canonical, checksummed handoff for a future importer while leaving the source storage untouched. Version `0.4.0` does not include an importer.
 
 ## Requirements
 
-- DeepSeek Harness on the `0.1.7` prerelease line, starting at `0.1.7-alpha.2`.
+- DeepSeek Harness on the `0.2.0` release-candidate line, starting at `0.2.0-rc.2`.
 - Node.js `^22.19.0` or `>=24.0.0`.
 - `pnpm` available on `PATH`. The official `dsh plugin` command delegates profile package management to pnpm.
 
-DeepSeek Harness compatibility: >=0.1.7-alpha.2 <0.1.8-0; registry development: 0.1.7-alpha.2; verified source: 0.1.7-alpha.2 (00102833dfaee1da9f48a3a8eae9d34005a75218).
+DeepSeek Harness compatibility: >=0.2.0-rc.2 <0.2.1-0; registry development: 0.2.0-rc.2; verified source: 0.2.0-rc.2 (639ed015397290b3745d163aafe02ffee4aa3f84).
 
 ### Compatibility matrix
 
@@ -31,8 +31,9 @@ DeepSeek Harness compatibility: >=0.1.7-alpha.2 <0.1.8-0; registry development: 
 |---|---|---|
 | `0.2.x` | `>=0.1.1-rc.2 <0.1.2-0` | `0.1.1-rc.2` (`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`) |
 | `0.3.x` | `>=0.1.7-alpha.2 <0.1.8-0` | `0.1.7-alpha.2` (`00102833dfaee1da9f48a3a8eae9d34005a75218`) |
+| `0.4.x` | `>=0.2.0-rc.2 <0.2.1-0` | `0.2.0-rc.2` (`639ed015397290b3745d163aafe02ffee4aa3f84`) |
 
-Install `0.2.x` when the Harness deployment remains on the `0.1.1` line. The current `0.3.x` package intentionally targets the newer client module system and does not include a dual-runtime compatibility layer.
+Install `0.2.x` when the Harness deployment remains on the `0.1.1` line, or `0.3.x` for the `0.1.7` line. The current `0.4.x` package targets DSH `0.2.0` and does not include a dual-runtime compatibility layer.
 
 ## Install
 
@@ -88,7 +89,7 @@ Runtime activity is intentionally ephemeral. The durable task attempt and result
 
 ## Forward export
 
-v0.2.0 introduced portable format `dsh-agent-workspace` version `1`; v0.3.0 preserves that read-only exporter. Build the Host package, then export an explicit storage-domain document:
+v0.2.0 introduced portable format `dsh-agent-workspace` version `1`; v0.4.0 preserves that read-only exporter. Build the Host package, then export an explicit storage-domain document:
 
 ```sh
 pnpm build:host
@@ -123,7 +124,7 @@ Before publishing, run the packed release gate:
 ```sh
 pnpm exec playwright install chromium
 pnpm release:pack
-pnpm smoke:packed -- --dsh <absolute-path-to-deepseek-harness-0.1.7-alpha.2> --scratch-root E:/003code/deepseek-harness-plugins/.tmp/dsh-agent-group-smoke
+pnpm smoke:packed -- --dsh <absolute-path-to-deepseek-harness-0.2.0-rc.2> --scratch-root E:/003code/deepseek-harness-plugins/.tmp/dsh-agent-group-smoke
 ```
 
 The Playwright command installs the Chromium runtime used by the smoke. `release:pack` runs build, typecheck, tests, packs the three npm artifacts in dependency order into `release/`, clears any earlier smoke receipt, and records their hashes together with the deterministic build-input hash. `smoke:packed` rejects stale or changed artifacts, verifies the named Harness checkout, builds its host and Browser artifacts, installs only those packed plugin artifacts into a new Web profile, starts it through `pnpm dsh --profile web`, and runs `tests/e2e/workspace-browser.mjs` against the assembled UI. A successful full smoke writes a receipt bound to the source hash, the Browser smoke driver and fixtures, all three tarball hashes, and the verified DSH commit. `release:publish` requires that receipt and publishes those exact tarballs instead of repacking the workspaces.
@@ -131,7 +132,7 @@ The Playwright command installs the Chromium runtime used by the smoke. `release
 After all three packages are published, verify the exact immutable registry version:
 
 ```sh
-pnpm smoke:registry -- --version 0.3.0 --dsh <absolute-path-to-deepseek-harness-0.1.7-alpha.2> --scratch-root E:/003code/deepseek-harness-plugins/.tmp/dsh-agent-group-smoke
+pnpm smoke:registry -- --version 0.4.0 --dsh <absolute-path-to-deepseek-harness-0.2.0-rc.2> --scratch-root E:/003code/deepseek-harness-plugins/.tmp/dsh-agent-group-smoke
 ```
 
 Before publishing a candidate, maintainers may prove registry-only installation and startup mechanics against the existing public version without applying newer Browser assertions:
@@ -160,7 +161,7 @@ pnpm release:publish -- --tag next
 
 The `Release smoke` GitHub Actions workflow runs the packed command above and retains assembled configuration, Host logs, ARIA milestones, console diagnostics, and the final durable aggregate. The manual `Registry smoke` workflow waits with bounded retries for all three exact package manifests, then runs the same installation, startup, and Browser scenario from registry specifications only.
 
-See the [v0.3.0 release notes](docs/releases/v0.3.0.md) for the current DSH compatibility migration. The [v0.2.0 release notes](docs/releases/v0.2.0.md) remain the product-closure record for the older Harness line, and the earlier [v0.1.1 release notes](docs/releases/v0.1.1.md) remain available for the stabilization release.
+See the [v0.4.0 release notes](docs/releases/v0.4.0.md) for the current DSH compatibility migration. The [v0.3.0 release notes](docs/releases/v0.3.0.md) and [v0.2.0 release notes](docs/releases/v0.2.0.md) remain the records for older Harness lines, and the earlier [v0.1.1 release notes](docs/releases/v0.1.1.md) remain available for the stabilization release.
 
 ## Known limitations
 

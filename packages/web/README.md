@@ -14,8 +14,8 @@ The overlay presents four views: Definitions for roles and immutable revision pi
 
 The overlay requires the user to choose a memory start for every group join. Its plugin-owned labels, accessibility text, empty states, status text, and policy errors use aligned Simplified Chinese and English dictionaries. Agent names, room names, messages, model output, and tool data remain unchanged user or runtime content.
 
-Portable export remains deliberately outside the Browser. v0.3.0 has no import, backup, or restore control.
+Portable export remains deliberately outside the Browser. v0.4.0 has no import, backup, or restore control.
 
-DeepSeek Harness compatibility is `>=0.1.7-alpha.2 <0.1.8-0`, verified at `0.1.7-alpha.2` commit `00102833dfaee1da9f48a3a8eae9d34005a75218`.
+DeepSeek Harness compatibility is `>=0.2.0-rc.2 <0.2.1-0`, verified at `0.2.0-rc.2` commit `639ed015397290b3745d163aafe02ffee4aa3f84`.
 
 License: MIT

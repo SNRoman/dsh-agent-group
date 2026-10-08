@@ -23,23 +23,23 @@ const browserFixtureFiles = [
   '.github/workflows/registry-smoke.yml',
 ] as const
 
-const dshRange = '>=0.1.7-alpha.2 <0.1.8-0'
+const dshRange = '>=0.2.0-rc.2 <0.2.1-0'
 const CONCURRENT_LANE_TEST_TIMEOUT_MS = 15_000
 
 describe('public release contract', () => {
-  it('aligns the v0.3.0 compatibility candidate and preserves the forward export surface', () => {
+  it('aligns the v0.4.0 compatibility candidate and preserves the forward export surface', () => {
     const manifests = packages.map(path => readJson(path))
     const compatibility = readJson('compatibility.json')
-    expect(manifests.map(manifest => manifest.version)).toEqual(['0.3.0', '0.3.0', '0.3.0'])
-    expect(compatibility.candidatePluginVersion).toBe('0.3.0')
-    expect(compatibility.peerRange).toBe('>=0.1.7-alpha.2 <0.1.8-0')
-    expect(compatibility.registryDevelopmentVersion).toBe('0.1.7-alpha.2')
+    expect(manifests.map(manifest => manifest.version)).toEqual(['0.4.0', '0.4.0', '0.4.0'])
+    expect(compatibility.candidatePluginVersion).toBe('0.4.0')
+    expect(compatibility.peerRange).toBe('>=0.2.0-rc.2 <0.2.1-0')
+    expect(compatibility.registryDevelopmentVersion).toBe('0.2.0-rc.2')
     expect(compatibility.verifiedSource).toEqual({
-      version: '0.1.7-alpha.2',
-      commit: '00102833dfaee1da9f48a3a8eae9d34005a75218',
+      version: '0.2.0-rc.2',
+      commit: '639ed015397290b3745d163aafe02ffee4aa3f84',
     })
     expect(compatibility.forwardExport).toEqual({ format: 'dsh-agent-workspace', formatVersion: 1 })
-    expect(readText('packages/host/src/forward-export.ts')).toContain("AGENT_WORKSPACE_PLUGIN_VERSION = '0.3.0'")
+    expect(readText('packages/host/src/forward-export.ts')).toContain("AGENT_WORKSPACE_PLUGIN_VERSION = '0.4.0'")
 
     const root = readJson('package.json')
     expect(root.scripts['export:forward-v1']).toBe('node scripts/export-forward-v1.mjs')
@@ -69,7 +69,7 @@ describe('public release contract', () => {
     const hostReadme = readText('packages/host/README.md')
     const webReadme = readText('packages/web/README.md')
     const bundleReadme = readText('packages/bundle/README.md')
-    const compatibilityNotes = readText('docs/releases/v0.3.0.md')
+    const compatibilityNotes = readText('docs/releases/v0.4.0.md')
 
     for (const text of [readme, releaseNotes]) {
       for (const value of ['Tasks', 'Memory', 'Runtime', 'definition revision', 'export:forward-v1']) expect(text).toContain(value)
@@ -77,18 +77,20 @@ describe('public release contract', () => {
     }
     expect(readme).toContain('[v0.2.0 release notes](docs/releases/v0.2.0.md)')
     expect(readme).toContain('[v0.3.0 release notes](docs/releases/v0.3.0.md)')
+    expect(readme).toContain('[v0.4.0 release notes](docs/releases/v0.4.0.md)')
     expect(readme).toContain('| `0.2.x` | `>=0.1.1-rc.2 <0.1.2-0` |')
     expect(readme).toContain('| `0.3.x` | `>=0.1.7-alpha.2 <0.1.8-0` |')
-    expect(readme).toContain('pnpm smoke:registry -- --version 0.3.0')
+    expect(readme).toContain('| `0.4.x` | `>=0.2.0-rc.2 <0.2.1-0` |')
+    expect(readme).toContain('pnpm smoke:registry -- --version 0.4.0')
     expect(releaseNotes).toContain('does not publish packages, create tags, or create a GitHub Release')
     expect(compatibilityNotes).toContain('does not publish packages, create tags, or create a GitHub Release')
     expect(architecture).toContain('TaskDeliveryCoordinator')
     expect(architecture).toContain('WorkspaceActivityStream')
     expect(architecture).toContain('RFC 8785')
-    expect(hostReadme).toContain('Version `0.3.0`')
+    expect(hostReadme).toContain('Version `0.4.0`')
     expect(hostReadme).toContain('createForwardWorkspaceExportV1')
     expect(webReadme).toContain('four views')
-    expect(bundleReadme).toContain('Compatibility for v0.3.0')
+    expect(bundleReadme).toContain('Compatibility for v0.4.0')
   })
 
   it('binds packed and registry smoke to the installed public exporter and legacy fixture', () => {
@@ -200,7 +202,7 @@ describe('public release contract', () => {
     const ci = readText('.github/workflows/ci.yml')
     expect(ci).toContain('pnpm exec playwright install --with-deps chromium')
     expect(ci).toContain('pnpm test:e2e:browser -- --dsh "$GITHUB_WORKSPACE/deepseek-harness"')
-    expect(ci).toContain('ref: 00102833dfaee1da9f48a3a8eae9d34005a75218')
+    expect(ci).toContain('ref: 639ed015397290b3745d163aafe02ffee4aa3f84')
 
     const workflow = readText('.github/workflows/release-smoke.yml')
     expect(workflow).toContain('pnpm test:e2e:browser -- --dsh "$GITHUB_WORKSPACE/deepseek-harness"')
@@ -391,7 +393,7 @@ describe('public release contract', () => {
       'pnpm test:e2e:browser',
       '--dsh',
       'DSH_SOURCE',
-      '00102833dfaee1da9f48a3a8eae9d34005a75218',
+      '639ed015397290b3745d163aafe02ffee4aa3f84',
       'evidence/',
       'twice',
       'cleanup',

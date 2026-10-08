@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "candidatePluginVersion": "0.3.0",
+  "candidatePluginVersion": "0.4.0",
   "forwardExport": {
     "format": "dsh-agent-workspace",
     "formatVersion": 1
   },
-  "peerRange": ">=0.1.7-alpha.2 <0.1.8-0",
-  "registryDevelopmentVersion": "0.1.7-alpha.2",
+  "peerRange": ">=0.2.0-rc.2 <0.2.1-0",
+  "registryDevelopmentVersion": "0.2.0-rc.2",
   "verifiedSource": {
-    "version": "0.1.7-alpha.2",
-    "commit": "00102833dfaee1da9f48a3a8eae9d34005a75218"
+    "version": "0.2.0-rc.2",
+    "commit": "639ed015397290b3745d163aafe02ffee4aa3f84"
   }
 }

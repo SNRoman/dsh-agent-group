@@ -1,6 +1,6 @@
 # Assembled Browser workflow
 
-`pnpm test:e2e:browser -- --dsh <checkout> --scratch-root <absolute-E-drive-path>` is the single local and CI entry for the packed Agent Workspace Browser scenario. `DSH_SOURCE=<checkout>` and `DSH_AGENT_GROUP_SCRATCH_ROOT=<absolute-path>` supply the same values through the environment. The checkout must be the supported DeepSeek Harness commit `00102833dfaee1da9f48a3a8eae9d34005a75218` (`0.1.7-alpha.2`).
+`pnpm test:e2e:browser -- --dsh <checkout> --scratch-root <absolute-E-drive-path>` is the single local and CI entry for the packed Agent Workspace Browser scenario. `DSH_SOURCE=<checkout>` and `DSH_AGENT_GROUP_SCRATCH_ROOT=<absolute-path>` supply the same values through the environment. The checkout must be the supported DeepSeek Harness commit `639ed015397290b3745d163aafe02ffee4aa3f84` (`0.2.0-rc.2`).
 
 Use Node.js 24 and pnpm 11.7.0, then install repository dependencies and Chromium with `pnpm install --frozen-lockfile` and `pnpm exec playwright install chromium`. The command rebuilds, tests, and packs all three local packages before installing only those tarballs into a clean temporary Web profile. It uses a deterministic local scripted provider and makes no model or credential-bearing network request.
 

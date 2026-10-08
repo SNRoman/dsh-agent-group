@@ -8,7 +8,7 @@ Most users should not install this package directly. Install the profile bundle 
 dsh plugin --profile web add dsh-agent-group
 ```
 
-Version `0.3.0` keeps the durable domain at version `0` and preserves formal Tasks, human grants, retryable delivery, cancellation, immutable definition revisions, unified Memory, and ephemeral Runtime activity while adapting to the current DSH APIs. It strictly validates the complete aggregate and loads released `0.1.x` records without migration. Policy failures cross RPC as stable business-error codes and JSON-safe details; localized prose belongs to the Browser package.
+Version `0.4.0` keeps the durable domain at version `0` and preserves formal Tasks, human grants, retryable delivery, cancellation, immutable definition revisions, unified Memory, and ephemeral Runtime activity while adapting to the current DSH APIs. It strictly validates the complete aggregate and loads released `0.1.x` records without migration. Policy failures cross RPC as stable business-error codes and JSON-safe details; localized prose belongs to the Browser package.
 
 Group membership creation requires an explicit memory start: new events after the join, or an inclusive historical event range. Active silent members receive memory entries for room events even when they are not mentioned; mention routing alone decides which agents run.
 
@@ -22,9 +22,9 @@ plugins:
 
 Configuration fails at the child-run boundary when the selected provider is not registered; the Host does not silently substitute another provider.
 
-The package exports `createForwardWorkspaceExportV1` and the frozen format constants from `@dsh-agent-group/host/forward-export`. The helper validates and clones a local aggregate, omits workspace-local session bindings, and returns an RFC 8785 canonical document with a SHA-256 digest. The repository command `pnpm export:forward-v1` is a read-only file adapter; v0.3.0 exposes no import API.
+The package exports `createForwardWorkspaceExportV1` and the frozen format constants from `@dsh-agent-group/host/forward-export`. The helper validates and clones a local aggregate, omits workspace-local session bindings, and returns an RFC 8785 canonical document with a SHA-256 digest. The repository command `pnpm export:forward-v1` is a read-only file adapter; v0.4.0 exposes no import API.
 
-DeepSeek Harness compatibility is `>=0.1.7-alpha.2 <0.1.8-0`, verified at `0.1.7-alpha.2` commit `00102833dfaee1da9f48a3a8eae9d34005a75218`.
+DeepSeek Harness compatibility is `>=0.2.0-rc.2 <0.2.1-0`, verified at `0.2.0-rc.2` commit `639ed015397290b3745d163aafe02ffee4aa3f84`.
 
 See the repository README for architecture, compatibility, development, and release details.
 
