@@ -5,7 +5,7 @@ Host-side support package for [`dsh-agent-group`](https://github.com/SNRoman/dsh
 Most users should not install this package directly. Install the profile bundle instead:
 
 ```sh
-dsh plugin --profile web add dsh-agent-group
+dsh plugin --profile web add dsh-agent-group@0.4.0
 ```
 
 Version `0.4.0` keeps the durable domain at version `0` and preserves formal Tasks, human grants, retryable delivery, cancellation, immutable definition revisions, unified Memory, and ephemeral Runtime activity while adapting to the current DSH APIs. It strictly validates the complete aggregate and loads released `0.1.x` records without migration. Policy failures cross RPC as stable business-error codes and JSON-safe details; localized prose belongs to the Browser package.

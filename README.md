@@ -40,7 +40,7 @@ Install `0.2.x` when the Harness deployment remains on the `0.1.1` line, or `0.3
 Install the profile bundle through the official DeepSeek Harness plugin command:
 
 ```sh
-dsh plugin --profile web add dsh-agent-group
+dsh plugin --profile web add dsh-agent-group@0.4.0
 ```
 
 Then start the normal Harness web profile:
@@ -55,8 +55,10 @@ For a domain/runtime-only deployment, the same bundle can be added to a profile 
 
 ### Update
 
+Do not update across plugin lines: keep plugin `0.2.x` on DSH `0.1.1`, plugin `0.3.x` on DSH `0.1.7`, and plugin `0.4.x` on DSH `0.2.0`. Within the supported line, run:
+
 ```sh
-dsh plugin --profile web update dsh-agent-group
+dsh plugin --profile web update dsh-agent-group@0.4.0
 ```
 
 ### Remove

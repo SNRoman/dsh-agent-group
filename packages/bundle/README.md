@@ -5,13 +5,13 @@ Installable Agent Workspace profile bundle for [DeepSeek Harness](https://github
 ## Install
 
 ```sh
-dsh plugin --profile web add dsh-agent-group
+dsh plugin --profile web add dsh-agent-group@0.4.0
 ```
 
 ## Update
 
 ```sh
-dsh plugin --profile web update dsh-agent-group
+dsh plugin --profile web update dsh-agent-group@0.4.0
 ```
 
 ## Remove

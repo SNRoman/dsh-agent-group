@@ -5,7 +5,7 @@ Browser support package for [`dsh-agent-group`](https://github.com/SNRoman/dsh-a
 Most users should not install this package directly. Install the profile bundle instead:
 
 ```sh
-dsh plugin --profile web add dsh-agent-group
+dsh plugin --profile web add dsh-agent-group@0.4.0
 ```
 
 The package is additive: it registers only `sidebar.footer.action` and `shell.overlay` and does not replace the core conversation surfaces.

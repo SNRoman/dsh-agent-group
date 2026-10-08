@@ -81,6 +81,8 @@ describe('public release contract', () => {
     expect(readme).toContain('| `0.2.x` | `>=0.1.1-rc.2 <0.1.2-0` |')
     expect(readme).toContain('| `0.3.x` | `>=0.1.7-alpha.2 <0.1.8-0` |')
     expect(readme).toContain('| `0.4.x` | `>=0.2.0-rc.2 <0.2.1-0` |')
+    expect(readme).toContain('dsh plugin --profile web add dsh-agent-group@0.4.0')
+    expect(readme).toContain('Do not update across plugin lines')
     expect(readme).toContain('pnpm smoke:registry -- --version 0.4.0')
     expect(releaseNotes).toContain('does not publish packages, create tags, or create a GitHub Release')
     expect(compatibilityNotes).toContain('does not publish packages, create tags, or create a GitHub Release')
