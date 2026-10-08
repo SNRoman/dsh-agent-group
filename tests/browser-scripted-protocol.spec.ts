@@ -15,7 +15,7 @@ function adapter(): LlmAdapter {
 
 function request(...texts: string[]): GenerateOptions {
   return {
-    provider: 'deepseek-official', model: 'deepseek-v4-flash', system: '身份是“Alice”',
+    provider: 'agent-workspace-scripted', model: 'workspace-smoke', system: '身份是“Alice”',
     messages: texts.map(text => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })),
   }
 }

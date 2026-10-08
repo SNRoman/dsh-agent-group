@@ -258,7 +258,7 @@ async function assertTaskToolEvidence(durable, args) {
 
 async function send(dialog, text) {
   const composer = dialog.getByPlaceholder(/Write (?:a message|a direct message)/u)
-  await composer.fill(text)
+  await composer.pressSequentially(text)
   await dialog.getByRole('button', { name: 'Send', exact: true }).click()
   await dialog.page().waitForFunction(element => element.value === '', await composer.elementHandle(), { timeout: STEP_TIMEOUT_MS })
   const failure = dialog.getByText(/^Workspace request failed:/u)
@@ -527,7 +527,7 @@ function agentRow(dialog, name) {
 }
 
 async function dismissTestingNotice(page) {
-  const testingNotice = page.getByRole('dialog', { name: /^(?:Internal Testing Notice|内测声明)$/u })
+  const testingNotice = page.getByRole('dialog', { name: /^(?:Internal Testing Notice|Preview Notice|内测声明|预览版说明)$/u })
   const sessions = page.getByRole('tree', { name: /^(?:Sessions|会话)$/u })
   await sessions.waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS })
   try {

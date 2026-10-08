@@ -13,8 +13,8 @@ import {
   type UserMessage,
 } from '@deepseek-ai/dsh-llm'
 
-const PROVIDER = 'deepseek-official'
-const MODEL = 'deepseek-v4-flash'
+const PROVIDER = 'agent-workspace-scripted'
+const MODEL = 'workspace-smoke'
 const TASK_TOOLS_REQUEST = 'PROFILE_TASK_TOOLS_REQUEST'
 const V020_DELEGATE = 'V020_DELEGATE'
 const V020_CHILD = 'V020_CHILD'
@@ -371,7 +371,7 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
 export const name = 'agent-workspace-scripted-llm'
 export const inject = ['llm']
 
-/** Register the smoke adapter on the shipped default provider route. */
+/** Register the smoke adapter on its profile-local provider route. */
 export function apply(ctx: Context): void {
   ctx.llm.registerAdapter([PROVIDER], new ScriptedWorkspaceAdapter())
   const fixturePath = process.env['DSH_AGENT_GROUP_TASK_TOOLS_FIXTURE']
