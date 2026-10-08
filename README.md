@@ -2,6 +2,26 @@
 
 A persistent multi-agent workspace for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). It adds a browser workspace where reusable agent roles become named colleagues that can join rooms, remember room events, reply to mentions, collaborate through bounded agent-to-agent chains, receive human-authorized tasks, and run one-shot child agents.
 
+## Current release
+
+Version `0.3.0` is published: [GitHub Release](https://github.com/SNRoman/dsh-agent-group/releases/tag/v0.3.0), [npm bundle](https://www.npmjs.com/package/dsh-agent-group/v/0.3.0), [Host](https://www.npmjs.com/package/@dsh-agent-group/host/v/0.3.0), and [Web](https://www.npmjs.com/package/@dsh-agent-group/web/v/0.3.0). Its three registry packages passed the real Browser workflow on 2026-10-08, including tasks, unified personal memory, runtime control, restart persistence, and uninstall with core sessions preserved.
+
+| Plugin | Supported DSH |
+|---|---|
+| `0.2.x` | `>=0.1.1-rc.2 <0.1.2-0` |
+| `0.3.0` | `>=0.1.7-alpha.2 <0.1.8-0` |
+
+For DSH `0.1.7-alpha.2`, install the verified release:
+
+```sh
+dsh plugin --profile web add dsh-agent-group@0.3.0
+dsh web
+```
+
+DSH's npm `latest` is `0.2.0-rc.2` and `alpha` is `0.2.1-alpha.1` as checked on 2026-10-08. Plugin `0.3.0` does not support either version: DSH's peer compatibility check rejects it. A new adaptation and verification release is required before upgrading DSH to those lines.
+
+This default branch contains older source. Use the [v0.3.0 source and full documentation](https://github.com/SNRoman/dsh-agent-group/tree/v0.3.0) for the released implementation, and the [compatibility branch README](https://github.com/SNRoman/dsh-agent-group/blob/codex/latest-dsh-compat/README.md) for updated release status. The remaining sections document the older source on this branch.
+
 ## Features
 
 - **Agent definitions and instances** — define reusable roles, create multiple named instances, and keep each instance's employment lifecycle, memory, memberships, tasks, and durable DSH session independent.
