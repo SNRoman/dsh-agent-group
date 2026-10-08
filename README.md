@@ -2,6 +2,8 @@
 
 A persistent multi-agent workspace for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). It adds a browser workspace where reusable agent roles become named colleagues that can join rooms, remember room events, reply to mentions, collaborate through bounded agent-to-agent chains, receive human-authorized tasks, and run one-shot child agents.
 
+Version `0.3.0` is published on npm: [bundle](https://www.npmjs.com/package/dsh-agent-group/v/0.3.0), [Host](https://www.npmjs.com/package/@dsh-agent-group/host/v/0.3.0), and [Web](https://www.npmjs.com/package/@dsh-agent-group/web/v/0.3.0). See the [GitHub Release](https://github.com/SNRoman/dsh-agent-group/releases/tag/v0.3.0). The published packages passed the clean-profile Browser workflow on DSH `0.1.7-alpha.2` on 2026-10-08, including restart persistence and uninstall.
+
 ## Features
 
 - **Agent definitions and instances** — define reusable roles, create multiple named instances, and keep each instance's employment lifecycle, memory, memberships, tasks, and durable DSH session independent.
@@ -34,12 +36,14 @@ DeepSeek Harness compatibility: >=0.1.7-alpha.2 <0.1.8-0; registry development: 
 
 Install `0.2.x` when the Harness deployment remains on the `0.1.1` line. The current `0.3.x` package intentionally targets the newer client module system and does not include a dual-runtime compatibility layer.
 
+As checked on 2026-10-08, DSH's npm `latest` is `0.2.0-rc.2` and its `alpha` tag is `0.2.1-alpha.1`. Neither is supported by plugin `0.3.0`: both fail DSH's plugin peer compatibility check. Support requires a new verified plugin release; do not treat a version exemption as compatibility evidence. See [DSH 0.2.0-rc.2](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.0-rc.2) and [DSH 0.2.1-alpha.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-alpha.1).
+
 ## Install
 
 Install the profile bundle through the official DeepSeek Harness plugin command:
 
 ```sh
-dsh plugin --profile web add dsh-agent-group
+dsh plugin --profile web add dsh-agent-group@0.3.0
 ```
 
 Then start the normal Harness web profile:
