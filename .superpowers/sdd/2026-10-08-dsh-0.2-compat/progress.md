@@ -26,7 +26,7 @@ Task 4 RED 2: the DSH 0.2 `Preview Notice` replaced the older testing-notice tit
 
 Task 4 RED 3: a direct-room transition cleared the one-shot Playwright `fill` during a controlled-input rerender. A release-contract assertion was added before changing the driver to `pressSequentially`, which keeps the controlled draft synchronized across the transition.
 
-Task 4 GREEN: the final `pnpm release:pack` passed 41 files / 784 tests and produced the three `0.4.0` tarballs. Two consecutive packed Browser smokes passed with evidence `packed-0.4.0-2026-10-08T14-22-25-361Z-e31cbed7` and `packed-0.4.0-2026-10-08T14-24-48-849Z-f91293ec` under `E:/003code/deepseek-harness-plugins/.tmp/dsh-agent-group-smoke-040/evidence`.
+Task 4 GREEN: the final `pnpm release:pack` passed 41 files / 784 tests and produced the three `0.4.0` tarballs. After the independent-review documentation fix, two consecutive packed Browser smokes passed with evidence `packed-0.4.0-2026-10-08T14-38-52-906Z-8b675214` and `packed-0.4.0-2026-10-09T00-06-27-229Z-4179f3b0` under `E:/003code/deepseek-harness-plugins/.tmp/dsh-agent-group-smoke-040/evidence`; their release smoke receipts are byte-identical.
 
 Task 5 canary: direct `pnpm test:dsh-source` against DSH `0.2.1-alpha.1` commit `5badb15009ae1756c3afe0ae0cef1faafc290ccc` failed at the intended compatibility gate (`expected 0.2.0-rc.2, actual 0.2.1-alpha.1`). Source comparison confirms that the canary removes `@deepseek-ai/dsh-invariants` and package-local invariant exports. Plugin production code imports none of them; the root-only development dependency must be removed when a separate `0.2.1` plugin line is prepared. The `0.4.x` range remains unchanged.
 
