@@ -34,6 +34,10 @@
       "types": "./lib/types/forward-export.d.ts",
       "default": "./lib/types/forward-export.js"
     },
+    "./workspace-import": {
+      "types": "./lib/types/workspace-import.d.ts",
+      "default": "./lib/types/workspace-import.js"
+    },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },

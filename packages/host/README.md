@@ -30,6 +30,16 @@ Configuration fails at the child-run boundary when the selected provider is not 
 
 The package exports `createForwardWorkspaceExportV1` and the frozen format constants from `@dsh-agent-group/host/forward-export`. The helper validates and clones a local aggregate, omits workspace-local session bindings, and returns an RFC 8785 canonical document with a SHA-256 digest. The repository command `pnpm export:forward-v1` is a read-only file adapter; v0.4.0 exposes no import API.
 
+## Organization recovery development
+
+The development-only `@dsh-agent-group/host/workspace-import` leaf provides `prepareWorkspaceImportV1(json, options)`. It validates an existing forward-v1 document and returns a detached candidate for a caller-assigned new organization ID. It does not write storage, create an organization, register a service, restore model sessions, or run work. The published v0.4.0 package does not contain this leaf; there is not yet a Browser recovery control.
+
+The caller supplies positive safe-integer limits for UTF-8 document bytes (`maxBytes`), aggregate records including memory entries (`maxEntities`), events (`maxEvents`), each string/key's UTF-8 bytes (`maxStringBytes`), and JSON container depth (`maxDepth`). The decoder verifies the SHA-256 digest of the original parsed envelope, strict version-1 fields, and all aggregate relationships. It rejects `__proto__` fields before schema conversion, and rejects duplicate object fields and invalid Unicode as required by [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785), while accepting whitespace and arbitrary field ordering. A digest detects corruption; it does not establish authorship. Exports contain potentially sensitive role instructions and complete organization history, so callers must obtain human confirmation before later committing a candidate.
+
+Candidates retain entity/event IDs, event order, employment periods, definitions, grants, tasks, and personal memory. They discard old Session bindings and rebase task-delivery message IDs to the new organization ID without changing the source document. Pending task deliveries and running children are rejected rather than resumed or silently repaired. Source plugin versions and declared import ranges remain diagnostic information, not an acceptance policy.
+
+Multiple organizations, idempotent create-new persistence, legacy record migration, archiving, and Browser import/export are subsequent integration work. The pure decoder alone is not a completed backup-and-restore workflow.
+
 DeepSeek Harness compatibility is `>=0.2.0-rc.2 <0.2.1-0`, verified at `0.2.0-rc.2` commit `639ed015397290b3745d163aafe02ffee4aa3f84`.
 
 See the repository README for architecture, compatibility, development, and release details.
