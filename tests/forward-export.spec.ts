@@ -18,6 +18,9 @@ import { workspaceStateSchema } from '../packages/host/src/spec.ts'
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const rawFixture = join(root, 'tests', 'fixtures', 'v0.2.0', 'agent-workspace.json')
 const exportedAt = '2026-09-04T00:00:00.000Z'
+// CLI tests include cold Node starts; children settle before temporary-file cleanup.
+const CLI_PROCESS_TIMEOUT_MS = 20_000
+const CLI_TEST_TIMEOUT_MS = 60_000
 
 interface StoredWorkspaceDocument {
   readonly unit: Readonly<Record<string, unknown>>
@@ -124,16 +127,16 @@ describe('forward workspace export v1', () => {
       const sourceBefore = await readFile(input)
       const state = workspaceStateSchema.parse(parseStoredWorkspace(sourceBefore.toString('utf8')))
       const expected = createForwardWorkspaceExportV1(state, { exportedAt }).json
-      await execa(process.execPath, [join(root, 'scripts', 'export-forward-v1.mjs'), '--input', input, '--output', output, '--exported-at', exportedAt], { cwd: root })
+      await execa(process.execPath, [join(root, 'scripts', 'export-forward-v1.mjs'), '--input', input, '--output', output, '--exported-at', exportedAt], { cwd: root, timeout: CLI_PROCESS_TIMEOUT_MS })
       expect(await readFile(input)).toEqual(sourceBefore)
       const outputText = await readFile(output, 'utf8')
       expect(outputText.endsWith('\n')).toBe(true)
       expect(outputText.slice(0, -1)).toBe(expected)
-      await expect(execa(process.execPath, [join(root, 'scripts', 'export-forward-v1.mjs'), '--input', input, '--output', output, '--exported-at', exportedAt], { cwd: root })).rejects.toMatchObject({ exitCode: 1 })
+      await expect(execa(process.execPath, [join(root, 'scripts', 'export-forward-v1.mjs'), '--input', input, '--output', output, '--exported-at', exportedAt], { cwd: root, timeout: CLI_PROCESS_TIMEOUT_MS })).rejects.toMatchObject({ exitCode: 1 })
     } finally {
       await rm(temporary, { recursive: true, force: true })
     }
-  })
+  }, CLI_TEST_TIMEOUT_MS)
 
   test.each([
     ['wrong domain', { name: 'other', version: 0 }],
@@ -145,12 +148,12 @@ describe('forward workspace export v1', () => {
     try {
       const document = JSON.parse(await readFile(rawFixture, 'utf8')) as Record<string, unknown>
       await writeFile(input, `${JSON.stringify({ ...document, unit })}\n`, 'utf8')
-      await expect(execa(process.execPath, [join(root, 'scripts', 'export-forward-v1.mjs'), '--input', input, '--output', output, '--exported-at', exportedAt], { cwd: root })).rejects.toMatchObject({ exitCode: 1 })
+      await expect(execa(process.execPath, [join(root, 'scripts', 'export-forward-v1.mjs'), '--input', input, '--output', output, '--exported-at', exportedAt], { cwd: root, timeout: CLI_PROCESS_TIMEOUT_MS })).rejects.toMatchObject({ exitCode: 1 })
       await expect(readFile(output)).rejects.toMatchObject({ code: 'ENOENT' })
     } finally {
       await rm(temporary, { recursive: true, force: true })
     }
-  })
+  }, CLI_TEST_TIMEOUT_MS)
 
   test.each([
     ['extra domain metadata', (document: StoredWorkspaceDocument) => ({ ...document, unit: { ...document.unit, extra: true } })],
@@ -163,12 +166,12 @@ describe('forward workspace export v1', () => {
     try {
       const document = JSON.parse(await readFile(rawFixture, 'utf8')) as StoredWorkspaceDocument
       await writeFile(input, `${JSON.stringify(change(document))}\n`, 'utf8')
-      await expect(execa(process.execPath, [join(root, 'scripts', 'export-forward-v1.mjs'), '--input', input, '--output', output, '--exported-at', exportedAt], { cwd: root })).rejects.toMatchObject({ exitCode: 1 })
+      await expect(execa(process.execPath, [join(root, 'scripts', 'export-forward-v1.mjs'), '--input', input, '--output', output, '--exported-at', exportedAt], { cwd: root, timeout: CLI_PROCESS_TIMEOUT_MS })).rejects.toMatchObject({ exitCode: 1 })
       await expect(readFile(output)).rejects.toMatchObject({ code: 'ENOENT' })
     } finally {
       await rm(temporary, { recursive: true, force: true })
     }
-  })
+  }, CLI_TEST_TIMEOUT_MS)
 
   test.each([
     ['an extra workspace', (local: unknown) => ({ local, extra: local })],
@@ -184,10 +187,10 @@ describe('forward workspace export v1', () => {
       }
       document.tables.workspaces = workspaces(document.tables.workspaces.local) as { local: unknown }
       await writeFile(input, `${JSON.stringify(document)}\n`, 'utf8')
-      await expect(execa(process.execPath, [join(root, 'scripts', 'export-forward-v1.mjs'), '--input', input, '--output', output, '--exported-at', exportedAt], { cwd: root })).rejects.toMatchObject({ exitCode: 1 })
+      await expect(execa(process.execPath, [join(root, 'scripts', 'export-forward-v1.mjs'), '--input', input, '--output', output, '--exported-at', exportedAt], { cwd: root, timeout: CLI_PROCESS_TIMEOUT_MS })).rejects.toMatchObject({ exitCode: 1 })
       await expect(readFile(output)).rejects.toMatchObject({ code: 'ENOENT' })
     } finally {
       await rm(temporary, { recursive: true, force: true })
     }
-  })
+  }, CLI_TEST_TIMEOUT_MS)
 })

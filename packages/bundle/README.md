@@ -1,6 +1,6 @@
 # dsh-agent-group
 
-Installable Agent Workspace profile bundle for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
+Installable Agent Organization（智能体组织）profile bundle for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). The npm name remains `dsh-agent-group`.
 
 ## Install
 

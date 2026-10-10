@@ -81,7 +81,7 @@ interface EmployeeRoleContribution {
  */
 export class EmployeeAgentPool {
   private readonly handles = new Map<AgentId, AgentHandle>()
-  private readonly agentIds = new WeakMap<Agent, AgentId>()
+  private readonly agentIds = new WeakMap<Agent, { readonly agentId: AgentId; readonly generation: number }>()
   private readonly inFlight = new Map<AgentId, Promise<AgentHandle>>()
   private readonly generations = new Map<AgentId, number>()
   private readonly operations = new Map<AgentId, Promise<void>>()
@@ -101,9 +101,11 @@ export class EmployeeAgentPool {
     return this.handles.get(agentId)
   }
 
-  /** Resolve a currently published employee handle without trusting caller data. */
+  /** Resolve an employee Agent admitted by DSH setup in the current pool generation. */
   agentIdFor(agent: Agent): AgentId | undefined {
-    return this.agentIds.get(agent)
+    const identity = this.agentIds.get(agent)
+    if (identity === undefined || this.stopped || this.generationOf(identity.agentId) !== identity.generation) return undefined
+    return identity.agentId
   }
 
   /** Admit the live handle for one agent, creating or resuming it exactly once. */
@@ -120,11 +122,12 @@ export class EmployeeAgentPool {
         try {
           await handle.dispose()
         } finally {
+          this.agentIds.delete(handle.agent)
           throw new Error(`agent '${agentId}' admission was invalidated by disposal`)
         }
       }
       this.handles.set(agentId, handle)
-      this.agentIds.set(handle.agent, agentId)
+      this.agentIds.set(handle.agent, { agentId, generation })
       return handle
     }).catch(error => {
       this.roles.delete(agentId)
@@ -298,12 +301,15 @@ export class EmployeeAgentPool {
         }
         await unhide?.call(this.source, bound)
         let handle: AgentHandle | undefined
+        let resumedAgent: Agent | undefined
         try {
           this.assertAdmissionActive(agentId, generation)
           const options = await this.optionsFactory?.(agentId, 'resume')
           this.assertAdmissionActive(agentId, generation)
           // A compatible materialized session never falls back to create.
-          const setup = this.resumeSetup(agentId, this.roleSetup(agentId, options))
+          const setup = this.resumeSetup(agentId, generation, this.roleSetup(agentId, options), agent => {
+            resumedAgent = agent
+          })
           handle = await this.agents.resume({
             resumeSessionId: bound,
             ...(options?.agentOptions === undefined ? {} : { agentOptions: options.agentOptions }),
@@ -315,6 +321,7 @@ export class EmployeeAgentPool {
           }
           return handle
         } catch (error) {
+          if (resumedAgent !== undefined) this.agentIds.delete(resumedAgent)
           try {
             await handle?.dispose()
           } finally {
@@ -344,12 +351,23 @@ export class EmployeeAgentPool {
     }
   }
 
-  private resumeSetup(agentId: AgentId, setup: AgentSetup | undefined): AgentSetup | undefined {
-    if (this.recover === undefined) return setup
+  private resumeSetup(
+    agentId: AgentId,
+    generation: number,
+    setup: AgentSetup | undefined,
+    admitIdentity: (agent: Agent) => void,
+  ): AgentSetup {
     return async (agentCtx, agent): Promise<AgentSetupCommit | void> => {
       const commit = await setup?.(agentCtx, agent)
       await this.recover?.(agentId, agent)
-      return commit
+      return { commit: () => {
+        commit?.commit()
+        this.assertAdmissionActive(agentId, generation)
+        // DSH invokes this synchronous commit before maintenance releases the
+        // restored inbox driver; tools must authenticate those resumed turns.
+        this.agentIds.set(agent, { agentId, generation })
+        admitIdentity(agent)
+      } }
     }
   }
 

@@ -16,6 +16,8 @@ import {
 const PROVIDER = 'agent-workspace-scripted'
 const MODEL = 'workspace-smoke'
 const TASK_TOOLS_REQUEST = 'PROFILE_TASK_TOOLS_REQUEST'
+const MEMORY_QUERY = 'UTF-8'
+const MEMORY_REQUIREMENT = '导出要求：CSV 使用 UTF-8 编码，保留中文标题，不添加 BOM。'
 const V020_DELEGATE = 'V020_DELEGATE'
 const V020_CHILD = 'V020_CHILD'
 const V020_SAFE_FAILURE = 'V020_SAFE_FAILURE'
@@ -26,6 +28,9 @@ const GATE_TIMEOUT_MS = 120_000
 interface TaskToolsFixture {
   readonly taskId: string
   readonly deniedAssigneeAgentId: string
+  readonly aliceAgentId: string
+  readonly memoryEventId: string
+  readonly memorySequence: number
 }
 
 interface WorkspaceFixture {
@@ -51,6 +56,16 @@ export function currentRequest(options: GenerateOptions): UserMessage {
 
 function currentText(options: GenerateOptions): string {
   return currentRequest(options).content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+}
+
+function requiredToolResult(options: GenerateOptions, callId: string): ToolResultMessage {
+  const result = options.messages.findLast((message): message is ToolResultMessage => message.role === 'tool' && message.toolCallId === callId)
+  if (result === undefined || result.isError === true) throw new Error(`profile task tool ${callId} did not return a successful result`)
+  return result
+}
+
+function resultText(result: ToolResultMessage): string {
+  return result.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
 }
 
 /** Resolve the exact delivery identity; task titles alone cannot identify an attempt. */
@@ -337,29 +352,64 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
     const fixturePath = process.env['DSH_AGENT_GROUP_TASK_TOOLS_FIXTURE']
     if (fixturePath === undefined) throw new Error('DSH_AGENT_GROUP_TASK_TOOLS_FIXTURE is required for profile task tools')
     const fixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as TaskToolsFixture
-    const expected = ['workspace_delegate_task', 'workspace_run_child', 'workspace_complete_task']
+    const expected = ['workspace_search_memory', 'workspace_read_memory', 'workspace_delegate_task', 'workspace_run_child', 'workspace_complete_task']
     const published = new Set(options.tools?.map(tool => tool.name))
     if (!expected.every(name => published.has(name))) {
       throw new Error('profile task tools were not visible to the scripted model')
     }
     const identity = taskIdentity(options)
     if (identity.taskId !== fixture.taskId) throw new Error('profile task identity does not match its fixture')
-    const step = protocolStep(options, ['profile-policy-denial', 'profile-complete-task'])
+    const recalled = options.messages.filter(message => message.role === 'user' && message.source?.kind === 'agent-workspace-recall')
+      .flatMap(message => message.content.flatMap(block => block.type === 'text' ? [block.text] : [])).join('\n')
+    if (!recalled.includes(`[event:${fixture.memoryEventId} `) || !recalled.includes(MEMORY_REQUIREMENT)) {
+      throw new Error('profile formal task omitted its acquired room requirement or original event id')
+    }
+    const policy = [options.system, textOf(options)].filter(Boolean).join('\n')
+    if (!policy.includes('workspace_search_memory') || !policy.includes('workspace_read_memory')) {
+      throw new Error('profile formal task omitted its personal-memory tool policy')
+    }
+    const step = protocolStep(options, ['profile-memory-search', 'profile-memory-read', 'profile-policy-denial', 'profile-complete-task'])
+    let searchedEventId: string | undefined
+    if (step >= 1) {
+      const found = JSON.parse(resultText(requiredToolResult(options, 'profile-memory-search'))) as {
+        readonly events: readonly { readonly eventId: string; readonly excerpt: string }[]
+        readonly hasMore: boolean
+      }
+      const requirement = found.events.find(event => event.excerpt.includes(MEMORY_REQUIREMENT))
+      if (requirement?.eventId !== fixture.memoryEventId || typeof found.hasMore !== 'boolean') {
+        throw new Error('profile memory search omitted the acquired room requirement')
+      }
+      searchedEventId = requirement.eventId
+    }
+    if (step >= 2) {
+      const read = JSON.parse(resultText(requiredToolResult(options, 'profile-memory-read'))) as {
+        readonly eventId: string; readonly sequence: number; readonly type: string; readonly acquiredBy: string
+        readonly text: string; readonly offset: number; readonly totalCharacters: number; readonly nextOffset?: number
+      }
+      if (read.eventId !== searchedEventId || read.sequence !== fixture.memorySequence
+        || read.type !== 'room/message' || read.acquiredBy !== 'room-membership'
+        || read.text !== MEMORY_REQUIREMENT || read.offset !== 0 || read.totalCharacters !== MEMORY_REQUIREMENT.length
+        || read.nextOffset !== undefined) throw new Error('profile memory read omitted its original text or source')
+    }
     const tool = step === 0
-      ? {
-          id: ToolCallId('profile-policy-denial'),
-          name: 'workspace_delegate_task',
-          arguments: JSON.stringify({
-            rootTaskId: fixture.taskId,
-            assigneeAgentId: fixture.deniedAssigneeAgentId,
-            title: 'PROFILE_DENIED_DELEGATION',
-          }),
-        }
-      : {
-          id: ToolCallId('profile-complete-task'),
-          name: 'workspace_complete_task',
-          arguments: JSON.stringify({ taskId: fixture.taskId, result: 'PROFILE_TASK_TOOL_RESULT' }),
-        }
+      ? { id: ToolCallId('profile-memory-search'), name: 'workspace_search_memory', arguments: JSON.stringify({ query: MEMORY_QUERY }) }
+      : step === 1
+        ? { id: ToolCallId('profile-memory-read'), name: 'workspace_read_memory', arguments: JSON.stringify({ eventId: searchedEventId }) }
+        : step === 2
+          ? {
+              id: ToolCallId('profile-policy-denial'),
+              name: 'workspace_delegate_task',
+              arguments: JSON.stringify({
+                rootTaskId: fixture.taskId,
+                assigneeAgentId: fixture.deniedAssigneeAgentId,
+                title: 'PROFILE_DENIED_DELEGATION',
+              }),
+            }
+          : {
+              id: ToolCallId('profile-complete-task'),
+              name: 'workspace_complete_task',
+              arguments: JSON.stringify({ taskId: fixture.taskId, result: 'PROFILE_TASK_TOOL_RESULT' }),
+            }
     yield { type: 'block-start', index: 0, blockType: 'tool-call' }
     yield { type: 'tool-call-delta', index: 0, id: tool.id, name: tool.name, argumentsDelta: tool.arguments }
     yield { type: 'block-end', index: 0, block: { type: 'tool-call', ...tool } }

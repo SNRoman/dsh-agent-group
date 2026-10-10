@@ -1,9 +1,17 @@
 {
   "tools": [
+    "workspace_search_memory",
+    "workspace_read_memory",
     "workspace_delegate_task",
     "workspace_run_child",
     "workspace_complete_task"
   ],
   "result": "PROFILE_TASK_TOOL_RESULT",
-  "policyError": "Workspace task request is not permitted."
+  "policyError": "Workspace task request is not permitted.",
+  "memory": {
+    "query": "UTF-8",
+    "text": "导出要求：CSV 使用 UTF-8 编码，保留中文标题，不添加 BOM。",
+    "type": "room/message",
+    "acquiredBy": "room-membership"
+  }
 }

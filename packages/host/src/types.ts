@@ -245,9 +245,13 @@ export interface AgentMemoryAcquisition {
 /** The request used to select personal memory for an awakened agent. */
 export interface RecallAgentEventsRequest {
   readonly agentId: AgentId
-  readonly roomId: RoomId
+  readonly roomId?: RoomId
   readonly query: string
   readonly characterBudget: number
+  /** Restrict explicit searches to keyword matches instead of supplementing recent events. */
+  readonly matchingOnly?: boolean
+  /** Maximum events returned by an explicit search. */
+  readonly resultLimit?: number
 }
 
 /** One event selected for a DSH memory input. */
@@ -262,6 +266,8 @@ export interface AgentEventRecall {
   readonly eventIds: readonly WorkspaceEventId[]
   readonly entries: readonly RecalledAgentEvent[]
   readonly rendered: string
+  /** Whether an explicit search omitted matching events because of its count or character budget. */
+  readonly hasMore?: boolean
 }
 
 /** A formal root or derived task. */

@@ -19,9 +19,10 @@ import { AgentDefinitionId, AgentId, HumanId, RoomId, TaskId, WorkspaceId } from
 import type { DefinitionRevisionId } from './ids.ts'
 import type { ChildRunId } from './ids.ts'
 import { WorkspaceDispatcher } from './dispatcher.ts'
-import type { DispatcherLimits, SubagentRuntimeLike, WorkspaceDispatcherHost } from './dispatcher.ts'
+import type { SubagentRuntimeLike, WorkspaceDispatcherHost } from './dispatcher.ts'
 import { assertWorkspaceInvariants } from './invariant.ts'
 import { joinRoomWithMemory } from './memory.ts'
+import { createDeliveryMemory } from './delivery-memory.ts'
 import { queryAgentMemory } from './memory-query.ts'
 import type { MemoryPage, MemoryQuery } from './memory-query.ts'
 import { assertDirectRoomTextAllowed, assertRoomMessageAuthorized, resolveHumanWakeTargets } from './room-policy.ts'
@@ -50,6 +51,7 @@ import { inspectTaskDelivery } from './task-delivery.ts'
 import { TaskDeliveryCoordinator } from './task-delivery-coordinator.ts'
 import type { TaskDeliveryReservation, WorkspaceDeliveryHooks } from './task-delivery-coordinator.ts'
 import { registerWorkspaceTaskTools } from './task-tools.ts'
+import { registerWorkspaceMemoryTools } from './memory-tools.ts'
 import type { WorkspaceToolRegistry } from './task-tools.ts'
 import type { TaskDeliveryProgressEvent, WorkspaceCommand, WorkspaceState } from './types.ts'
 import type { DelegationGrantId } from './ids.ts'
@@ -65,13 +67,14 @@ declare module '@deepseek-ai/cordis' {
 /** Key of the single local workspace record in the domain table. */
 export const LOCAL_WORKSPACE_ID = WorkspaceId('local')
 
-/** MVP mention-chain and recall bounds fixed by the specification. */
-const DISPATCHER_LIMITS: DispatcherLimits = { maxAgentHops: 3, maxRepliesPerRoot: 8, recallCharacterBudget: 4000 }
-
 /** Host deployment settings. */
 export interface Config {
   /** Registered DSH subagent provider used for one-shot child runs. */
   childProvider?: string
+  /** Maximum personal-memory characters per automatic recall or memory-tool response text. */
+  memoryCharacterBudget?: number
+  /** Maximum matching event previews in one memory search. */
+  memorySearchResultLimit?: number
 }
 
 type ResolvedConfig = Required<Config>
@@ -120,6 +123,8 @@ export class AgentWorkspaceDomainService extends Service {
   static inject = ['storageDomain']
   static Config: z<Config> = z.object({
     childProvider: z.string().default('spawn'),
+    memoryCharacterBudget: z.number().step(1).min(1).default(4000),
+    memorySearchResultLimit: z.number().step(1).min(1).default(10),
   })
 
   private readonly config: ResolvedConfig
@@ -172,6 +177,13 @@ export class AgentWorkspaceDomainService extends Service {
         }),
         'agentWorkspace.taskTools',
       )
+      toolCtx.effect(
+        () => registerWorkspaceMemoryTools(tools, {
+          agentIdFor: agent => this.agentIdFor(agent),
+          snapshot: () => this.snapshot(),
+        }, { characterBudget: this.config.memoryCharacterBudget, resultLimit: this.config.memorySearchResultLimit }),
+        'agentWorkspace.memoryTools',
+      )
     })
 
     // Agent availability is dynamic: loader siblings mount concurrently, so a
@@ -210,7 +222,7 @@ export class AgentWorkspaceDomainService extends Service {
         dispatcherHost,
         () => this.ctx.get('subagents') as SubagentRuntimeLike | undefined,
         this.config.childProvider,
-        DISPATCHER_LIMITS,
+        { maxAgentHops: 3, maxRepliesPerRoot: 8, recallCharacterBudget: this.config.memoryCharacterBudget },
         taskDelivery,
         this.childControllers,
       )
@@ -625,7 +637,8 @@ export class AgentWorkspaceDomainService extends Service {
   /**
    * Deliver one message to an employed agent and resolve with its reply. The
    * optional recall is injected into the same durable turn, immediately after
-   * the delivery.
+   * the delivery. New formal tasks without an explicit recall use the employee's
+   * acquired personal events at admission; resumed inbox messages stay frozen.
    */
   async deliver(
     agentId: AgentId,
@@ -641,7 +654,10 @@ export class AgentWorkspaceDomainService extends Service {
         const tracker = this.trackers.get(agentId)
         if (tracker === undefined) throw new Error(`agent '${agentId}' has no turn tracker`)
         hooks?.beforeAdmission?.()
-        const outcome = await tracker.deliver(handle.agent, delivery, recall, source, hooks)
+        const personalRecall = recall ?? (source?.kind === 'task'
+          ? createDeliveryMemory(this.snapshot(), agentId, delivery, this.config.memoryCharacterBudget)
+          : undefined)
+        const outcome = await tracker.deliver(handle.agent, delivery, personalRecall, source, hooks)
         await this.flushEmployeeSession(agentId, handle.agent.session)
         return outcome
       } catch (error) {
@@ -672,7 +688,10 @@ export class AgentWorkspaceDomainService extends Service {
         ? hooks
         : { ...hooks, onClaim: async () => await hooks.onClaim?.(definitionRevisionId) }
       capturedHooks?.beforeAdmission?.()
-      const outcome = await tracker.deliver(handle.agent, delivery, recall, source, capturedHooks)
+      const personalRecall = recall ?? (source?.kind === 'task'
+        ? createDeliveryMemory(this.snapshot(), agentId, delivery, this.config.memoryCharacterBudget)
+        : undefined)
+      const outcome = await tracker.deliver(handle.agent, delivery, personalRecall, source, capturedHooks)
       await this.flushEmployeeSession(agentId, handle.agent.session)
       return { ...outcome, definitionRevisionId }
     }
@@ -957,11 +976,12 @@ export class AgentWorkspaceDomainService extends Service {
     const systemPrompt = agentCtx.get('systemPrompt') as WorkspaceSystemPrompt | undefined
     if (systemPrompt === undefined) throw new Error('agent workspace runtime requires the system-prompt service')
     const text = [
-      `你在 Agent Workspace 中的身份是“${agent.name}”。`,
+      `你在智能体组织中的身份是“${agent.name}”。`,
       `角色：${definition.name}`,
       revision.description.trim() === '' ? '' : `职责说明：\n${revision.description}`,
       revision.instructions.trim() === '' ? '' : `角色指令：\n${revision.instructions}`,
       '协作规则：你可以阅读当前房间提供的成员目录。如果需要其他成员继续处理，请使用目录里的准确显示名称进行 @，例如 @老周；不要输出内部 agent id。',
+      '个人记忆：收到的回忆可能只是片段。缺少既往约定时，使用 workspace_search_memory 按关键词检索；需要引用或核实时，用 workspace_read_memory 读取原文及来源，按 nextOffset 继续读取。引用附带 eventId，不把未检索到的内容当作记忆。',
     ].filter(Boolean).join('\n\n')
     return systemPrompt.section({ name: 'agent-workspace:role', order: 10, text })
   }

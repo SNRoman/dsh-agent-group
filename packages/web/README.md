@@ -1,6 +1,6 @@
 # @dsh-agent-group/web
 
-Browser support package for [`dsh-agent-group`](https://github.com/SNRoman/dsh-agent-group). It adds the Agent Workspace footer action and overlay to DeepSeek Harness and renders durable messages plus live text, reasoning, and tool activity with Harness-native UI primitives.
+Browser support package for Agent Organization（智能体组织）, published as [`dsh-agent-group`](https://github.com/SNRoman/dsh-agent-group). It adds the Agent Organization footer action and overlay to DeepSeek Harness and renders durable messages plus live text, reasoning, and tool activity with Harness-native UI primitives.
 
 Most users should not install this package directly. Install the profile bundle instead:
 
@@ -13,6 +13,8 @@ The package is additive: it registers only `sidebar.footer.action` and `shell.ov
 The overlay presents four views: Definitions for roles and immutable revision pins, Tasks for assignments/grants/attempts/results, Memory for one colleague's unified event history, and Runtime for live activity with exact stop controls. Mutations use Host-owned eligibility and revision checks; the client does not infer authority or rewrite durable history.
 
 The overlay requires the user to choose a memory start for every group join. Its plugin-owned labels, accessibility text, empty states, status text, and policy errors use aligned Simplified Chinese and English dictionaries. Agent names, room names, messages, model output, and tool data remain unchanged user or runtime content.
+
+The display name is “智能体组织” in Simplified Chinese and “Agent Organization” in English. The npm names, RPC channel, service identifier, and persisted workspace format remain unchanged. Personal memory keeps the admitted original events and their sources; agents can retrieve them by keyword and read details on demand.
 
 Portable export remains deliberately outside the Browser. v0.4.0 has no import, backup, or restore control.
 

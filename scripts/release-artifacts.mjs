@@ -50,6 +50,8 @@ function smokeInputFiles(root) {
     'scripts/release-smoke-contract.mjs',
     'tests/e2e/README.md',
     'tests/e2e/workspace-browser.mjs',
+    'tests/e2e/task-tools-profile.mjs',
+    'tests/fixtures/task-tools/profile-session.expected.json',
     'tests/fixtures/v0.1.0/agent-workspace.json',
   ].map(name => join(root, name))
   const fixtureRoot = join(root, 'tests', 'fixtures', 'browser')

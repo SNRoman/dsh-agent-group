@@ -1,6 +1,6 @@
-# dsh-agent-group
+# dsh-agent-group · Agent Organization（智能体组织）
 
-A persistent multi-agent workspace for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). It adds a browser workspace where reusable agent roles become named colleagues that can join rooms, remember room events, reply to mentions, collaborate through bounded agent-to-agent chains, receive human-authorized tasks, and run one-shot child agents.
+Agent Organization（智能体组织）is a persistent organization of AI colleagues for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Reusable agent roles become named colleagues with employment history and unified personal memory. Colleagues join rooms, remember admitted events even while silent, reply to mentions, receive human-authorized tasks, and run one-shot child agents. The npm package name remains `dsh-agent-group`.
 
 ## Features
 
@@ -8,13 +8,14 @@ A persistent multi-agent workspace for [DeepSeek Harness](https://github.com/dee
 - **Group rooms and direct chat** — create group rooms, open a stable direct room for an employed agent, and retain durable room history in the plugin-owned `agent_workspace` domain.
 - **Explicit join memory** — every group join requires the human to choose either events created after the join or an inclusive historical event range; joining never silently selects a history policy.
 - **Mention routing** — `@agent` wakes only the selected employed room members; lowercase `@all` expands to all active employed members of a group. Agent-to-agent chains remain bounded by the workspace dispatcher.
-- **Live turns** — stream assistant text, reasoning, and tool activity into the Workspace UI while a DSH employee turn is in flight, then converge to the durable room event.
+- **Live turns** — stream assistant text, reasoning, and tool activity into the Agent Organization UI while a DSH employee turn is in flight, then converge to the durable room event.
 - **DSH-native rendering** — final and streaming text use DeepSeek Harness Markdown primitives; reasoning and tool calls use disclosure rows instead of a second conversation renderer.
 - **Tasks and delegation** — ordinary mentions are communication. Formal peer delegation requires a human-created, task-scoped `DelegationGrant`.
 - **Child agents** — an employed agent can run a one-shot DSH child agent and retain the terminal result in personal memory without turning the child into a workspace colleague.
 - **Additive integration** — the Browser package registers only `sidebar.footer.action` and `shell.overlay`; it does not replace the core `sidebar`, `conversation`, or `details` surfaces and does not intercept `/api`.
 - **Localized policy feedback** — Simplified Chinese and English dictionaries own plugin UI copy, while stable Host error codes keep localization independent from exception text.
 - **Four product views** — Definitions manages reusable roles and immutable definition revision history; Tasks shows assignment, grants, attempts, cancellation, child work, and results; Memory exposes each colleague's unified event history; Runtime shows live activity and exact stop controls.
+- **Memory with sources** — colleagues can search their own admitted event history by keyword and read original events on demand, with source and event identifiers for follow-up. Room replies and formal tasks draw on the same personal history.
 - **Forward compatibility export** — the read-only `export:forward-v1` command creates a canonical, checksummed handoff for a future importer while leaving the source storage untouched. Version `0.4.0` does not include an importer.
 
 ## Requirements
@@ -71,8 +72,8 @@ dsh plugin --profile web remove dsh-agent-group
 
 | Package | Role |
 |---|---|
-| `@dsh-agent-group/host` | Durable workspace domain, persistence boundary, employee runtime, dispatcher, turn stream, tasks, memory, and invariants. |
-| `@dsh-agent-group/web` | Additive Browser workspace UI and Connection RPC client. |
+| `@dsh-agent-group/host` | Durable organization domain, persistence boundary, colleague runtime, dispatcher, turn stream, tasks, memory, and invariants. |
+| `@dsh-agent-group/web` | Additive Agent Organization Browser UI and Connection RPC client. |
 | `dsh-agent-group` | Installable DeepSeek Harness profile bundle that mounts Host and Browser packages. |
 
 Users should normally install only `dsh-agent-group`; the two scoped packages are published dependencies of the bundle.
@@ -83,9 +84,11 @@ The Host service is exposed as `ctx.agentWorkspace`. It stores one local aggrega
 
 The Browser transport uses the existing Harness Connection RPC service on the plugin-local Agent Workspace channel. There is no second HTTP/WebSocket server, no core API interception, and no replacement of the standard Harness conversation store.
 
-## Workspace workflow
+## Organization workflow
 
 Create a definition, then create named colleagues from it. Add colleagues to a group with an explicit memory start, use mentions for conversation, and use Tasks when work needs durable ownership or human-authorized delegation. Memory belongs to the colleague rather than to one chat: a silent member remembers admitted room events, task results, and child results. Saving a new definition revision offers none, all, or a selected subset of existing colleagues for synchronization; every colleague remains pinned to an immutable revision.
+
+Keyword memory search returns references and short excerpts; colleagues can request the original events when they need detail. Each retrieved event retains its source and sequence. Search covers only events admitted to that colleague's memory, including room history explicitly chosen at joining. This is keyword retrieval, not semantic or vector search. An event from another room may be recalled by a colleague who owns it; room secrecy is not enforced.
 
 Runtime activity is intentionally ephemeral. The durable task attempt and result remain authoritative, while the drawer shows queued, responding, stopping, and settled activity for the current Host process. Exact stop targets one activity identity; an interrupted task remains open and retryable, does not acquire a task result, and does not cancel unrelated queued work.
 
@@ -167,7 +170,7 @@ See the [v0.4.0 release notes](docs/releases/v0.4.0.md) for the current DSH comp
 
 ## Known limitations
 
-- **Single local workspace** — the durable domain currently uses one aggregate keyed `local`; multi-workspace discovery is not implemented.
+- **Single local organization** — the durable domain currently uses one aggregate keyed `local`; multiple organizations are not implemented.
 - **No per-agent model/tool/skill selection** — top-level agents currently inherit the deployment's model, tools, skills, and permissions.
 - **No hard room secrecy** — unified personal memory can recall an event from another room; secrecy is not enforced as a domain boundary.
 - **One-shot children only** — child agents are task-scoped, terminal, and not resumable colleagues.

@@ -9,7 +9,8 @@ import { HumanId } from '../../../packages/host/src/ids.ts'
 import { assignHumanTask } from '../../../packages/host/src/tasks.ts'
 import type { WorkspaceCommand, WorkspaceState } from '../../../packages/host/src/types.ts'
 
-const TASK_TOOLS_REQUEST = 'PROFILE_TASK_TOOLS_REQUEST'
+const TASK_TOOLS_REQUEST = 'PROFILE_TASK_TOOLS_REQUEST 请核对 UTF-8 导出需求并完成任务。'
+const MEMORY_REQUIREMENT = '导出要求：CSV 使用 UTF-8 编码，保留中文标题，不添加 BOM。'
 const SCRIPTED_LLM_READY_TIMEOUT_MS = 30_000
 
 export const name = 'agent-workspace-task-tools-profile'
@@ -38,13 +39,32 @@ export async function apply(ctx: Context): Promise<void> {
   const alice = Object.values(state.agents).find(agent => agent.name === 'Task tools Alice')
   const bob = Object.values(state.agents).find(agent => agent.name === 'Task tools Bob')
   if (alice === undefined || bob === undefined) throw new Error('profile task-tools employees were not created')
-  const assigned = assignHumanTask(state, {
+  await seed.executeInternal({ type: 'room/create', kind: 'group', name: 'Task tools requirements' })
+  const room = Object.values(service.snapshot().rooms).find(item => item.name === 'Task tools requirements')
+  if (room === undefined) throw new Error('profile task-tools requirements room was not created')
+  for (const agent of [alice, bob]) {
+    await seed.executeInternal({ type: 'room/join', roomId: room.id, agentId: agent.id, memoryStart: { type: 'new-events' } })
+  }
+  await service.postHumanMessage(service.snapshot().revision, room.id, HumanId('profile-task-human'), MEMORY_REQUIREMENT, [])
+  const remembered = service.snapshot()
+  const requirement = remembered.events.find(event => event.type === 'room/message' && event.text === MEMORY_REQUIREMENT)
+  if (requirement === undefined) throw new Error('profile task-tools passive requirement was not recorded')
+  if (remembered.sessionBindings[alice.id] !== undefined || remembered.sessionBindings[bob.id] !== undefined) {
+    throw new Error('profile task-tools passive requirement materialized an employee')
+  }
+  const assigned = assignHumanTask(remembered, {
     humanId: HumanId('profile-task-human'),
     assigneeAgentId: alice.id,
     title: TASK_TOOLS_REQUEST,
   })
   await seed.apply(() => assigned.state)
-  await writeFile(fixturePath, `${JSON.stringify({ taskId: assigned.taskId, deniedAssigneeAgentId: bob.id })}\n`, 'utf8')
+  await writeFile(fixturePath, `${JSON.stringify({
+    taskId: assigned.taskId,
+    deniedAssigneeAgentId: bob.id,
+    aliceAgentId: alice.id,
+    memoryEventId: requirement.id,
+    memorySequence: requirement.sequence,
+  })}\n`, 'utf8')
   const result = await service.runAssignedTask(alice.id, assigned.taskId)
   if (result !== 'PROFILE_TASK_TOOL_RESULT') throw new Error('profile task tool completion did not settle the assigned task')
 }

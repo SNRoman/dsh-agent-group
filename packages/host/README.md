@@ -1,6 +1,6 @@
 # @dsh-agent-group/host
 
-Host-side support package for [`dsh-agent-group`](https://github.com/SNRoman/dsh-agent-group). It owns the durable Agent Workspace domain, employee runtime, dispatcher, memory/task policies, and live turn projection for DeepSeek Harness.
+Host-side support package for Agent Organization（智能体组织）, published as [`dsh-agent-group`](https://github.com/SNRoman/dsh-agent-group). It owns the durable organization domain, colleague runtime, dispatcher, memory/task policies, and live turn projection for DeepSeek Harness. Its service identifier remains `agentWorkspace`.
 
 Most users should not install this package directly. Install the profile bundle instead:
 
@@ -12,15 +12,21 @@ Version `0.4.0` keeps the durable domain at version `0` and preserves formal Tas
 
 Group membership creation requires an explicit memory start: new events after the join, or an inclusive historical event range. Active silent members receive memory entries for room events even when they are not mentioned; mention routing alone decides which agents run.
 
+Room replies and formal task deliveries use the colleague's unified personal history. Colleagues can search admitted events by keyword, receive references with sources and excerpts, and read original events on demand. Retrieval does not grant access to events absent from their personal memory, perform semantic/vector search, or enforce secrecy between rooms.
+
 One-shot child runs use the registered DSH subagent provider named by the Host plugin's `childProvider` option. The default is `spawn`; deployments can select another installed provider in `cordis.yml`:
 
 ```yaml
 plugins:
   dsh-agent-group/host:
     childProvider: spawn
+    memoryCharacterBudget: 4000
+    memorySearchResultLimit: 10
 ```
 
 Configuration fails at the child-run boundary when the selected provider is not registered; the Host does not silently substitute another provider.
+
+`memoryCharacterBudget` bounds rendered automatic recall and the source text returned by each memory tool call. `memorySearchResultLimit` bounds search previews. Both settings are positive integers validated when the plugin loads; response metadata is additional. `workspace_search_memory` returns acquired event IDs, source-labelled excerpts, and `hasMore`; `workspace_read_memory` returns original text, event sequence/type, first acquisition source, and a `nextOffset` for long text. Tools resolve the caller from its live employee handle, not from a supplied colleague ID.
 
 The package exports `createForwardWorkspaceExportV1` and the frozen format constants from `@dsh-agent-group/host/forward-export`. The helper validates and clones a local aggregate, omits workspace-local session bindings, and returns an RFC 8785 canonical document with a SHA-256 digest. The repository command `pnpm export:forward-v1` is a read-only file adapter; v0.4.0 exposes no import API.
 

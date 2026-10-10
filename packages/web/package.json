@@ -1,7 +1,7 @@
 {
   "name": "@dsh-agent-group/web",
   "version": "0.4.0",
-  "description": "Additive Agent Workspace browser UI for DeepSeek Harness.",
+  "description": "Additive Agent Organization browser UI for DeepSeek Harness.",
   "license": "MIT",
   "repository": {
     "type": "git",

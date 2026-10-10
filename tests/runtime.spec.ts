@@ -15,6 +15,8 @@ import { AgentId, DefinitionRevisionId, HumanId, RoomId, TaskDeliveryAttemptId, 
 import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
 import { EmployeeAgentPool } from '../packages/host/src/runtime.ts'
 import type { EmployeeSessionSource } from '../packages/host/src/runtime.ts'
+import { registerWorkspaceMemoryTools } from '../packages/host/src/memory-tools.ts'
+import type { WorkspaceToolRegistry } from '../packages/host/src/task-tools.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import { acceptTaskDelivery, startTaskDelivery } from '../packages/host/src/task-delivery.ts'
 import { assignHumanTask } from '../packages/host/src/tasks.ts'
@@ -23,6 +25,10 @@ import { WorkspaceActivityStream } from '../packages/host/src/activity-stream.ts
 
 function handle(dispose = vi.fn(async () => {})): AgentHandle {
   return { agent: { id: SessionId('agent') } as Agent, dispose }
+}
+
+function resumedHandle(): AgentHandle {
+  return { agent: { id: SessionId('bound'), ctx: new Context() } as Agent, dispose: vi.fn(async () => {}) }
 }
 
 function text(text: string): UserMessage {
@@ -52,6 +58,108 @@ function fakeEvents(): FakeEvents {
 }
 
 describe('EmployeeAgentPool', () => {
+  test('authenticates a recovered memory-tool turn before the resume promise publishes its handle', async () => {
+    const definition = mutateWorkspace(createInitialState(WorkspaceId('local')), {
+      type: 'definition/create', name: 'Engineer', description: 'Build', instructions: 'Ship',
+    })
+    const employee = mutateWorkspace(definition.state, {
+      type: 'agent/create', definitionId: definition.definitionId, name: 'Alice',
+    })
+    const assigned = assignHumanTask(employee.state, {
+      humanId: HumanId('owner'), assigneeAgentId: employee.agentId, title: 'release on Friday',
+    })
+    const restored = resumedHandle()
+    const calls: string[] = []
+    let search: Parameters<WorkspaceToolRegistry['register']>[0] | undefined
+    const pool = new EmployeeAgentPool({
+      create: vi.fn(),
+      resume: async options => {
+        const commit = await options.setup?.(restored.agent.ctx, restored.agent)
+        commit?.commit()
+        expect(pool.handleFor(employee.agentId)).toBeUndefined()
+        if (search === undefined) throw new Error('memory search was not registered')
+        await expect(search.execute({ query: 'release' }, {
+          agent: restored.agent, signal: new AbortController().signal,
+        } as never)).resolves.toMatchObject({
+          events: [{ excerpt: expect.stringContaining('release on Friday') }], hasMore: false,
+        })
+        calls.push('recovered-turn')
+        return restored
+      },
+    }, {
+      sessionIdFor: () => SessionId('bound'), recordSessionId: vi.fn(async () => {}),
+    }, async () => ({ setup: () => {
+      calls.push('setup')
+      return { commit: () => {
+        expect(pool.agentIdFor(restored.agent)).toBeUndefined()
+        calls.push('setup-commit')
+      } }
+    } }), async () => { calls.push('recover') })
+    const disposeTools = registerWorkspaceMemoryTools({ register: tool => {
+      if (tool.name === 'workspace_search_memory') search = tool
+      return () => {}
+    } }, { agentIdFor: agent => pool.agentIdFor(agent), snapshot: () => assigned.state }, { characterBudget: 1000, resultLimit: 5 })
+    try {
+      await expect(pool.ensure(employee.agentId)).resolves.toBe(restored)
+      expect(calls).toEqual(['setup', 'recover', 'setup-commit', 'recovered-turn'])
+      expect(pool.agentIdFor(restored.agent)).toBe(employee.agentId)
+    } finally {
+      disposeTools()
+      await pool.disposeAll()
+    }
+  })
+
+  test('revokes the prepared resume identity when publication fails after setup commit', async () => {
+    const restored = resumedHandle()
+    const pool = new EmployeeAgentPool({
+      create: vi.fn(),
+      resume: async options => {
+        const commit = await options.setup?.(restored.agent.ctx, restored.agent)
+        commit?.commit()
+        expect(pool.agentIdFor(restored.agent)).toBe(AgentId('alice'))
+        throw new Error('publication failed')
+      },
+    }, { sessionIdFor: () => SessionId('bound'), recordSessionId: vi.fn(async () => {}) })
+    await expect(pool.ensure(AgentId('alice'))).rejects.toThrow('publication failed')
+    expect(pool.agentIdFor(restored.agent)).toBeUndefined()
+    expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
+    await pool.disposeAll()
+  })
+
+  test.each(['dispose', 'disposeAll'] as const)('%s immediately revokes a resume identity before admission settles', async teardownKind => {
+    const prepared = Promise.withResolvers<void>()
+    const releaseResume = Promise.withResolvers<void>()
+    const restored = resumedHandle()
+    const pool = new EmployeeAgentPool({
+      create: vi.fn(),
+      resume: async options => {
+        const commit = await options.setup?.(restored.agent.ctx, restored.agent)
+        commit?.commit()
+        prepared.resolve()
+        await releaseResume.promise
+        return restored
+      },
+    }, { sessionIdFor: () => SessionId('bound'), recordSessionId: vi.fn(async () => {}) })
+    const ensuring = pool.ensure(AgentId('alice'))
+    await prepared.promise
+    try {
+      expect(pool.agentIdFor(restored.agent)).toBe(AgentId('alice'))
+      expect(pool.handleFor(AgentId('alice'))).toBeUndefined()
+      const rejected = expect(ensuring).rejects.toThrow(/invalidated by disposal/)
+      const teardown = teardownKind === 'dispose' ? pool.dispose(AgentId('alice')) : pool.disposeAll()
+      expect(pool.agentIdFor(restored.agent)).toBeUndefined()
+      releaseResume.resolve()
+      await rejected
+      await teardown
+      expect(restored.dispose).toHaveBeenCalledTimes(1)
+      expect(pool.agentIdFor(restored.agent)).toBeUndefined()
+    } finally {
+      const teardown = pool.disposeAll()
+      releaseResume.resolve()
+      await Promise.allSettled([ensuring, teardown])
+    }
+  })
+
   test.each(['options', 'idle', 'archive'])('cleans up failed resume during %s', async (stage) => {
     const dispose = vi.fn(async () => {})
     const restored = handle(dispose)
@@ -564,7 +672,7 @@ describe('EmployeeAgentPool', () => {
     expect(resume).toHaveBeenCalledWith(expect.objectContaining({
       resumeSessionId: SessionId('bound'),
       agentOptions: { provider: 'test-provider', model: 'test-model' },
-      setup,
+      setup: expect.any(Function),
     }))
     expect(configure).toHaveBeenCalledWith(AgentId('alice'), 'create')
     expect(configure).toHaveBeenCalledWith(AgentId('bob'), 'resume')
@@ -744,7 +852,7 @@ describe('AgentWorkspaceDomainService task-tool lifecycle', () => {
       .resolves.toBe('resume')
   })
 
-  test('registers all task tools and removes them with the Host fiber', async () => {
+  test('registers task and memory tools and removes them with the Host fiber', async () => {
     const root = await mkdtemp(join(tmpdir(), 'agent-workspace-task-tools-'))
     const registered: string[] = []
     const disposed: string[] = []
@@ -768,10 +876,14 @@ describe('AgentWorkspaceDomainService task-tool lifecycle', () => {
         'workspace_delegate_task',
         'workspace_run_child',
         'workspace_complete_task',
+        'workspace_search_memory',
+        'workspace_read_memory',
       ])
       await host.dispose()
       fibers.pop()
       expect(disposed).toEqual([
+        'workspace_read_memory',
+        'workspace_search_memory',
         'workspace_complete_task',
         'workspace_run_child',
         'workspace_delegate_task',

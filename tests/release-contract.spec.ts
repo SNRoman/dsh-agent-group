@@ -254,10 +254,13 @@ describe('public release contract', () => {
       await mkdir(join(root, 'scripts'), { recursive: true })
       await mkdir(join(root, 'tests', 'e2e'), { recursive: true })
       await mkdir(join(root, 'tests', 'fixtures', 'browser'), { recursive: true })
+      await mkdir(join(root, 'tests', 'fixtures', 'task-tools'), { recursive: true })
       await mkdir(join(root, 'tests', 'fixtures', 'v0.1.0'), { recursive: true })
       await writeFile(join(root, 'scripts', 'release-smoke.mjs'), 'smoke driver\n', 'utf8')
       await writeFile(join(root, 'scripts', 'release-smoke-contract.mjs'), 'smoke assertions\n', 'utf8')
       await writeFile(join(root, 'tests', 'e2e', 'workspace-browser.mjs'), 'browser scenario\n', 'utf8')
+      await writeFile(join(root, 'tests', 'e2e', 'task-tools-profile.mjs'), 'memory evidence reader\n', 'utf8')
+      await writeFile(join(root, 'tests', 'fixtures', 'task-tools', 'profile-session.expected.json'), '{}\n', 'utf8')
       await writeFile(join(root, 'tests', 'e2e', 'README.md'), 'browser operator guide\n', 'utf8')
       await writeFile(join(root, 'tests', 'fixtures', 'browser', 'cordis.test.yml'), 'fixture\n', 'utf8')
       await writeFile(join(root, 'tests', 'fixtures', 'v0.1.0', 'agent-workspace.json'), '{}\n', 'utf8')
@@ -284,6 +287,15 @@ describe('public release contract', () => {
       expect(publish.flat()).not.toContain('pack')
       expect(publish.flat()).not.toContain('--filter')
 
+      for (const [path, original] of [
+        [join(root, 'tests', 'e2e', 'task-tools-profile.mjs'), 'memory evidence reader\n'],
+        [join(root, 'tests', 'fixtures', 'task-tools', 'profile-session.expected.json'), '{}\n'],
+      ]) {
+        await writeFile(path, 'changed memory assertions\n', 'utf8')
+        expect(() => verifyReleaseSmokeReceipt(root, '1.2.3', { version: '0.1.1-rc.2', commit: 'abc' })).toThrow('smoke receipt')
+        await writeFile(path, original, 'utf8')
+      }
+
       await writeFile(join(root, 'tests', 'e2e', 'workspace-browser.mjs'), 'stronger browser scenario\n', 'utf8')
       expect(() => verifyReleaseSmokeReceipt(root, '1.2.3', { version: '0.1.1-rc.2', commit: 'abc' })).toThrow('smoke receipt')
       await writeFile(join(root, 'tests', 'e2e', 'workspace-browser.mjs'), 'browser scenario\n', 'utf8')
@@ -306,6 +318,7 @@ describe('public release contract', () => {
     }
 
     const fixture = readText('tests/fixtures/browser/cordis.test.yml')
+    expect(fixture).toContain("name: '@deepseek-ai/dsh-llm-deepseek-api-key'")
     expect(fixture).toContain('agent-workspace-scripted-llm')
     expect(fixture).toContain("name: './scripted-llm.ts'")
     expect(fixture).toContain('agent-workspace-task-tools-profile')
@@ -346,15 +359,18 @@ describe('public release contract', () => {
     expect(hostSource).not.toContain("'spawn-in-process'")
 
     const smoke = readText('tests/e2e/workspace-browser.mjs')
+    expect(smoke).toContain('element.value === expected')
+    expect(smoke).toContain('groups.length !== 2 || directs.length !== 2')
     expect(smoke).toContain('playwright')
     expect(smoke).toContain('toMatchAriaSnapshot')
     expect(smoke).toContain('@all')
     expect(smoke).toContain("waitForFixtureReceipt(`${args.gate}.denial-result-ready`)")
     expect(smoke).toContain('name: /^Release room \\d+$/u')
+    const groupSetup = smoke.slice(smoke.indexOf('async function createGroupAndJoin('), smoke.indexOf('function agentRow('))
+    expect(groupSetup).toContain("getByRole('button', { name: /^Release room \\d+$/u }).click()")
     expect(smoke).toContain("name: /^Alice Responding Direct$/u")
     expect(smoke).toContain("row.locator('p').getByText(entry.text, { exact: true })")
-    expect(smoke).toContain("isRecordedToolError(")
-    expect(smoke).toContain("'profile-policy-denial'")
+    expect(smoke).toContain("collectTaskToolEvidence(args['dsh-home'], args['task-tools-fixture'])")
     expect(smoke).toContain("getByRole('article', { name: '修订 1', exact: true }).waitFor")
     expect(smoke).toContain("getByRole('article', { name: '修订 2', exact: true }).waitFor")
     expect(smoke).toContain('Creation event ${receipt.revisionEventSequence}')

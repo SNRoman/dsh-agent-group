@@ -54,6 +54,27 @@
         },
         "required": ["taskId", "result"]
       }
+    },
+    {
+      "name": "workspace_search_memory",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Non-empty words or a phrase describing the remembered fact." }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "workspace_read_memory",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "eventId": { "type": "string", "description": "An event id returned by personal memory recall or search." },
+          "offset": { "type": "integer", "description": "Zero-based character offset; defaults to 0." }
+        },
+        "required": ["eventId"]
+      }
     }
   ],
   "execution": {

@@ -1,7 +1,7 @@
 {
   "name": "dsh-agent-group",
   "version": "0.4.0",
-  "description": "Installable multi-agent workspace profile bundle for DeepSeek Harness.",
+  "description": "Installable Agent Organization profile bundle for DeepSeek Harness.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -18,7 +18,7 @@
     "dsh",
     "agent",
     "multi-agent",
-    "workspace"
+    "organization"
   ],
   "publishConfig": {
     "access": "public"

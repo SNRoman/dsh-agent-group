@@ -57,23 +57,22 @@ export function joinRoomWithMemory(state: WorkspaceState, command: JoinRoomComma
   return { state: appendMemoryEntries(joined.state, acquisitions) }
 }
 
-/** Select deterministic room and personal memory entries within a character budget. */
+/** Select acquired personal events by keyword relevance, then recency, within a character budget. */
 export function recallAgentEvents(state: WorkspaceState, request: RecallAgentEventsRequest): AgentEventRecall {
   if (request.characterBudget < 0) throw new Error('recall character budget must not be negative')
   const entryByEventId = rememberedEntries(state, request.agentId)
+  const eventById = new Map(state.events.map(event => [event.id, event]))
+  const keywords = queryKeywords(request.query)
   const candidates = [...entryByEventId.entries()]
     .map(([eventId, entry]) => {
-      const event = state.events.find(candidate => candidate.id === eventId)
-      return event === undefined ? undefined : { event, entry }
+      const event = eventById.get(eventId)
+      if (event === undefined) return undefined
+      const text = `${event.type} ${event.text ?? ''}`.toLocaleLowerCase('en-US')
+      return { event, entry, relevance: keywords.filter(keyword => text.includes(keyword)).length }
     })
-    .filter((candidate): candidate is { readonly event: WorkspaceEvent; readonly entry: AgentMemoryEntry } => candidate !== undefined)
-  const currentRoom = candidates.filter(candidate => candidate.event.subjectId === request.roomId).sort(compareRecent)
-  const other = candidates.filter(candidate => candidate.event.subjectId !== request.roomId).sort(compareRecent)
-  const query = request.query.trim().toLocaleLowerCase('en-US')
-  const lexicalMatches = other.filter(candidate => matchesLexically(candidate.event, query))
-  const matchingIds = new Set(lexicalMatches.map(candidate => candidate.event.id))
-  const remaining = other.filter(candidate => !matchingIds.has(candidate.event.id))
-  return fitRecall([...currentRoom, ...lexicalMatches, ...remaining], request.characterBudget)
+    .filter((candidate): candidate is RecallCandidate => candidate !== undefined && (!request.matchingOnly || candidate.relevance > 0))
+    .sort((left, right) => right.relevance - left.relevance || compareRecent(left, right))
+  return fitRecall(candidates, keywords, request)
 }
 
 /** Read personal memory from one immutable workspace-state snapshot. */
@@ -108,9 +107,17 @@ function rememberedEntries(state: WorkspaceState, agentId: AgentId): ReadonlyMap
   return entries
 }
 
-function matchesLexically(event: WorkspaceEvent, query: string): boolean {
-  if (query === '') return false
-  return `${event.type} ${event.text ?? ''}`.toLocaleLowerCase('en-US').includes(query)
+interface RecallCandidate {
+  readonly event: WorkspaceEvent
+  readonly entry: AgentMemoryEntry
+  readonly relevance: number
+}
+
+function queryKeywords(query: string): readonly string[] {
+  const segmenter = new Intl.Segmenter('zh-CN', { granularity: 'word' })
+  return [...new Set([...segmenter.segment(query.toLocaleLowerCase('en-US'))]
+    .filter(segment => segment.isWordLike)
+    .map(segment => segment.segment))]
 }
 
 function compareRecent(
@@ -121,15 +128,18 @@ function compareRecent(
 }
 
 function fitRecall(
-  candidates: readonly { readonly event: WorkspaceEvent; readonly entry: AgentMemoryEntry }[],
-  characterBudget: number,
+  candidates: readonly RecallCandidate[],
+  keywords: readonly string[],
+  request: RecallAgentEventsRequest,
 ): AgentEventRecall {
   const entries: RecalledAgentEvent[] = []
   let renderedLength = 0
   for (const candidate of candidates) {
-    const rendered = renderEvent(candidate.event, candidate.entry)
+    if (entries.length >= (request.resultLimit ?? Number.POSITIVE_INFINITY)) break
     const separatorLength = entries.length === 0 ? 0 : 1
-    if (renderedLength + separatorLength + rendered.length > characterBudget) break
+    const remainingBudget = request.characterBudget - renderedLength - separatorLength
+    const rendered = renderWithinBudget(candidate, keywords, remainingBudget)
+    if (rendered === undefined) continue
     entries.push({ eventId: candidate.event.id, provenance: candidate.entry.acquiredBy, rendered })
     renderedLength += separatorLength + rendered.length
   }
@@ -137,7 +147,23 @@ function fitRecall(
     eventIds: entries.map(entry => entry.eventId),
     entries,
     rendered: entries.map(entry => entry.rendered).join('\n'),
+    ...(request.matchingOnly ? { hasMore: entries.length < candidates.length } : {}),
   }
+}
+
+function renderWithinBudget(candidate: RecallCandidate, keywords: readonly string[], budget: number): string | undefined {
+  const rendered = renderEvent(candidate.event, candidate.entry)
+  if (rendered.length <= budget) return rendered
+  if (candidate.relevance === 0) return undefined
+  const header = `${renderEvent({ ...candidate.event, text: '' }, candidate.entry)}[truncated] `
+  const excerptBudget = budget - header.length
+  const text = candidate.event.text ?? ''
+  const lowerText = text.toLocaleLowerCase('en-US')
+  const offsets = keywords.map(keyword => lowerText.indexOf(keyword)).filter(offset => offset >= 0)
+  if (excerptBudget <= 0 || offsets.length === 0) return undefined
+  const firstMatch = Math.min(...offsets)
+  const start = Math.max(0, Math.min(firstMatch - Math.floor(excerptBudget / 4), text.length - excerptBudget))
+  return `${header}${text.slice(start, start + excerptBudget)}`
 }
 
 function renderEvent(event: WorkspaceEvent, entry: AgentMemoryEntry): string {

@@ -184,8 +184,8 @@ describe('Agent Workspace locale runtime', () => {
   })
 
   it.each([
-    ['zh', ['智能体工作区', '打开智能体工作区', '会话', '同事', '任务', '记忆', '打开运行状态', '正在读取智能体工作区…', '正在回复…', '正在思考…', '工作区请求失败。']],
-    ['en', ['Agent Workspace', 'Open Agent Workspace', 'Conversations', 'Colleagues', 'Tasks', 'Memory', 'Open runtime activity', 'Loading Agent Workspace…', 'Replying…', 'Thinking…', 'Workspace request failed.']],
+    ['zh', ['智能体组织', '打开智能体组织', '会话', '同事', '任务', '记忆', '打开运行状态', '正在读取智能体组织…', '正在回复…', '正在思考…', '组织请求失败。']],
+    ['en', ['Agent Organization', 'Open Agent Organization', 'Conversations', 'Colleagues', 'Tasks', 'Memory', 'Open runtime activity', 'Loading Agent Organization…', 'Replying…', 'Thinking…', 'Organization request failed.']],
   ] as const)('renders footer, overlay, live, empty, error and accessibility copy in %s', (localeId, expected) => {
     const locale = new LocaleRuntime(new Context())
     locale.setLocale(localeId)
@@ -203,6 +203,12 @@ describe('Agent Workspace locale runtime', () => {
     const live = render(WorkspaceLiveTurn as unknown as TestComponent, { turn: liveTurn, agentName: 'Alice', t })
     const rendered = [...strings(footer), ...strings(overlay), ...strings(live)]
     for (const value of expected) expect(rendered).toContain(value)
+    if (localeId === 'en') {
+      for (const key of ['activity.refreshFailed', 'history.saveStale', 'history.syncStale', 'error.staleWorkspaceRevision']) {
+        expect(t(key)).toMatch(/organization/i)
+        expect(t(key)).not.toMatch(/workspace/i)
+      }
+    }
     expect(registered.entries).toHaveLength(2)
     expect(registered.entries.every(entry => entry.options['locale'] === 'agentWorkspace')).toBe(true)
     registered.dispose()

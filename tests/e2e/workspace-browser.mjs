@@ -4,7 +4,8 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { watch, existsSync, readFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { chromium } from 'playwright'
-import { assertBrowserDurableEvidence, inspectSafeDelegationDenial, isRecordedToolError, assertTaskCausality, assertMemoryRows, assertSubsetRevisionEvidence, assertExactStopEvidence, assertRestartPersistence } from '../../scripts/release-smoke-contract.mjs'
+import { collectTaskToolEvidence } from './task-tools-profile.mjs'
+import { assertBrowserDurableEvidence, inspectSafeDelegationDenial, assertTaskCausality, assertMemoryRows, assertSubsetRevisionEvidence, assertExactStopEvidence, assertRestartPersistence } from '../../scripts/release-smoke-contract.mjs'
 
 const STEP_TIMEOUT_MS = 30_000
 const CORE_SESSION_SENTINEL = 'CORE_SESSION_SENTINEL'
@@ -12,7 +13,6 @@ const CORE_REPLY = 'CORE_REPLY'
 const V020_ROOT = 'V020_ROOT V020_DELEGATE'
 const V020_CHILD = 'V020_CHILD'
 const V020_HOLD = 'V020_HOLD'
-const TASK_TOOL_EXPECTED = new URL('../fixtures/task-tools/profile-session.expected.json', import.meta.url)
 
 function parseArgs(argv) {
   const values = new Map()
@@ -222,46 +222,20 @@ async function openRuntime(dialog, taskTitle) {
 }
 
 async function assertTaskToolEvidence(durable, args) {
-  const expected = JSON.parse(await readFile(TASK_TOOL_EXPECTED, 'utf8'))
-  const fixture = JSON.parse(await readFile(args['task-tools-fixture'], 'utf8'))
-  const completed = durable.events.filter(event => (
-    event.type === 'task/result' && event.text === expected.result
-  ))
-  if (completed.length !== 1) {
-    throw new Error(`expected one durable task-tool result; found ${completed.length}`)
-  }
-  const task = durable.tasks[completed[0].taskId]
-  if (task?.status !== 'completed') throw new Error('task-tool result did not complete its task')
+  const recorded = await collectTaskToolEvidence(args['dsh-home'], args['task-tools-fixture'])
   const rows = await taskToolSessionRows(args['dsh-home'])
-  const serializedRows = rows.map(row => JSON.stringify(row))
-  for (const name of expected.tools) {
-    if (!serializedRows.some(row => row.includes(name))) throw new Error(`recorded Session omitted model-visible ${name} schema or call`)
-  }
-  if (!serializedRows.some(row => row.includes(expected.result))) throw new Error('recorded Session omitted successful task-tool result')
-  const denied = rows.filter(row => isRecordedToolError(
-    row,
-    'profile-policy-denial',
-    `Error: ${expected.policyError}`,
-  ))
-  if (denied.length !== 1) throw new Error(`expected one recorded policy denial; found ${denied.length}`)
-  for (const id of [fixture.taskId, fixture.deniedAssigneeAgentId]) {
-    if (JSON.stringify(denied[0]).includes(id)) throw new Error('recorded policy denial leaked a workspace identifier')
-  }
   if (inspectSafeDelegationDenial(rows, durable) === undefined) throw new Error('missing recorded v0.2 delegation denial')
-  await writeFile(join(args.evidence, 'task-tools-recorded-session.json'), `${JSON.stringify({
-    tools: expected.tools,
-    result: expected.result,
-    policyError: expected.policyError,
-    policyResultRows: denied.length,
-  }, null, 2)}\n`, 'utf8')
+  await writeFile(join(args.evidence, 'task-tools-recorded-session.json'), `${JSON.stringify(recorded, null, 2)}\n`, 'utf8')
 }
 
 async function send(dialog, text) {
   const composer = dialog.getByPlaceholder(/Write (?:a message|a direct message)/u)
   await composer.pressSequentially(text)
+  await dialog.page().waitForFunction(({ element, expected }) => element.value === expected,
+    { element: await composer.elementHandle(), expected: text }, { timeout: STEP_TIMEOUT_MS })
   await dialog.getByRole('button', { name: 'Send', exact: true }).click()
   await dialog.page().waitForFunction(element => element.value === '', await composer.elementHandle(), { timeout: STEP_TIMEOUT_MS })
-  const failure = dialog.getByText(/^Workspace request failed:/u)
+  const failure = dialog.getByText(/^Organization request failed:/u)
   if (await failure.count() > 0) throw new Error(await failure.first().innerText())
   await dialog.getByRole('main').getByText(text, { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
 }
@@ -497,12 +471,16 @@ async function createGroupAndJoin(dialog, dshHome) {
   await dialog.getByPlaceholder('Group name', { exact: true }).fill('Release room')
   await dialog.getByRole('button', { name: 'Create', exact: true }).click()
   await dialog.getByText('Release room', { exact: true }).first().waitFor({ timeout: STEP_TIMEOUT_MS })
+  await dialog.getByRole('button', { name: /^Release room \d+$/u }).click()
 
   await send(dialog, 'HISTORY_BEFORE_JOIN')
   const beforeJoin = await waitForDurableMessage(dshHome, 'HISTORY_BEFORE_JOIN')
   const history = beforeJoin.events.filter(event => event.type === 'room/message' && event.text === 'HISTORY_BEFORE_JOIN')
   if (history.length !== 1 || !Number.isSafeInteger(history[0].sequence)) {
     throw new Error(`expected one sequenced HISTORY_BEFORE_JOIN event; found ${history.length}`)
+  }
+  if (beforeJoin.rooms[history[0].subjectId]?.name !== 'Release room') {
+    throw new Error('group setup posted history in a different room')
   }
   const historySequence = String(history[0].sequence)
 
@@ -590,8 +568,8 @@ async function runAfterUninstall(page, args, state) {
   await page.getByText(CORE_REPLY, { exact: true }).last().waitFor({ timeout: STEP_TIMEOUT_MS })
   await page.getByRole('textbox', { name: /^(?:Describe what you want to build|Message or run a task)(?:, \/ commands, @ files or sessions)?$|^Message the agent$/u })
     .waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS })
-  if (await page.getByRole('button', { name: 'Open Agent Workspace', exact: true }).count() !== 0) {
-    throw new Error('Agent Workspace entry remained visible after uninstall')
+  if (await page.getByRole('button', { name: 'Open Agent Organization', exact: true }).count() !== 0) {
+    throw new Error('Agent Organization entry remained visible after uninstall')
   }
   await capture(state, 'core-session-after-uninstall', page.locator('body'), [
     'Sessions', CORE_SESSION_SENTINEL, CORE_REPLY,
@@ -607,9 +585,9 @@ async function runAfterUninstall(page, args, state) {
 async function runAfterRestart(page, args, state) {
   await page.goto(args.url, { waitUntil: 'load', timeout: STEP_TIMEOUT_MS })
   await dismissTestingNotice(page)
-  await page.getByRole('button', { name: '打开智能体工作区', exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
-  await page.getByRole('button', { name: '打开智能体工作区', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '智能体工作区', exact: true })
+  await page.getByRole('button', { name: '打开智能体组织', exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  await page.getByRole('button', { name: '打开智能体组织', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '智能体组织', exact: true })
   const durable = await readDurableWorkspace(args['dsh-home'])
   const baseline = JSON.parse(await readFile(join(args.evidence, 'installed-durable-final.json'), 'utf8'))
   assertRestartPersistence(baseline, durable)
@@ -648,10 +626,10 @@ async function runInstalledScenario(page, args, state) {
   await page.goto(args.url, { waitUntil: 'load', timeout: STEP_TIMEOUT_MS })
   await dismissTestingNotice(page)
   await createCoreConversation(page, args, state)
-  await page.getByRole('button', { name: 'Open Agent Workspace', exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
-  await page.getByRole('button', { name: 'Open Agent Workspace', exact: true }).click()
-  let dialog = page.getByRole('dialog', { name: 'Agent Workspace', exact: true })
-  await capture(state, '00-empty', dialog, ['Agent Workspace', 'Conversations'])
+  await page.getByRole('button', { name: 'Open Agent Organization', exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  await page.getByRole('button', { name: 'Open Agent Organization', exact: true }).click()
+  let dialog = page.getByRole('dialog', { name: 'Agent Organization', exact: true })
+  await capture(state, '00-empty', dialog, ['Agent Organization', 'Conversations'])
 
   await createDefinitionAndAgents(dialog)
   await capture(state, '01-agents', dialog, ['Release engineer', 'Alice', 'Bob'])
@@ -676,6 +654,8 @@ async function runInstalledScenario(page, args, state) {
 
   const membersPanel = dialog.getByRole('complementary', { name: 'Group members', exact: true })
   await agentRow(membersPanel, 'Alice').getByRole('button', { name: 'Direct', exact: true }).click()
+  await dialog.getByPlaceholder('Write a direct message, Ctrl/⌘ + Enter to send', { exact: true })
+    .waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS })
   await send(dialog, 'DIRECT_WAKE')
   await dialog.getByText('DIRECT_REPLY Alice', { exact: true }).last().waitFor({ timeout: STEP_TIMEOUT_MS })
   await waitForDurableMessage(args['dsh-home'], 'DIRECT_REPLY Alice')
@@ -695,8 +675,8 @@ async function runInstalledScenario(page, args, state) {
   await capture(state, '03-live', dialog, ['LIVE_PARTIAL', 'Agents working…'])
 
   await page.reload({ waitUntil: 'load', timeout: STEP_TIMEOUT_MS })
-  await page.getByRole('button', { name: 'Open Agent Workspace', exact: true }).click()
-  dialog = page.getByRole('dialog', { name: 'Agent Workspace', exact: true })
+  await page.getByRole('button', { name: 'Open Agent Organization', exact: true }).click()
+  dialog = page.getByRole('dialog', { name: 'Agent Organization', exact: true })
   await dialog.getByRole('button', { name: /^Alice Responding Direct$/u }).click()
   await capture(state, '03-reloaded', dialog, ['HOLD_WAKE'])
   await dialog.getByText('LIVE_PARTIAL', { exact: false }).waitFor({ timeout: STEP_TIMEOUT_MS })
@@ -743,7 +723,7 @@ async function runInstalledScenario(page, args, state) {
   const taskToolAgents = agents.filter(agent => agent.name === 'Task tools Alice' || agent.name === 'Task tools Bob')
   const groups = Object.values(durable.rooms).filter(room => room.kind === 'group')
   const directs = Object.values(durable.rooms).filter(room => room.kind === 'direct')
-  if (releaseDefinitions.length !== 1 || releaseAgents.length !== 3 || taskToolAgents.length !== 2 || groups.length !== 1 || directs.length !== 2) {
+  if (releaseDefinitions.length !== 1 || releaseAgents.length !== 3 || taskToolAgents.length !== 2 || groups.length !== 2 || directs.length !== 2) {
     throw new Error('durable release scenario has unexpected definition, agent, or room cardinality')
   }
   if (agents.some(agent => agent.employmentStatus !== 'employed')) throw new Error('re-employed agent did not settle as employed')

@@ -15,7 +15,7 @@ export type WorkspaceToolRegistry = Pick<ToolRuntime, 'register'>
 
 /** Serialized Host operations required by the agent-facing task tools. */
 export interface WorkspaceTaskToolHost {
-  /** Resolve only a currently published employee Agent handle. */
+  /** Resolve a trusted employee Agent admitted in the current pool generation. */
   agentIdFor(agent: Agent): WorkspaceAgentId | undefined
   /** Read the durable employee status used to authenticate the opaque handle. */
   snapshot(): WorkspaceState
