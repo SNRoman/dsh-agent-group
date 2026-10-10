@@ -98,8 +98,24 @@ export interface TaskDeliveryReservation {
 
 /** Coordinates one durable inbox delivery attempt per task. */
 export class TaskDeliveryCoordinator {
+  /** Stop all flights owned by this organization; task records remain retryable. */
+  cancelAllDeliveries(): void {
+    for (const flight of this.taskFlights.values()) flight.cancellation.abort()
+  }
+
+  /** Wait through complete task/recovery flight settlement and cleanup. */
+  async drain(): Promise<void> {
+    while (this.taskFlights.size > 0 || this.recoveryFlights.size > 0 || this.cleanupFlights.size > 0) {
+      await Promise.allSettled([
+        ...[...this.taskFlights.values()].map(flight => flight.promise),
+        ...this.recoveryFlights.values(),
+        ...this.cleanupFlights,
+      ])
+    }
+  }
   private readonly taskFlights = new Map<TaskId, TaskFlight>()
   private readonly recoveryFlights = new Map<AgentId, Promise<readonly TaskDeliveryRecoveryOutcome[]>>()
+  private readonly cleanupFlights = new Set<Promise<void>>()
 
   constructor(private readonly host: TaskDeliveryCoordinatorHost) {}
 
@@ -229,17 +245,19 @@ export class TaskDeliveryCoordinator {
     if (existing !== undefined) return await existing.promise
     const owner = {}
     const cancellation = new AbortController()
-    const promise = Promise.resolve().then(() => this.run(taskId, owner, cancellation.signal))
+    const promise = Promise.resolve().then(async () => {
+      try {
+        return await this.run(taskId, owner, cancellation.signal)
+      } catch (error) {
+        await this.convergeRejectedFlight(taskId)
+        throw error
+      } finally {
+        if (this.taskFlights.get(taskId) === flight) this.taskFlights.delete(taskId)
+      }
+    })
     const flight = { owner, promise, cancellation }
     this.taskFlights.set(taskId, flight)
-    try {
-      return await promise
-    } catch (error) {
-      await this.convergeRejectedFlight(taskId)
-      throw error
-    } finally {
-      if (this.taskFlights.get(taskId) === flight) this.taskFlights.delete(taskId)
-    }
+    return await promise
   }
 
   private async run(taskId: TaskId, owner: object, signal: AbortSignal): Promise<string> {
@@ -362,6 +380,7 @@ export class TaskDeliveryCoordinator {
               onClaim: async definitionRevisionId => await this.acceptIfStarted(
                 identity,
                 definitionRevisionId ?? snapshot.agents[agentId]?.definitionRevisionId,
+                cancellation.signal,
               ),
             },
           ),
@@ -397,16 +416,25 @@ export class TaskDeliveryCoordinator {
 
   private publishRecoveredFlight(taskId: TaskId, promise: Promise<string>, cancellation: AbortController): void {
     const displaced = this.taskFlights.get(taskId)
-    const recovered = { owner: {}, promise, cancellation }
+    const converged = promise.catch(async error => {
+      try { await this.convergeRejectedFlight(taskId) }
+      catch (convergenceError) {
+        throw new AggregateError([error, convergenceError], `task '${taskId}' recovery and failure convergence both failed`)
+      }
+      throw error
+    })
+    const recovered = { owner: {}, promise: converged, cancellation }
     this.taskFlights.set(taskId, recovered)
-    void this.releaseRecoveredFlight(taskId, recovered, displaced)
+    const cleanup = this.releaseRecoveredFlight(taskId, recovered, displaced)
+    this.cleanupFlights.add(cleanup)
+    void cleanup.finally(() => this.cleanupFlights.delete(cleanup))
   }
 
   private async releaseRecoveredFlight(taskId: TaskId, recovered: TaskFlight, displaced: TaskFlight | undefined): Promise<void> {
     try {
       await recovered.promise
     } catch (_error) {
-      // finishRecovered already persists the failure; cleanup only waits for convergence.
+      // The registered recovered promise includes durable failure convergence.
     }
     if (displaced !== undefined) {
       try {
@@ -454,9 +482,11 @@ export class TaskDeliveryCoordinator {
 
   private async acceptIfStarted(
     identity: { readonly taskId: TaskId; readonly attemptId: TaskDeliveryAttemptId; readonly messageId: MessageId },
-    definitionRevisionId?: DefinitionRevisionId,
+    definitionRevisionId: DefinitionRevisionId | undefined,
+    signal: AbortSignal,
   ): Promise<void> {
     await this.host.apply(current => {
+      throwIfTaskDeliveryCancelled(signal, identity.taskId)
       const inspection = inspectTaskDelivery(current, identity.taskId)
       if (inspection.attemptId !== identity.attemptId || inspection.phase !== 'started') return current
       return acceptTaskDelivery(current, { ...identity, ...(definitionRevisionId === undefined ? {} : { definitionRevisionId }) }).state

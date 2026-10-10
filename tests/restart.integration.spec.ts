@@ -7,9 +7,11 @@ import Storage from '@deepseek-ai/dsh-storage'
 import { apply as domainApply, Config as DomainConfig, inject as domainInject } from '@deepseek-ai/dsh-storage-domain'
 import { apply as jsonApply, Config as JsonConfig, inject as jsonInject } from '@deepseek-ai/dsh-storage-json'
 import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
+import type { WorkspaceRuntime } from '../packages/host/src/workspace-runtime.ts'
+import type { WorkspaceRecordV1 } from '../packages/host/src/workspace-record.ts'
 import { queryAgentMemory } from '../packages/host/src/memory-query.ts'
 import { agentWorkspaceSpec } from '../packages/host/src/spec.ts'
-import { AgentId, AgentMemoryEntryId, HumanId, TaskId } from '../packages/host/src/ids.ts'
+import { AgentId, AgentMemoryEntryId, HumanId, TaskId, WorkspaceId } from '../packages/host/src/ids.ts'
 import type { TaskId as WorkspaceTaskId } from '../packages/host/src/ids.ts'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import { assignHumanTask, recordChildRunStarted } from '../packages/host/src/tasks.ts'
@@ -18,7 +20,7 @@ import type { TaskDeliveryCoordinatorHost } from '../packages/host/src/task-deli
 
 interface Booted {
   ctx: Context
-  service: AgentWorkspaceDomainService
+  service: WorkspaceRuntime
   dispose: () => Promise<void>
 }
 
@@ -45,7 +47,7 @@ async function boot(root: string): Promise<Booted> {
   ]
   return {
     ctx,
-    service: ctx.agentWorkspace,
+    service: ctx.agentWorkspace.forWorkspace(WorkspaceId('local')),
     dispose: async () => {
       for (const fiber of [...fibers].reverse()) await fiber.dispose()
     },
@@ -78,12 +80,18 @@ describe('agent workspace persistence', () => {
     expect(first.service.queryMemory({ agentId, snapshotRevision: snapshot.revision, limit: 10 }).items).toEqual([
       expect.objectContaining({ eventId: originalEntry.eventId, provenance: 'room-membership' }),
     ])
-    const afterBoot = JSON.parse(await readFile(join(root, 'agent_workspace.json'), 'utf8')) as typeof stored
-    expect(afterBoot).toEqual(stored)
+    const afterBootText = await readFile(join(root, 'agent_workspace.json'), 'utf8')
+    const afterBoot = JSON.parse(afterBootText) as { tables: { workspaces: { local: WorkspaceRecordV1 } } }
+    expect(afterBoot.tables.workspaces.local).toEqual({
+      recordVersion: 1,
+      descriptor: { id: 'local', label: 'Local organization', lifecycle: 'active' },
+      aggregate: stored.tables.workspaces.local,
+    })
     await first.dispose()
 
     const second = await boot(root)
     const restarted = second.service.snapshot()
+    expect(await readFile(join(root, 'agent_workspace.json'), 'utf8')).toBe(afterBootText)
     expect(restarted.memoryEntries).toHaveLength(2)
     expect(second.service.queryMemory({ agentId, snapshotRevision: restarted.revision, limit: 10 }).items).toEqual([
       expect.objectContaining({ eventId: originalEntry.eventId, provenance: 'room-membership' }),

@@ -18,6 +18,14 @@ The display name is “智能体组织” in Simplified Chinese and “Agent Org
 
 Portable export remains deliberately outside the Browser. v0.4.0 has no import, backup, or restore control.
 
+## Organization recovery development
+
+Unreleased source adds an organization directory above the existing workbench. It provides create, rename, switch, archive with an explicit stop-or-wait choice, and reopen. Every workbench API and subscription is bound to an explicit organization identity; switching cancels the previous requests and resets drafts, entity selection and live projections. Archived workbenches retain history browsing but disable mutation controls.
+
+Export displays a sensitive-history warning before downloading the JSON file. Import first reads and validates a chosen file and shows its source label/version, counts and excluded local Session bindings. The user can edit the new label before confirming creation of a separate organization. Confirmation keeps the current selection and never overwrites it; select the restored organization to inspect or reopen it. Imported history does not automatically start any employee or task.
+
+The new directory, recovery controls and personal-memory retrieval are development-source features; installing the existing registry `0.4.0` does not enable them. The transport remains the authenticated DSH Connection RPC path, not a second server or replacement core store.
+
 DeepSeek Harness compatibility is `>=0.2.0-rc.2 <0.2.1-0`, verified at `0.2.0-rc.2` commit `639ed015397290b3745d163aafe02ffee4aa3f84`.
 
 License: MIT

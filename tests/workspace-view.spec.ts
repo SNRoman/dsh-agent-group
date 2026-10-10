@@ -735,7 +735,7 @@ describe('workspace UI view model', () => {
           },
         }),
       },
-    } as never)
+    } as never).forWorkspace('local')
 
     let caught: unknown
     try {

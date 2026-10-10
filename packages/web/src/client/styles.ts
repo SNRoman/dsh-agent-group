@@ -3,6 +3,13 @@
 export const WORKSPACE_UI_STYLE_ID = 'dsh-agent-group/workspace-ui'
 
 export const WORKSPACE_UI_CSS = `
+.dsh-agent-group-organizations { flex-direction: column; gap: 10px; overflow: auto; }
+.dsh-agent-group-organization-directory { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px; border-radius: 12px; background: var(--dsw-alias-button-elevated-fill); color: var(--dsw-alias-label-primary); }
+.dsh-agent-group-organization-directory .dsh-agent-group-field { max-width: 240px; }
+.dsh-agent-group-organization-directory p { margin: 0; flex-basis: 100%; }
+.dsh-agent-group-organization-workspace { flex: 1; min-height: 300px; }
+.dsh-agent-group-organization-confirm { flex: none; padding: 16px; border-radius: 12px; background: var(--dsw-alias-button-elevated-fill); color: var(--dsw-alias-label-primary); }
+.dsh-agent-group-organization-confirm .dsh-agent-group-button { margin-top: 8px; margin-right: 8px; }
 .dsh-agent-group-footer-button {
   width: 100%; min-height: 36px; display: flex; align-items: center; justify-content: center; gap: 8px;
   padding: 7px 10px; border: 0; border-radius: 10px; background: transparent;

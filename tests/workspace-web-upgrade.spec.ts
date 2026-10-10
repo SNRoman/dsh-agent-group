@@ -70,7 +70,10 @@ async function realConnectionApi(): Promise<{
     },
   } as never)
   hostContext.provide('agentWorkspace', {
-    acknowledgeAgentFailure: async () => ({ revision: 2, value: undefined }),
+    forWorkspace: (id: string) => {
+      expect(id).toBe('local')
+      return { acknowledgeAgentFailure: async () => ({ revision: 2, value: undefined }) }
+    },
   } as never)
 
   const webRequire = createRequire(new URL('../packages/web/package.json', import.meta.url))
@@ -182,7 +185,7 @@ async function realConnectionApi(): Promise<{
         },
       })
       if (browserConnection === undefined) throw new Error('Connection Browser service did not mount')
-      return { api: new WorkspaceApiClient(browserConnection as never), wireResponses, dispose }
+      return { api: new WorkspaceApiClient(browserConnection as never).forWorkspace('local'), wireResponses, dispose }
     } finally {
       if (windowDescriptor === undefined) Reflect.deleteProperty(globalThis, 'window')
       else Object.defineProperty(globalThis, 'window', windowDescriptor)
@@ -225,7 +228,7 @@ function apiFixture(responses: Record<string, unknown>) {
       return { ok: true, value: responses[endpoint] }
     },
   }
-  return { api: new WorkspaceApiClient({ rpc } as never), calls }
+  return { api: new WorkspaceApiClient({ rpc } as never).forWorkspace('local'), calls }
 }
 
 describe('WorkspaceApiClient upgraded conversation contract', () => {
@@ -239,6 +242,7 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
       name: 'Engineer', description: '', instructions: '',
     }, 5)).resolves.toEqual({ revision: 6, value: state })
     expect(calls[0]?.payload).toEqual({
+      workspaceId: 'local',
       expectedRevision: 5,
       name: 'Engineer',
       description: '',
@@ -364,7 +368,7 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
     ['internal details', { kind: 'internal', code: 'internal', message: 'safe', details: { leaked: true } }],
   ] as const)('normalizes malformed %s RPC errors', async (_name, error) => {
     const rpc = { call: async () => ({ ok: false, error }) }
-    const api = new WorkspaceApiClient({ rpc } as never)
+    const api = new WorkspaceApiClient({ rpc } as never).forWorkspace('local')
     await expect(api.snapshot()).rejects.toMatchObject({
       error: { kind: 'internal', code: 'internal', message: 'Agent Workspace request failed', details: {} },
     })
@@ -372,7 +376,7 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
 
   it('normalizes an invented RPC error discriminator to the safe internal error', async () => {
     const rpc = { call: async () => ({ ok: false, error: { kind: 'business', code: 'invented', message: 'secret diagnostic', details: {} } }) }
-    const api = new WorkspaceApiClient({ rpc } as never)
+    const api = new WorkspaceApiClient({ rpc } as never).forWorkspace('local')
     await expect(api.snapshot()).rejects.toMatchObject({
       error: { kind: 'internal', code: 'internal', message: 'Agent Workspace request failed', details: {} },
     })
@@ -396,7 +400,7 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
     [{ kind: 'internal', code: 'internal', message: 'safe', details: {} }],
   ] as const)('retains the closed $kind/$code RPC error contract', async (error) => {
     const rpc = { call: async () => ({ ok: false, error }) }
-    const api = new WorkspaceApiClient({ rpc } as never)
+    const api = new WorkspaceApiClient({ rpc } as never).forWorkspace('local')
     await expect(api.snapshot()).rejects.toMatchObject({ error })
   })
 
@@ -426,6 +430,7 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
       channel: '/agent-workspace',
       endpoint: 'room/join',
       payload: {
+        workspaceId: 'local',
         expectedRevision: 4,
         roomId: 'room-1',
         agentId: 'agent-1',
@@ -453,7 +458,7 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
     expect(calls).toEqual([expect.objectContaining({
       channel: '/agent-workspace',
       endpoint: 'room/direct/open',
-      payload: { expectedRevision: 3, agentId: 'agent-1' },
+      payload: { workspaceId: 'local', expectedRevision: 3, agentId: 'agent-1' },
     })])
   })
 
@@ -490,7 +495,7 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
   ] as const)('routes %s with the exact revisioned payload and committed value', async (endpoint, payload, response, invoke) => {
     const { api, calls } = apiFixture({ [endpoint]: response })
     await expect(invoke(api)).resolves.toBeDefined()
-    expect(calls).toEqual([expect.objectContaining({ endpoint, payload: { expectedRevision: 1, ...payload } })])
+    expect(calls).toEqual([expect.objectContaining({ endpoint, payload: { workspaceId: 'local', expectedRevision: 1, ...payload } })])
     expect(calls[0]?.payload).not.toHaveProperty('humanId')
     expect(calls[0]?.payload).not.toHaveProperty('actorAgentId')
   })
@@ -513,8 +518,8 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
     await expect(api.activitySnapshot(controller.signal)).resolves.toEqual(initial)
     await expect(api.waitForActivity(2, controller.signal)).resolves.toEqual(changed)
     expect(calls.map(call => [call.endpoint, call.payload])).toEqual([
-      ['runtime/activity/snapshot', {}],
-      ['runtime/activity/wait', { afterVersion: 2 }],
+      ['runtime/activity/snapshot', { workspaceId: 'local' }],
+      ['runtime/activity/wait', { workspaceId: 'local', afterVersion: 2 }],
     ])
   })
 })

@@ -1,7 +1,6 @@
 import { WorkspaceBusinessError } from '../../packages/host/src/errors.ts'
 import type { WorkspaceBusinessErrorCode, WorkspaceBusinessErrorDetailsMap } from '../../packages/host/src/errors.ts'
-import type { AgentWorkspaceDomainService } from '../../packages/host/src/index.ts'
-import type { WorkspaceRpcResult } from '../../packages/host/src/rpc.ts'
+import type { WorkspaceRpcResult, WorkspaceRpcService } from '../../packages/host/src/rpc.ts'
 import { WorkspaceApiError } from '../../packages/web/src/client/api.ts'
 import type { WorkspaceRpcError } from '../../packages/web/src/client/contracts.ts'
 
@@ -68,7 +67,7 @@ if (apiError.error.kind === 'cancelled') {
   void narrowedCode
 }
 
-declare const workspace: AgentWorkspaceDomainService
+declare const workspace: WorkspaceRpcService
 // @ts-expect-error Generic Host-owned mutations are not part of the public service face.
 void workspace.apply
 // @ts-expect-error Generic Host-owned commands are not part of the public service face.

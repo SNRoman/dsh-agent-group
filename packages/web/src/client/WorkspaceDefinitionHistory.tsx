@@ -215,11 +215,11 @@ export function WorkspaceDefinitionHistory(props: WorkspaceDefinitionHistoryProp
   return <>
     <section className="dsh-agent-group-card">
       <div className="dsh-agent-group-form">
-        <HistoryField label={props.t('agent.description')}><textarea className="dsh-agent-group-textarea" aria-label={props.t('agent.description')} value={props.description} onChange={event => props.onDescriptionChange(event.target.value)} /></HistoryField>
-        <HistoryField label={props.t('agent.instructions')}><textarea className="dsh-agent-group-textarea" aria-label={props.t('agent.instructions')} value={props.instructions} onChange={event => props.onInstructionsChange(event.target.value)} /></HistoryField>
+        <HistoryField label={props.t('agent.description')}><textarea className="dsh-agent-group-textarea" aria-label={props.t('agent.description')} value={props.description} readOnly={props.api.readOnly} onChange={event => props.onDescriptionChange(event.target.value)} /></HistoryField>
+        <HistoryField label={props.t('agent.instructions')}><textarea className="dsh-agent-group-textarea" aria-label={props.t('agent.instructions')} value={props.instructions} readOnly={props.api.readOnly} onChange={event => props.onInstructionsChange(event.target.value)} /></HistoryField>
         <div className="dsh-agent-group-inline">
-          <button type="button" className="dsh-agent-group-button" disabled={saveState === 'pending'} onClick={event => { saveTrigger.current = event.currentTarget; props.onDraftReservationChange(true); setSaveOpen(true); setSaveState('idle') }}>{props.t('agent.saveRevision')}</button>
-          <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={saveState === 'pending'} onClick={() => { props.onDraftReservationChange(false); props.onEditorCancel() }}>{props.t('room.cancel')}</button>
+          <button type="button" className="dsh-agent-group-button" disabled={props.api.readOnly || saveState === 'pending'} onClick={event => { saveTrigger.current = event.currentTarget; props.onDraftReservationChange(true); setSaveOpen(true); setSaveState('idle') }}>{props.t('agent.saveRevision')}</button>
+          <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={props.api.readOnly || saveState === 'pending'} onClick={() => { props.onDraftReservationChange(false); props.onEditorCancel() }}>{props.t('room.cancel')}</button>
         </div>
       </div>
     </section>
@@ -239,20 +239,20 @@ export function WorkspaceDefinitionHistory(props: WorkspaceDefinitionHistoryProp
             ? props.t('history.unknownPinned', { id })
             : props.t('history.agentPinned', { name: agent.name, id, status: agent.employmentStatus === 'employed' ? props.t('agent.employed') : props.t('agent.departed') })
         }).join(props.t('history.listSeparator')) })}</div>
-        <button ref={element => { if (element === null) historyTriggers.current.delete(item.id); else historyTriggers.current.set(item.id, element) }} type="button" className="dsh-agent-group-button" aria-label={props.t('history.synchronizeNamed', { number: item.number })} onClick={event => { laterTrigger.current = event.currentTarget; setLaterRevisionId(item.id); setLaterAgentIds([]); setLaterState('idle') }}>{props.t('history.synchronize')}</button>
+        <button ref={element => { if (element === null) historyTriggers.current.delete(item.id); else historyTriggers.current.set(item.id, element) }} type="button" className="dsh-agent-group-button" aria-label={props.t('history.synchronizeNamed', { number: item.number })} disabled={props.api.readOnly} onClick={event => { laterTrigger.current = event.currentTarget; setLaterRevisionId(item.id); setLaterAgentIds([]); setLaterState('idle') }}>{props.t('history.synchronize')}</button>
       </article>) : null}</div>
     </section>
 
     {saveOpen ? <div role="dialog" aria-modal="true" aria-label={props.t('history.saveDialog')} className="dsh-agent-group-modal" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); dismissSaveAsNone() } }}>
       <div className="dsh-agent-group-modal-card">
-        <button type="button" autoFocus className="dsh-agent-group-icon-button dsh-agent-group-right" aria-label={props.t('history.closeSaveDialog')} disabled={saveState !== 'idle'} onClick={dismissSaveAsNone}>{props.t('workspace.close')}</button>
+        <button type="button" autoFocus className="dsh-agent-group-icon-button dsh-agent-group-right" aria-label={props.t('history.closeSaveDialog')} disabled={props.api.readOnly || saveState !== 'idle'} onClick={dismissSaveAsNone}>{props.t('workspace.close')}</button>
         <h2>{props.t('history.saveDialog')}</h2>
-        {(['none', 'all', 'subset'] as const).map(mode => <label key={mode} className="dsh-agent-group-check"><input type="radio" name="revision-sync" aria-label={props.t(`history.mode.${mode}`)} checked={saveMode === mode} disabled={saveState === 'pending'} onChange={() => setSaveMode(mode)} />{props.t(`history.mode.${mode}`)}</label>)}
-        {saveMode === 'subset' ? <AgentChoices agents={agents} selected={saveAgentIds} disabled={saveState === 'pending'} onChange={setSaveAgentIds} label={(name, id) => props.t('history.selectAgent', { name, id })} /> : null}
+        {(['none', 'all', 'subset'] as const).map(mode => <label key={mode} className="dsh-agent-group-check"><input type="radio" name="revision-sync" aria-label={props.t(`history.mode.${mode}`)} checked={saveMode === mode} disabled={props.api.readOnly || saveState === 'pending'} onChange={() => setSaveMode(mode)} />{props.t(`history.mode.${mode}`)}</label>)}
+        {saveMode === 'subset' ? <AgentChoices agents={agents} selected={saveAgentIds} disabled={props.api.readOnly || saveState === 'pending'} onChange={setSaveAgentIds} label={(name, id) => props.t('history.selectAgent', { name, id })} /> : null}
         {saveMode === 'subset' && saveAgentIds.length === 0 ? <div role="status" className="dsh-agent-group-muted">{props.t('history.selectAtLeastOne')}</div> : null}
         {saveState === 'stale' ? <div role="status" className="dsh-agent-group-retry"><span>{props.t('history.saveStale')}</span><button type="button" className="dsh-agent-group-button" aria-label={props.t('history.retrySave')} onClick={() => void save()}>{props.t('workspace.retry')}</button></div> : null}
         {saveState === 'error' ? <><div role="alert" className="dsh-agent-group-error">{props.t('history.saveError')}</div><button type="button" className="dsh-agent-group-button" aria-label={props.t('history.retrySave')} onClick={() => void save()}>{props.t('workspace.retry')}</button></> : null}
-        <button type="button" className="dsh-agent-group-button" aria-label={props.t('history.saveConfirm')} disabled={saveState === 'pending' || saveState === 'stale' || (saveMode === 'subset' && saveAgentIds.length === 0)} onClick={() => void save()}>{props.t('history.saveConfirm')}</button>
+        <button type="button" className="dsh-agent-group-button" aria-label={props.t('history.saveConfirm')} disabled={props.api.readOnly || saveState === 'pending' || saveState === 'stale' || (saveMode === 'subset' && saveAgentIds.length === 0)} onClick={() => void save()}>{props.t('history.saveConfirm')}</button>
       </div>
     </div> : null}
 
@@ -260,13 +260,13 @@ export function WorkspaceDefinitionHistory(props: WorkspaceDefinitionHistoryProp
       <div className="dsh-agent-group-modal-card">
         <h2>{props.t('history.laterDialog')}</h2>
         <p>{props.t('history.preservation')}</p>
-        <AgentChoices agents={agents} selected={laterAgentIds} disabled={laterState === 'pending'} onChange={setLaterAgentIds} label={(name, id) => props.t('history.selectAgent', { name, id })} />
+        <AgentChoices agents={agents} selected={laterAgentIds} disabled={props.api.readOnly || laterState === 'pending'} onChange={setLaterAgentIds} label={(name, id) => props.t('history.selectAgent', { name, id })} />
         {laterAgentIds.length === 0 ? <div role="status" className="dsh-agent-group-muted">{props.t('history.selectAtLeastOne')}</div> : null}
         {laterState === 'stale' ? <div role="status" className="dsh-agent-group-retry"><span>{props.t('history.syncStale')}</span><button type="button" className="dsh-agent-group-button" aria-label={props.t('history.retrySync')} onClick={() => void synchronize()}>{props.t('workspace.retry')}</button></div> : null}
         {laterState === 'error' ? <><div role="alert" className="dsh-agent-group-error">{props.t('history.syncError')}</div><button type="button" className="dsh-agent-group-button" aria-label={props.t('history.retrySync')} onClick={() => void synchronize()}>{props.t('workspace.retry')}</button></> : null}
         <div className="dsh-agent-group-inline">
-          <button type="button" className="dsh-agent-group-button" aria-label={props.t('history.confirmSynchronization')} disabled={laterState === 'pending' || laterState === 'stale' || laterAgentIds.length === 0} onClick={() => void synchronize()}>{props.t('history.confirmSynchronization')}</button>
-          <button type="button" autoFocus className="dsh-agent-group-button" data-variant="ghost" aria-label={props.t('history.cancelSynchronization')} disabled={laterState === 'pending'} onClick={dismissLater}>{props.t('history.cancelSynchronization')}</button>
+          <button type="button" className="dsh-agent-group-button" aria-label={props.t('history.confirmSynchronization')} disabled={props.api.readOnly || laterState === 'pending' || laterState === 'stale' || laterAgentIds.length === 0} onClick={() => void synchronize()}>{props.t('history.confirmSynchronization')}</button>
+          <button type="button" autoFocus className="dsh-agent-group-button" data-variant="ghost" aria-label={props.t('history.cancelSynchronization')} disabled={props.api.readOnly || laterState === 'pending'} onClick={dismissLater}>{props.t('history.cancelSynchronization')}</button>
         </div>
       </div>
     </div> : null}

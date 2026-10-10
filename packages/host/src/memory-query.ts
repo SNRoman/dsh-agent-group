@@ -14,6 +14,7 @@ import type {
   TaskAssignmentId,
   TaskId,
   WorkspaceEventId,
+  WorkspaceId,
 } from './ids.ts'
 import type {
   AgentMemoryEntry,
@@ -88,7 +89,8 @@ export interface MemoryPage {
 }
 
 interface MemoryCursor {
-  readonly version: 1
+  readonly version: 2
+  readonly workspaceId: WorkspaceId
   readonly agentId: AgentId
   readonly beforeSequence: number
   readonly snapshotRevision: number
@@ -110,6 +112,7 @@ export function queryAgentMemory(state: WorkspaceState, query: MemoryQuery): Mem
   requireQuery(state, query)
   const cursor = query.cursor === undefined ? undefined : decodeCursor(query.cursor)
   if (cursor !== undefined) {
+    if (cursor.workspaceId !== state.workspaceId) throw new Error('memory cursor belongs to another organization')
     if (cursor.agentId !== query.agentId) throw new Error('memory cursor belongs to another agent')
     if (cursor.snapshotRevision !== query.snapshotRevision) throw staleRevision(query.snapshotRevision, cursor.snapshotRevision)
   }
@@ -135,7 +138,7 @@ export function queryAgentMemory(state: WorkspaceState, query: MemoryQuery): Mem
     snapshotRevision: query.snapshotRevision,
     items,
     ...(projected.length > items.length && last !== undefined
-      ? { nextCursor: encodeCursor({ version: 1, agentId: query.agentId, beforeSequence: last.sequence, snapshotRevision: query.snapshotRevision }) }
+      ? { nextCursor: encodeCursor({ version: 2, workspaceId: state.workspaceId, agentId: query.agentId, beforeSequence: last.sequence, snapshotRevision: query.snapshotRevision }) }
       : {}),
   }
 }
@@ -319,12 +322,15 @@ function decodeCursor(encoded: string): MemoryCursor {
   }
   const keys = isRecord(parsed) ? Object.keys(parsed).sort() : []
   if (!isRecord(parsed)
-    || keys.length !== 4
+    || keys.length !== 5
     || keys[0] !== 'agentId'
     || keys[1] !== 'beforeSequence'
     || keys[2] !== 'snapshotRevision'
     || keys[3] !== 'version'
-    || parsed.version !== 1
+    || keys[4] !== 'workspaceId'
+    || parsed.version !== 2
+    || typeof parsed.workspaceId !== 'string'
+    || parsed.workspaceId.length === 0
     || typeof parsed.agentId !== 'string'
     || parsed.agentId.length === 0
     || !Number.isSafeInteger(parsed.beforeSequence)
@@ -334,7 +340,8 @@ function decodeCursor(encoded: string): MemoryCursor {
     throw new Error('memory cursor is malformed or unsupported')
   }
   const cursor: MemoryCursor = {
-    version: 1,
+    version: 2,
+    workspaceId: parsed.workspaceId as WorkspaceId,
     agentId: parsed.agentId as AgentId,
     beforeSequence: parsed.beforeSequence as number,
     snapshotRevision: parsed.snapshotRevision as number,

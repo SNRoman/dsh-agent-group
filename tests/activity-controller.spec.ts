@@ -8,6 +8,9 @@ import { WorkspaceActivityStream } from '../packages/host/src/activity-stream.ts
 import type { WorkspaceActivityIdentity } from '../packages/host/src/activity-stream.ts'
 import { AgentId, HumanId, RoomId, WorkspaceActivityId, WorkspaceId } from '../packages/host/src/ids.ts'
 import AgentWorkspaceDomainService, { LOCAL_WORKSPACE_ID } from '../packages/host/src/index.ts'
+import type { ResolvedConfig } from '../packages/host/src/index.ts'
+import { WorkspaceRuntime } from '../packages/host/src/workspace-runtime.ts'
+import type { WorkspaceDirectory } from '../packages/host/src/workspace-directory.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import {
   assignDelegatedTask,
@@ -171,14 +174,15 @@ describe('AgentWorkspaceDomainService exact cancellation', () => {
     })
     state = unrelatedChild.state
 
-    const service = new AgentWorkspaceDomainService(new Context())
-    const table = {
-      get: (id: typeof LOCAL_WORKSPACE_ID) => id === LOCAL_WORKSPACE_ID ? state : undefined,
-      update: async (_id: typeof LOCAL_WORKSPACE_ID, mutation: (current: WorkspaceState) => WorkspaceState) => {
+    const directory = {
+      record: () => ({ descriptor: { lifecycle: 'active' } }),
+      snapshot: () => structuredClone(state),
+      updateAggregate: async (_id: typeof LOCAL_WORKSPACE_ID, mutation: (current: WorkspaceState) => WorkspaceState) => {
         state = mutation(state)
         return state
       },
-    }
+    } as WorkspaceDirectory
+    const service = new WorkspaceRuntime(new Context(), AgentWorkspaceDomainService.Config({}) as ResolvedConfig, directory, LOCAL_WORKSPACE_ID)
     const aliceInbox = [unrelatedDelivery.message]
     const bobInbox = [derivedDelivery.message]
     const removed: string[] = []
@@ -208,13 +212,11 @@ describe('AgentWorkspaceDomainService exact cancellation', () => {
       [bob.agentId, makeHandle('bob-session', bobInbox)],
     ])
     const internals = service as unknown as {
-      table: typeof table
-      pool: Pick<EmployeeAgentPool, 'handleFor'>
+      pool: Pick<EmployeeAgentPool, 'handleFor' | 'controlHandleFor'>
       activityStream: WorkspaceActivityStream
       childControllers: ChildControllerRegistry
     }
-    internals.table = table
-    internals.pool = { handleFor: agentId => handles.get(agentId) }
+    internals.pool = { handleFor: agentId => handles.get(agentId), controlHandleFor: agentId => handles.get(agentId) }
     const activityId = internals.activityStream.queue({
       agentId: alice.agentId,
       messageId: rootDelivery.message.id,

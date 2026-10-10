@@ -387,7 +387,15 @@ export function assertLegacyWorkspacePreserved(before, after) {
   if (Object.keys(before.tables?.workspaces ?? {}).join() !== 'local') {
     throw new Error('legacy source does not contain exactly one local workspace')
   }
-  if (canonicalize(after) !== canonicalize(before)) {
+  const local = after?.tables?.workspaces?.local
+  const expected = local?.recordVersion === 1 ? {
+    ...before, tables: { workspaces: { local: {
+      recordVersion: 1,
+      descriptor: { id: 'local', label: 'Local organization', lifecycle: 'active' },
+      aggregate: before.tables.workspaces.local,
+    } } },
+  } : before
+  if (canonicalize(after) !== canonicalize(expected)) {
     throw new Error('installed Host rewrote the legacy workspace, ids, or session bindings while loading it')
   }
 }

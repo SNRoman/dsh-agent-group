@@ -10,6 +10,7 @@ import type {
   WorkspaceMutationEndpoint, WorkspaceMutationRequestMap, WorkspaceMutationResult,
   WorkspaceMutationValueMap, WorkspaceRpcError, WorkspaceRuntimeStatus, WorkspaceSnapshot,
   WorkspaceStopResult,
+  WorkspaceDescriptor, WorkspaceDirectoryEntry, WorkspaceImportPreview, WorkspaceExportResult,
 } from './contracts.ts'
 
 const CHANNEL = '/agent-workspace'
@@ -34,10 +35,68 @@ export class WorkspaceApiError extends Error {
 
 /** Strict Browser client for Agent Workspace reads and CAS mutations. */
 export class WorkspaceApi {
-  constructor(private readonly connection: Pick<ConnectionHandle, 'rpc'>) {}
+  constructor(private readonly connection: Pick<ConnectionHandle, 'rpc'>, readonly workspaceId?: string, readonly readOnly = false) {}
+
+  /** @param id Explicit directory identity. @param readOnly Whether aggregate mutations are disabled. @returns Immutable scoped client. */
+  forWorkspace(id: string, readOnly = false): WorkspaceApiClient {
+    requireWorkspaceId(id)
+    const scoped = new WorkspaceApiClient(this.connection, id, readOnly)
+    Object.freeze(scoped)
+    return scoped
+  }
+
+  /** @param signal Cancellation signal. @returns Validated organization directory. */
+  async listOrganizations(signal?: AbortSignal): Promise<readonly WorkspaceDirectoryEntry[]> {
+    const value = await this.invoke('organization/list', {}, signal)
+    if (!Array.isArray(value)) throw invalid('organization directory')
+    const entries = value.map(assertDirectoryEntry)
+    if (new Set(entries.map(entry => entry.descriptor.id)).size !== entries.length) throw invalid('organization directory')
+    return entries
+  }
+
+  /** @param label Organization label. @param operationId Stable retry identity. @param signal Cancellation signal. @returns Created descriptor. */
+  async createOrganization(label: string, operationId: string = crypto.randomUUID(), signal?: AbortSignal): Promise<WorkspaceDescriptor> {
+    requireOperationId(operationId)
+    return assertDescriptor(await this.invoke('organization/create', { operationId, label }, signal))
+  }
+  /** @param workspaceId Organization identity. @param label New label. @param signal Cancellation signal. @returns Renamed descriptor. */
+  async renameOrganization(workspaceId: string, label: string, signal?: AbortSignal): Promise<WorkspaceDescriptor> {
+    requireWorkspaceId(workspaceId)
+    return assertDescriptor(await this.invoke('organization/rename', { workspaceId, label }, signal), workspaceId)
+  }
+  /** @param workspaceId Organization identity. @param mode Stop current work or wait for it. @param signal Cancellation signal. @returns Archived descriptor. */
+  async archiveOrganization(workspaceId: string, mode: 'stop' | 'wait', signal?: AbortSignal): Promise<WorkspaceDescriptor> {
+    requireWorkspaceId(workspaceId)
+    return assertDescriptor(await this.invoke('organization/archive', { workspaceId, mode }, signal), workspaceId)
+  }
+  /** @param workspaceId Organization identity. @param signal Cancellation signal. @returns Reopened descriptor. */
+  async reopenOrganization(workspaceId: string, signal?: AbortSignal): Promise<WorkspaceDescriptor> {
+    requireWorkspaceId(workspaceId)
+    return assertDescriptor(await this.invoke('organization/reopen', { workspaceId }, signal), workspaceId)
+  }
+  /** @param workspaceId Organization identity. @param confirmed Human confirmation of sensitive portable data. @param signal Cancellation signal. @returns Portable JSON. */
+  async exportOrganization(workspaceId: string, confirmed: true, signal?: AbortSignal): Promise<WorkspaceExportResult> {
+    requireWorkspaceId(workspaceId)
+    const value = await this.invoke('organization/export', { workspaceId, confirmed }, signal)
+    if (!isRecord(value) || !hasExactKeys(value, ['json', 'document']) || typeof value['json'] !== 'string' || !isJsonSafe(value['document'])) throw invalid('organization export')
+    return { json: value['json'], document: structuredClone(value['document']) }
+  }
+  /** @param json Selected file contents. @param signal Cancellation signal. @returns Read-only import preview. */
+  async previewImport(json: string, signal?: AbortSignal): Promise<WorkspaceImportPreview> {
+    return assertImportPreview(await this.invoke('organization/import-preview', { json }, signal))
+  }
+  /** @param operationId Preview operation identity. @param json Previewed file. @param label Import label. @param confirmed Explicit human confirmation. @param signal Cancellation signal. @returns New organization descriptor. */
+  async confirmImport(operationId: string, json: string, label: string, confirmed: true, signal?: AbortSignal): Promise<WorkspaceDescriptor> {
+    requireOperationId(operationId)
+    return assertDescriptor(await this.invoke('organization/import-confirm', { operationId, json, label, confirmed }, signal))
+  }
 
   snapshot(signal?: AbortSignal): Promise<WorkspaceSnapshot> {
-    return this.invoke('snapshot', {}, signal).then(assertWorkspaceSnapshot)
+    return this.invoke('snapshot', {}, signal).then(value => {
+      const snapshot = assertWorkspaceSnapshot(value)
+      if (snapshot.workspaceId !== this.workspaceId) throw invalid('organization scope')
+      return snapshot
+    })
   }
 
   runtimeStatus(signal?: AbortSignal): Promise<WorkspaceRuntimeStatus> {
@@ -68,11 +127,16 @@ export class WorkspaceApi {
     expectedRevision: number,
     signal?: AbortSignal,
   ): Promise<WorkspaceMutationResult<WorkspaceMutationValueMap[Endpoint]>> {
+    if (this.readOnly) throw new Error('Agent Workspace selected organization is read-only')
     requireNonNegativeInteger('expected revision', expectedRevision)
     if ('expectedRevision' in payload || 'actorAgentId' in payload || 'humanId' in payload || 'actor' in payload) {
       throw new Error('Agent Workspace mutation payload contains a client-owned actor or revision field')
     }
-    return assertMutationResult(endpoint, await this.invoke(endpoint, { expectedRevision, ...payload }, signal))
+    const result = assertMutationResult(endpoint, await this.invoke(endpoint, { expectedRevision, ...payload }, signal))
+    const value = result.value
+    const state = isRecord(value) && 'state' in value ? value['state'] : value
+    if (isRecord(state) && 'workspaceId' in state && state['workspaceId'] !== this.workspaceId) throw invalid('organization scope')
+    return result
   }
 
   createDefinition(input: CreateDefinitionInput, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
@@ -151,6 +215,11 @@ export class WorkspaceApi {
   }
 
   private async invoke(endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown> {
+    if (!endpoint.startsWith('organization/')) {
+      if (this.workspaceId === undefined) throw new Error('Agent Workspace requires a selected organization')
+      if (!isRecord(payload)) throw new Error('Agent Workspace requires a request object')
+      payload = { ...payload, workspaceId: this.workspaceId }
+    }
     const result = await this.connection.rpc.call(CHANNEL, endpoint, payload, signal)
     if (!result.ok) throw new WorkspaceApiError(assertWorkspaceRpcError(result.error))
     return result.value
@@ -159,6 +228,40 @@ export class WorkspaceApi {
 
 /** Compatibility name retained for existing Browser registration imports. */
 export class WorkspaceApiClient extends WorkspaceApi {}
+
+function assertDescriptor(value: unknown, expectedId?: string): WorkspaceDescriptor {
+  if (!isRecord(value) || !hasRequiredAndOnlyKeys(value, ['id', 'label', 'lifecycle'], ['creation'])
+    || !isWorkspaceId(value['id']) || !isNonEmptyString(value['label']) || /[\ud800-\udfff]/u.test(value['label'])
+    || !isOneOf(value['lifecycle'], ['active', 'archived']) || (value['creation'] !== undefined && !isCreation(value['creation']))) throw invalid('organization descriptor')
+  if (expectedId !== undefined && value['id'] !== expectedId) throw invalid('organization scope')
+  return { id: value['id'], label: value['label'], lifecycle: value['lifecycle'] }
+}
+function isCreation(value: unknown): boolean {
+  return isRecord(value) && hasExactKeys(value, ['kind', 'createdAt', 'operationId', 'requestDigest'])
+    && isOneOf(value['kind'], ['created', 'imported']) && isTimestamp(value['createdAt'])
+    && isNonEmptyString(value['operationId']) && !/[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(value['operationId'])
+    && typeof value['requestDigest'] === 'string' && /^[0-9a-f]{64}$/u.test(value['requestDigest'])
+}
+function assertDirectoryEntry(value: unknown): WorkspaceDirectoryEntry {
+  if (!isRecord(value) || !hasExactKeys(value, ['descriptor', 'revision', 'eventCount', 'agentCount'])
+    || !isNonNegativeInteger(value['revision']) || !isNonNegativeInteger(value['eventCount']) || !isNonNegativeInteger(value['agentCount'])) throw invalid('organization directory entry')
+  return { descriptor: assertDescriptor(value['descriptor']), revision: value['revision'], eventCount: value['eventCount'], agentCount: value['agentCount'] }
+}
+function assertImportPreview(value: unknown): WorkspaceImportPreview {
+  if (!isRecord(value) || !hasExactKeys(value, ['operationId', 'sourceWorkspaceId', 'sourcePluginVersion', 'exportedAt', 'label', 'lifecycle', 'eventCount', 'agentCount', 'taskCount', 'sessionBindingsExcluded'])
+    || !isWorkspaceId(value['operationId']) || !isWorkspaceId(value['sourceWorkspaceId']) || typeof value['sourcePluginVersion'] !== 'string'
+    || !isTimestamp(value['exportedAt']) || !isNonEmptyString(value['label']) || !isOneOf(value['lifecycle'], ['active', 'archived'])
+    || !isNonNegativeInteger(value['eventCount']) || !isNonNegativeInteger(value['agentCount']) || !isNonNegativeInteger(value['taskCount']) || value['sessionBindingsExcluded'] !== true) throw invalid('organization import preview')
+  return { operationId: value['operationId'], sourceWorkspaceId: value['sourceWorkspaceId'], sourcePluginVersion: value['sourcePluginVersion'], exportedAt: value['exportedAt'], label: value['label'], lifecycle: value['lifecycle'], eventCount: value['eventCount'], agentCount: value['agentCount'], taskCount: value['taskCount'], sessionBindingsExcluded: true }
+}
+function isTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  const date = new Date(value)
+  return !Number.isNaN(date.valueOf()) && date.toISOString() === value
+}
+function isWorkspaceId(value: unknown): value is string { return isNonEmptyString(value) && !/[\s:\u0000-\u001f\u007f-\u009f]/u.test(value) }
+function requireWorkspaceId(value: string): void { if (!isWorkspaceId(value)) throw new Error('Agent Workspace organization id is invalid') }
+function requireOperationId(value: string): void { if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value)) throw new Error('Agent Workspace operation id must be a UUID') }
 
 function assertMutationResult<Endpoint extends WorkspaceMutationEndpoint>(
   endpoint: Endpoint,

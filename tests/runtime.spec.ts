@@ -13,6 +13,10 @@ import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { AgentId, DefinitionRevisionId, HumanId, RoomId, TaskDeliveryAttemptId, TaskId, WorkspaceId } from '../packages/host/src/ids.ts'
 import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
+import type { ResolvedConfig } from '../packages/host/src/index.ts'
+import { WorkspaceRuntime } from '../packages/host/src/workspace-runtime.ts'
+import type { WorkspaceDirectory } from '../packages/host/src/workspace-directory.ts'
+import type { WorkspaceState } from '../packages/host/src/types.ts'
 import { EmployeeAgentPool } from '../packages/host/src/runtime.ts'
 import type { EmployeeSessionSource } from '../packages/host/src/runtime.ts'
 import { registerWorkspaceMemoryTools } from '../packages/host/src/memory-tools.ts'
@@ -33,6 +37,19 @@ function resumedHandle(): AgentHandle {
 
 function text(text: string): UserMessage {
   return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
+}
+
+function runtime(ctx = new Context(), initial = createInitialState(WorkspaceId('local'))): WorkspaceRuntime {
+  let state = initial
+  const directory = {
+    record: () => ({ descriptor: { lifecycle: 'active' } }),
+    snapshot: () => structuredClone(state),
+    updateAggregate: async (_id: WorkspaceId, mutation: (current: WorkspaceState) => WorkspaceState) => {
+      state = mutation(state)
+      return structuredClone(state)
+    },
+  } as WorkspaceDirectory
+  return new WorkspaceRuntime(ctx, AgentWorkspaceDomainService.Config({}) as ResolvedConfig, directory, initial.workspaceId)
 }
 
 interface FakeEvents {
@@ -58,6 +75,53 @@ function fakeEvents(): FakeEvents {
 }
 
 describe('EmployeeAgentPool', () => {
+  test.each(['dispose', 'disposeAll'] as const)('controls a resumed employee before publication and revokes control on %s', async teardownKind => {
+    const committed = Promise.withResolvers<void>()
+    const idle = Promise.withResolvers<void>()
+    const agentId = AgentId('alice')
+    const queued = text('queued recovery')
+    const inbox = [queued]
+    const cancel = vi.fn()
+    const remove = vi.fn((id: string) => {
+      const index = inbox.findIndex(message => message.id === id)
+      if (index < 0) return false
+      inbox.splice(index, 1)
+      return true
+    })
+    const restored = { agent: {
+      id: SessionId('bound'), ctx: new Context(),
+      inbox: { nextTurn: inbox, nextStep: [], remove },
+      cancel, whenIdle: async () => { committed.resolve(); await idle.promise },
+    } as Agent, dispose: vi.fn(async () => {}) }
+    const pool = new EmployeeAgentPool({ create: vi.fn(), resume: async options => {
+      const setup = await options.setup?.(restored.agent.ctx, restored.agent)
+      setup?.commit()
+      return restored
+    } }, { sessionIdFor: () => SessionId('bound'), recordSessionId: vi.fn(),
+      unhideSession: async () => {}, hideSession: async () => {},
+    })
+    const ensuring = pool.ensure(agentId)
+    await committed.promise
+    try {
+      expect(pool.handleFor(agentId)).toBeUndefined()
+      expect(pool.controlHandleFor(agentId)?.agent).toBe(restored.agent)
+      pool.controlHandleFor(agentId)?.agent.inbox.remove(queued.id)
+      pool.controlHandleFor(agentId)?.agent.cancel({ kind: 'user' }, { keepInbox: true })
+      expect(inbox).toEqual([])
+      expect(cancel).toHaveBeenCalledOnce()
+      const rejected = expect(ensuring).rejects.toThrow(/invalidated by disposal/)
+      const teardown = teardownKind === 'dispose' ? pool.dispose(agentId) : pool.disposeAll()
+      expect(pool.controlHandleFor(agentId)).toBeUndefined()
+      idle.resolve()
+      await rejected
+      await teardown
+      expect(pool.controlHandleFor(agentId)).toBeUndefined()
+    } finally {
+      idle.resolve()
+      await Promise.allSettled([ensuring, pool.disposeAll()])
+    }
+  })
+
   test('authenticates a recovered memory-tool turn before the resume promise publishes its handle', async () => {
     const definition = mutateWorkspace(createInitialState(WorkspaceId('local')), {
       type: 'definition/create', name: 'Engineer', description: 'Build', instructions: 'Ship',
@@ -846,7 +910,7 @@ describe('AgentWorkspaceDomainService task-tool lifecycle', () => {
         revision: 'revision-1',
       }),
     } as never)
-    const service = new AgentWorkspaceDomainService(ctx)
+    const service = runtime(ctx)
 
     await expect(service.classifySession(AgentId('alice'), SessionId('employee-session')))
       .resolves.toBe('resume')
@@ -919,7 +983,7 @@ describe('AgentWorkspaceDomainService task-tool lifecycle', () => {
       fibers.push(await ctx.plugin(agentCtx => agentCtx.provide('agents', agents)))
       const host = await ctx.plugin(AgentWorkspaceDomainService)
       fibers.push(host)
-      const service = ctx.agentWorkspace
+      const service = ctx.agentWorkspace.forWorkspace(WorkspaceId('local'))
 
       await service.executeInternal({ type: 'definition/create', name: 'Engineer', description: 'Build', instructions: 'Ship' })
       const definitionId = Object.values(service.snapshot().definitions)[0]?.id
@@ -1189,6 +1253,53 @@ describe('WorkspaceTurnTracker', () => {
 })
 
 describe('AgentWorkspaceDomainService delivery failures', () => {
+  test('archive stop removes queued recovery and stops its exact unpublished turn', async () => {
+    const service = runtime()
+    const ready = Promise.withResolvers<void>()
+    const idle = Promise.withResolvers<void>()
+    const agentId = AgentId('alice')
+    const queued = text('queued recovery')
+    const active = text('active recovery')
+    const inbox = [queued]
+    const cancel = vi.fn()
+    const remove = vi.fn((id: string) => {
+      const index = inbox.findIndex(message => message.id === id)
+      if (index < 0) return false
+      inbox.splice(index, 1)
+      return true
+    })
+    const restored = { agent: {
+      id: SessionId('bound'), ctx: new Context(), inbox: { nextTurn: inbox, nextStep: [], remove },
+      cancel, whenIdle: async () => { ready.resolve(); await idle.promise },
+    } as Agent, dispose: vi.fn(async () => {}) }
+    const pool = new EmployeeAgentPool({ create: vi.fn(), resume: async options => {
+      const setup = await options.setup?.(restored.agent.ctx, restored.agent)
+      setup?.commit()
+      return restored
+    } }, { sessionIdFor: () => SessionId('bound'), recordSessionId: vi.fn(),
+      unhideSession: async () => {}, hideSession: async () => {},
+    })
+    Object.assign(service, { pool })
+    const stream = Reflect.get(service, 'activityStream') as WorkspaceActivityStream
+    stream.queue({ agentId, messageId: queued.id, source: { kind: 'room', roomId: RoomId('room') } })
+    const activityId = stream.queue({ agentId, messageId: active.id, source: { kind: 'room', roomId: RoomId('room') } })
+    stream.claim({ activityId, agentId, messageId: active.id, sessionId: SessionId('bound'), turn: 1 })
+    const ensuring = pool.ensure(agentId)
+    await ready.promise
+    try {
+      expect(pool.handleFor(agentId)).toBeUndefined()
+      await service.stopAdmittedWork()
+      expect(remove).toHaveBeenCalledWith(queued.id)
+      expect(inbox).toEqual([])
+      expect(cancel).toHaveBeenCalledWith({ kind: 'user' }, { keepInbox: true })
+      expect(service.activitySnapshot().activities.find(item => item.activityId === activityId)?.status).toBe('stopping')
+    } finally {
+      idle.resolve()
+      await ensuring
+      await pool.disposeAll()
+    }
+  })
+
   test('publishes a queued activity before the employee delivery lane opens', () => {
     const created = mutateWorkspace(createInitialState(WorkspaceId('local')), {
       type: 'definition/create', name: 'Engineer', description: '', instructions: '',
@@ -1196,14 +1307,12 @@ describe('AgentWorkspaceDomainService delivery failures', () => {
     const hired = mutateWorkspace(created.state, {
       type: 'agent/create', definitionId: created.definitionId, name: 'Alice',
     })
-    const service = new AgentWorkspaceDomainService(new Context(), { childProvider: 'spawn' })
+    const service = runtime(new Context(), hired.state)
     const delivery = text('queued')
     const never = new Promise<never>(() => {})
     const internals = service as unknown as {
-      table: { get(id: WorkspaceId): typeof hired.state | undefined }
       pool: { runDelivery(): Promise<never> }
     }
-    internals.table = { get: () => hired.state }
     internals.pool = { runDelivery: () => never }
 
     void service.deliver(hired.agentId, delivery, undefined, {
@@ -1224,24 +1333,13 @@ describe('AgentWorkspaceDomainService delivery failures', () => {
     const hired = mutateWorkspace(created.state, {
       type: 'agent/create', definitionId: created.definitionId, name: 'Alice',
     })
-    let state = hired.state
+    const state = hired.state
     const stable = handle()
     const refreshRole = vi.fn(async () => { throw new Error('refresh failed') })
     const dispose = vi.fn(async () => {})
-    const service = new AgentWorkspaceDomainService(new Context(), { childProvider: 'spawn' })
+    const service = runtime(new Context(), state)
     const internals = service as unknown as {
-      table: {
-        get(id: WorkspaceId): typeof state | undefined
-        update(id: WorkspaceId, mutation: (current: typeof state) => typeof state): Promise<typeof state>
-      }
       pool: { handleFor(agentId: AgentId): AgentHandle | undefined; refreshRole: typeof refreshRole; dispose: typeof dispose }
-    }
-    internals.table = {
-      get: () => state,
-      update: async (_id, mutation) => {
-        state = mutation(state)
-        return state
-      },
     }
     internals.pool = { handleFor: () => stable, refreshRole, dispose }
     const beforeRevision = state.revision
@@ -1265,7 +1363,7 @@ describe('AgentWorkspaceDomainService delivery failures', () => {
   })
 
   test('materialization failure remains display-safe until acknowledged', async () => {
-    const service = new AgentWorkspaceDomainService(new Context(), { childProvider: 'spawn' })
+    const service = runtime()
     const secretCanary = 'API_KEY=FAKE_REVIEW_CANARY'
     const agentId = AgentId('alice')
     vi.spyOn(service, 'ensureEmployee').mockRejectedValue(new Error(secretCanary))
@@ -1285,7 +1383,7 @@ describe('AgentWorkspaceDomainService delivery failures', () => {
   })
 
   test('session flush failure remains display-safe until acknowledged', async () => {
-    const service = new AgentWorkspaceDomainService(new Context(), { childProvider: 'spawn' })
+    const service = runtime()
     const secretCanary = 'API_KEY=FAKE_REVIEW_CANARY'
     const agentId = AgentId('alice')
     const session = {} as Agent['session']
@@ -1318,7 +1416,7 @@ describe('AgentWorkspaceDomainService delivery failures', () => {
   })
 
   test('flush failure preserves a more specific tracker failure', async () => {
-    const service = new AgentWorkspaceDomainService(new Context(), { childProvider: 'spawn' })
+    const service = runtime()
     const agentId = AgentId('alice')
     const session = {} as Agent['session']
     const agent = { id: SessionId('alice-session'), session } as Agent

@@ -11,6 +11,7 @@ import Storage from '@deepseek-ai/dsh-storage'
 import { apply as domainApply, Config as DomainConfig, inject as domainInject } from '@deepseek-ai/dsh-storage-domain'
 import { apply as jsonApply, Config as JsonConfig, inject as jsonInject } from '@deepseek-ai/dsh-storage-json'
 import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
+import type { WorkspaceRuntime } from '../packages/host/src/workspace-runtime.ts'
 import { WorkspaceDispatcher } from '../packages/host/src/dispatcher.ts'
 import type { SubagentRuntimeLike, WorkspaceDispatcherHost } from '../packages/host/src/dispatcher.ts'
 import { AgentId, AgentMemoryEntryId, ChildRunId, HumanId, RoomId, WorkspaceActivityId, WorkspaceEventId, WorkspaceId } from '../packages/host/src/ids.ts'
@@ -272,7 +273,7 @@ describe('employee pool lifecycle', () => {
 
 interface Booted {
   ctx: Context
-  service: AgentWorkspaceDomainService
+  service: WorkspaceRuntime
   dispose: () => Promise<void>
 }
 
@@ -294,14 +295,14 @@ async function boot(): Promise<Booted> {
   ]
   return {
     ctx,
-    service: ctx.agentWorkspace,
+    service: ctx.agentWorkspace.forWorkspace(WorkspaceId('local')),
     dispose: async () => {
       for (const fiber of [...fibers].reverse()) await fiber.dispose()
     },
   }
 }
 
-async function seedRetryableTask(service: AgentWorkspaceDomainService): Promise<{ agentId: AgentId; taskId: ReturnType<typeof assignHumanTask>['taskId'] }> {
+async function seedRetryableTask(service: WorkspaceRuntime): Promise<{ agentId: AgentId; taskId: ReturnType<typeof assignHumanTask>['taskId'] }> {
   let agentId: AgentId | undefined
   let taskId: ReturnType<typeof assignHumanTask>['taskId'] | undefined
   await service.apply(current => {
@@ -642,16 +643,12 @@ describe('durable service boundary', () => {
     })
     await recoveryPaused.promise
 
-    type TestTable = {
-      get(key: WorkspaceId): WorkspaceState | undefined
-      update(key: WorkspaceId, mutation: (current: WorkspaceState | undefined) => WorkspaceState): Promise<WorkspaceState>
-    }
-    const table = (booted.service as unknown as { table: TestTable }).table
-    const update = table.update.bind(table)
+    const directory = booted.service.directory
+    const update = directory.updateAggregate.bind(directory)
     const retryCommitted = Promise.withResolvers<void>()
     const allowAdoption = Promise.withResolvers<void>()
     let pauseRetryCommit = true
-    table.update = async (key, mutation) => {
+    directory.updateAggregate = async (key, mutation) => {
       const committed = await update(key, mutation)
       if (pauseRetryCommit) {
         pauseRetryCommit = false
@@ -677,7 +674,7 @@ describe('durable service boundary', () => {
     } finally {
       releaseRecovery.resolve()
       allowAdoption.resolve()
-      table.update = update
+      directory.updateAggregate = update
       ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator | undefined }).taskDelivery = undefined
       await Promise.allSettled([recovery, retry])
       await booted.dispose()
@@ -715,16 +712,12 @@ describe('durable service boundary', () => {
       },
     })
     ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator | undefined }).taskDelivery = coordinator
-    type TestTable = {
-      get(key: WorkspaceId): WorkspaceState | undefined
-      update(key: WorkspaceId, mutation: (current: WorkspaceState | undefined) => WorkspaceState): Promise<WorkspaceState>
-    }
-    const table = (booted.service as unknown as { table: TestTable }).table
-    const update = table.update.bind(table)
+    const directory = booted.service.directory
+    const update = directory.updateAggregate.bind(directory)
     const retryCommitted = Promise.withResolvers<void>()
     const allowAdoption = Promise.withResolvers<void>()
     let pauseRetryCommit = true
-    table.update = async (key, mutation) => {
+    directory.updateAggregate = async (key, mutation) => {
       const committed = await update(key, mutation)
       if (pauseRetryCommit) {
         pauseRetryCommit = false
@@ -756,7 +749,7 @@ describe('durable service boundary', () => {
       await expect(released.result()).rejects.toThrow(/rolled back/)
     } finally {
       allowAdoption.resolve()
-      table.update = update
+      directory.updateAggregate = update
       ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator | undefined }).taskDelivery = undefined
       await Promise.allSettled([retry])
       await booted.dispose()
@@ -819,6 +812,7 @@ describe('durable service boundary', () => {
     const pool = {
       roleRevisionFor: () => undefined,
       handleFor: () => employee,
+      controlHandleFor: () => employee,
       runDelivery: async <T>(_agentId: AgentId, run: (handle: AgentHandle) => Promise<T>): Promise<T> => {
         deliveryReady.resolve()
         await releaseDelivery.promise
@@ -1023,14 +1017,10 @@ describe('durable service boundary', () => {
     })
     ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator }).taskDelivery = coordinator
     const before = booted.service.snapshot()
-    type TestTable = {
-      get(key: WorkspaceId): WorkspaceState | undefined
-      update(key: WorkspaceId, mutation: (current: WorkspaceState | undefined) => WorkspaceState): Promise<WorkspaceState>
-    }
-    const table = (booted.service as unknown as { table: TestTable }).table
-    const update = table.update.bind(table)
-    table.update = async (key, mutation) => {
-      const current = table.get(key)
+    const directory = booted.service.directory
+    const update = directory.updateAggregate.bind(directory)
+    directory.updateAggregate = async (key, mutation) => {
+      const current = directory.snapshot(key)
       mutation(current)
       throw new Error('retry table write failed')
     }
@@ -1039,7 +1029,7 @@ describe('durable service boundary', () => {
       await expect(booted.service.retryTaskDelivery(before.revision, taskId)).rejects.toThrow('retry table write failed')
       expect(booted.service.snapshot()).toEqual(before)
     } finally {
-      table.update = update
+      directory.updateAggregate = update
     }
 
     await expect(booted.service.retryTaskDelivery(before.revision, taskId)).resolves.toEqual({

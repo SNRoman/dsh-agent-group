@@ -3,11 +3,13 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { AgentId } from './ids.ts'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import { recallAgentEvents } from './memory.ts'
 import type { WorkspaceTaskToolHost, WorkspaceToolRegistry } from './task-tools.ts'
 import type { WorkspaceState } from './types.ts'
 
 type MemoryToolHost = Pick<WorkspaceTaskToolHost, 'agentIdFor' | 'snapshot'>
+type MemoryToolHosts = MemoryToolHost | ((agent: Agent) => MemoryToolHost | undefined)
 type MemoryToolLimits = { characterBudget: number; resultLimit: number }
 
 class WorkspaceMemoryToolError extends Error {
@@ -31,7 +33,7 @@ class WorkspaceMemoryToolError extends Error {
  */
 export function registerWorkspaceMemoryTools(
   registry: WorkspaceToolRegistry,
-  host: MemoryToolHost,
+  host: MemoryToolHosts,
   limits: MemoryToolLimits,
 ): () => void {
   const disposers: Array<() => void> = []
@@ -49,7 +51,7 @@ export function registerWorkspaceMemoryTools(
   }
 }
 
-function memoryTools(host: MemoryToolHost, limits: MemoryToolLimits): readonly ToolDefinition[] {
+function memoryTools(host: MemoryToolHosts, limits: MemoryToolLimits): readonly ToolDefinition[] {
   const search = defineTool({
     name: 'workspace_search_memory',
     description: 'Search your personal event memories across rooms and tasks. Results are original excerpts; read an event id for its complete source.',
@@ -133,8 +135,10 @@ function memoryTools(host: MemoryToolHost, limits: MemoryToolLimits): readonly T
   return [search, read]
 }
 
-function resolveActor(host: MemoryToolHost, exec: ToolRunContext): { agentId: AgentId; state: WorkspaceState } {
+function resolveActor(hosts: MemoryToolHosts, exec: ToolRunContext): { agentId: AgentId; state: WorkspaceState } {
   if (exec.agent === undefined) throw new WorkspaceMemoryToolError('WORKSPACE_MEMORY_CALLER_UNAVAILABLE')
+  const host = typeof hosts === 'function' ? hosts(exec.agent) : hosts
+  if (host === undefined) throw new WorkspaceMemoryToolError('WORKSPACE_MEMORY_CALLER_UNAVAILABLE')
   const agentId = host.agentIdFor(exec.agent)
   if (agentId === undefined) throw new WorkspaceMemoryToolError('WORKSPACE_MEMORY_CALLER_UNAVAILABLE')
   const state = host.snapshot()

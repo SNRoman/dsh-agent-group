@@ -9,6 +9,7 @@ import { apply as jsonApply, Config as JsonConfig, inject as jsonInject } from '
 import { WorkspaceBusinessError } from '../packages/host/src/errors.ts'
 import { AgentId, DefinitionRevisionId, HumanId, RoomId, WorkspaceId } from '../packages/host/src/ids.ts'
 import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
+import type { WorkspaceRuntime } from '../packages/host/src/workspace-runtime.ts'
 import { assertWorkspaceInvariants } from '../packages/host/src/invariant.ts'
 import { assertDirectRoomTextAllowed, resolveHumanWakeTargets } from '../packages/host/src/room-policy.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
@@ -33,7 +34,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
 })
 
-async function boot(): Promise<{ service: AgentWorkspaceDomainService; dispose: () => Promise<void> }> {
+async function boot(): Promise<{ service: WorkspaceRuntime; dispose: () => Promise<void> }> {
   const root = await mkdtemp(join(tmpdir(), 'agent-group-direct-'))
   roots.push(root)
   const ctx = new Context()
@@ -44,7 +45,7 @@ async function boot(): Promise<{ service: AgentWorkspaceDomainService; dispose: 
     await ctx.plugin(AgentWorkspaceDomainService),
   ]
   return {
-    service: ctx.agentWorkspace,
+    service: ctx.agentWorkspace.forWorkspace(WorkspaceId('local')),
     dispose: async () => {
       for (const fiber of [...fibers].reverse()) await fiber.dispose()
     },

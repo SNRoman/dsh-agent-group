@@ -32,13 +32,31 @@ The package exports `createForwardWorkspaceExportV1` and the frozen format const
 
 ## Organization recovery development
 
-The development-only `@dsh-agent-group/host/workspace-import` leaf provides `prepareWorkspaceImportV1(json, options)`. It validates an existing forward-v1 document and returns a detached candidate for a caller-assigned new organization ID. It does not write storage, create an organization, register a service, restore model sessions, or run work. The published v0.4.0 package does not contain this leaf; there is not yet a Browser recovery control.
+The development-only `@dsh-agent-group/host/workspace-import` leaf provides `prepareWorkspaceImportV1(json, options)`. It validates an existing forward-v1 document and returns a detached candidate for a caller-assigned new organization ID. It does not write storage, create an organization, register a service, restore model sessions, or run work. The published v0.4.0 package contains neither this leaf nor the development Browser recovery controls.
 
 The caller supplies positive safe-integer limits for UTF-8 document bytes (`maxBytes`), aggregate records including memory entries (`maxEntities`), events (`maxEvents`), each string/key's UTF-8 bytes (`maxStringBytes`), and JSON container depth (`maxDepth`). The decoder verifies the SHA-256 digest of the original parsed envelope, strict version-1 fields, and all aggregate relationships. It rejects `__proto__` fields before schema conversion, and rejects duplicate object fields and invalid Unicode as required by [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785), while accepting whitespace and arbitrary field ordering. A digest detects corruption; it does not establish authorship. Exports contain potentially sensitive role instructions and complete organization history, so callers must obtain human confirmation before later committing a candidate.
 
 Candidates retain entity/event IDs, event order, employment periods, definitions, grants, tasks, and personal memory. They discard old Session bindings and rebase task-delivery message IDs to the new organization ID without changing the source document. Pending task deliveries and running children are rejected rather than resumed or silently repaired. Source plugin versions and declared import ranges remain diagnostic information, not an acceptance policy.
 
-Multiple organizations, idempotent create-new persistence, legacy record migration, archiving, and Browser import/export are subsequent integration work. The pure decoder alone is not a completed backup-and-restore workflow.
+Development source now exposes a durable directory and `ctx.agentWorkspace.forWorkspace(id)` for fixed organization runtimes. The strict version-`0` domain reader accepts released local aggregates and version-`1` organization records. Startup validates all records before wrapping the legacy aggregate once; its events, memory, entity IDs and local Session bindings remain unchanged. Each new organization has its own runtime, pool, activity stream and child controls. Creation/import retries reuse a durable operation identity; reusing it with different input fails instead of creating another copy.
+
+`@dsh-agent-group/host/workspace-portable` exposes `createWorkspaceExportV2` and `prepareWorkspaceImport` for the new descriptor-aware format and the shared v1/v2 reader. The live service enforces idle export, read-only previews and create-new import. It rejects unfinished durable work, removes old Session bindings, and never runs imported tasks automatically. Archive closes admission before persisting its lifecycle; stop mode cancels exact organization-owned work, while wait mode drains already admitted work. Both wait through settlement, Session persistence and child disposal. An archive write failure restores admission without stopping work. Reopen requires quiescence.
+
+The following validated positive safe-integer settings own import budgets. Defaults keep JSON-wrapped requests within the Browser adapter's default one-MiB body limit:
+
+```yaml
+plugins:
+  dsh-agent-group/host:
+    importMaxBytes: 262144
+    importMaxEntities: 50000
+    importMaxEvents: 20000
+    importMaxStringBytes: 131072
+    importMaxDepth: 64
+```
+
+Larger backups require increasing `importMaxBytes` and, when appropriate, the other budgets. Also increase `maxRequestBodyBytes` on the installed `@dsh-agent-group/host/web-rpc` adapter enough to accommodate the file encoded inside the RPC JSON envelope. Import errors omit source text. A checksum is not an authentication mechanism. These source features and the portable leaf are not part of the existing registry `0.4.0` release.
+
+Host unloading rejects new directory and runtime work, stops admitted execution, and waits for outstanding directory writes, task settlement, child disposal and employee Session cleanup before closing the domain. Cleanup attempts every organization even if one fails; Cordis reports rejected teardown effects through its logger rather than rejecting `fiber.dispose()`.
 
 DeepSeek Harness compatibility is `>=0.2.0-rc.2 <0.2.1-0`, verified at `0.2.0-rc.2` commit `639ed015397290b3745d163aafe02ffee4aa3f84`.
 

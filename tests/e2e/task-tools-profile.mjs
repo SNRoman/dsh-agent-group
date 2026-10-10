@@ -21,16 +21,19 @@ function parseArgs(argv) {
   return Object.fromEntries(values)
 }
 
-async function readDurableWorkspace(dshHome) {
+/** Read either released aggregates or organization wrappers from both storage layouts. */
+export async function readDurableWorkspace(dshHome) {
   const singlePath = join(dshHome, 'storages', 'agent_workspace.json')
   try {
     const document = JSON.parse(await readFile(singlePath, 'utf8'))
-    return document.tables.workspaces.local
+    const record = document.tables.workspaces.local
+    return record.aggregate ?? record
   } catch (singleError) {
     const recordPath = join(dshHome, 'storages', 'agent_workspace', 'workspaces', 'local.json')
     try {
       const document = JSON.parse(await readFile(recordPath, 'utf8'))
-      return document.value ?? document
+      const record = document.value ?? document
+      return record.aggregate ?? record
     } catch (recordError) {
       throw new AggregateError([singleError, recordError], 'could not read the durable Agent Workspace aggregate')
     }

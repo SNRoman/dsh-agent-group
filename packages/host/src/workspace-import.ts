@@ -57,6 +57,9 @@ const documentSchema = z.object({
   }).strict(),
 }).strict()
 
+/** Frozen version one reader reused by the current multi-version portable reader. */
+export const workspaceImportDocumentV1Schema = documentSchema
+
 const limitFields = ['maxBytes', 'maxEntities', 'maxEvents', 'maxStringBytes', 'maxDepth'] as const
 const entityFields = [
   'definitions', 'definitionRevisions', 'agents', 'rooms', 'memberships',
@@ -76,15 +79,29 @@ export function prepareWorkspaceImportV1(
   json: string,
   options: { readonly workspaceId: WorkspaceId; readonly limits: WorkspaceImportLimits },
 ): PreparedWorkspaceImportV1 {
-  for (const field of limitFields) {
-    if (!Number.isSafeInteger(options.limits[field]) || options.limits[field] <= 0) {
-      throw new Error('workspace import limits must be explicit positive safe integers')
-    }
-  }
+  return prepareWorkspaceImportWithSchema(json, options, documentSchema)
+}
+
+/** Complete portable input fields consumed by the shared import validation. */
+export type WorkspaceImportDocument = Omit<z.output<typeof documentSchema>, 'formatVersion'> & { readonly formatVersion: number }
+
+/**
+ * Apply input budgets, raw-envelope hashing, and source and target aggregate validation for a format reader.
+ * @param json Untrusted portable JSON.
+ * @param options Target identity and explicit budgets.
+ * @param schema Strict reader for the selected portable format version.
+ * @returns Detached prepared metadata and aggregate.
+ */
+export function prepareWorkspaceImportWithSchema(
+  json: string,
+  options: { readonly workspaceId: WorkspaceId; readonly limits: WorkspaceImportLimits },
+  schema: z.ZodType<WorkspaceImportDocument>,
+): PreparedWorkspaceImportV1 {
+  assertImportLimits(options.limits)
   if (options.workspaceId.trim() === '' || /[\s:\u0000-\u001f\u007f-\u009f]/u.test(options.workspaceId)) {
     throw new Error('workspace import target identity is invalid')
   }
-  if (Buffer.byteLength(json, 'utf8') > options.limits.maxBytes) throw new Error('workspace import exceeds maxBytes')
+  assertImportByteLimit(json, options.limits)
   let input: unknown
   try {
     input = JSON.parse(json)
@@ -95,7 +112,7 @@ export function prepareWorkspaceImportV1(
   assertTreeLimits(input, options.limits)
   assertUniqueObjectKeys(json, options.limits.maxDepth)
   assertCollectionLimits(input, options.limits)
-  const parsed = documentSchema.safeParse(input)
+  const parsed = schema.safeParse(input)
   if (!parsed.success) throw new Error('invalid workspace import document')
   const { digest, ...envelope } = parsed.data
   const { digest: _sourceDigest, ...sourceEnvelope } = requireRecord(input)
@@ -133,6 +150,29 @@ export function prepareWorkspaceImportV1(
   }
 }
 
+/**
+ * Enforce explicit budgets and raw byte size before processing an import operation request.
+ * @param json Untrusted source JSON.
+ * @param limits Explicit positive resource budgets.
+ * @returns Nothing; throws before parsing or canonicalizing an oversized input.
+ */
+export function assertWorkspaceImportBudget(json: string, limits: WorkspaceImportLimits): void {
+  assertImportLimits(limits)
+  assertImportByteLimit(json, limits)
+}
+
+function assertImportLimits(limits: WorkspaceImportLimits): void {
+  for (const field of limitFields) {
+    if (!Number.isSafeInteger(limits[field]) || limits[field] <= 0) {
+      throw new Error('workspace import limits must be explicit positive safe integers')
+    }
+  }
+}
+
+function assertImportByteLimit(json: string, limits: WorkspaceImportLimits): void {
+  if (Buffer.byteLength(json, 'utf8') > limits.maxBytes) throw new Error('workspace import exceeds maxBytes')
+}
+
 function assertImportInvariants(state: WorkspaceState): void {
   try {
     assertWorkspaceInvariants(state, state.workspaceId)
@@ -163,7 +203,16 @@ function assertTreeLimits(input: unknown, limits: WorkspaceImportLimits): void {
 
 function assertString(value: string, maxBytes: number): void {
   if (Buffer.byteLength(value, 'utf8') > maxBytes) throw new Error('workspace import exceeds maxStringBytes')
-  if (/[\ud800-\udfff]/u.test(value)) throw new Error('workspace import contains invalid Unicode')
+  if (!isWorkspaceUnicodeValid(value)) throw new Error('workspace import contains invalid Unicode')
+}
+
+/**
+ * Check a string or object key for isolated surrogates forbidden by RFC 8785.
+ * @param value Original string, without normalization or replacement.
+ * @returns Whether all surrogate code units belong to valid Unicode pairs.
+ */
+export function isWorkspaceUnicodeValid(value: string): boolean {
+  return !/[\ud800-\udfff]/u.test(value)
 }
 
 function assertUniqueObjectKeys(json: string, maxDepth: number): void {

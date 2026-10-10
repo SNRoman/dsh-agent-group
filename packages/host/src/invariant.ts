@@ -36,7 +36,7 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
       throw new Error(`definition '${definition.id}' lists a duplicate revision`)
     }
     for (const [index, revisionId] of definition.revisionIds.entries()) {
-      const revision = state.definitionRevisions[revisionId]
+      const revision = ownRecord(state.definitionRevisions, revisionId)
       if (revision === undefined) throw new Error(`definition '${definition.id}' references missing revision '${revisionId}'`)
       if (revision.definitionId !== definition.id) {
         throw new Error(`definition revision '${revision.id}' belongs to definition '${revision.definitionId}', not '${definition.id}'`)
@@ -50,7 +50,7 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
     }
   }
   for (const revision of Object.values(state.definitionRevisions)) {
-    const definition = state.definitions[revision.definitionId]
+    const definition = ownRecord(state.definitions, revision.definitionId)
     if (definition === undefined) {
       throw new Error(`definition revision '${revision.id}' references missing definition '${revision.definitionId}'`)
     }
@@ -63,9 +63,9 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
   const employmentStartEventIds = new Set<string>()
   const employmentEndEventIds = new Set<string>()
   for (const agent of Object.values(state.agents)) {
-    const definition = state.definitions[agent.definitionId]
+    const definition = ownRecord(state.definitions, agent.definitionId)
     if (definition === undefined) throw new Error(`agent '${agent.id}' references missing definition '${agent.definitionId}'`)
-    const revision = state.definitionRevisions[agent.definitionRevisionId]
+    const revision = ownRecord(state.definitionRevisions, agent.definitionRevisionId)
     if (revision === undefined) throw new Error(`agent '${agent.id}' references missing definition revision '${agent.definitionRevisionId}'`)
     if (revision.definitionId !== definition.id) {
       throw new Error(`agent '${agent.id}' definition revision '${revision.id}' belongs to another definition`)
@@ -119,9 +119,9 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
 
   const activeMemberships = new Set<string>()
   for (const membership of Object.values(state.memberships)) {
-    const room = state.rooms[membership.roomId]
+    const room = ownRecord(state.rooms, membership.roomId)
     if (room === undefined) throw new Error(`membership '${membership.id}' references missing room '${membership.roomId}'`)
-    const agent = state.agents[membership.agentId]
+    const agent = ownRecord(state.agents, membership.agentId)
     if (agent === undefined) throw new Error(`membership '${membership.id}' references missing agent '${membership.agentId}'`)
     const joined = events.get(membership.joinedEventId)
     if (joined?.type !== 'room/member-joined' || joined.subjectId !== membership.id) {
@@ -182,22 +182,22 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
   }
 
   for (const task of Object.values(state.tasks)) {
-    const root = state.tasks[task.rootTaskId]
+    const root = ownRecord(state.tasks, task.rootTaskId)
     if (root === undefined) throw new Error(`task '${task.id}' references missing root task '${task.rootTaskId}'`)
     if (root.id !== root.rootTaskId) throw new Error(`task '${task.id}' root '${root.id}' is not a root task`)
   }
   const assignmentsByTask = new Map<string, number>()
   for (const assignment of Object.values(state.taskAssignments)) {
-    const task = state.tasks[assignment.taskId]
+    const task = ownRecord(state.tasks, assignment.taskId)
     if (task === undefined) throw new Error(`task assignment '${assignment.id}' references missing task '${assignment.taskId}'`)
     if (assignment.rootTaskId !== task.rootTaskId) {
       throw new Error(`task assignment '${assignment.id}' root task '${assignment.rootTaskId}' does not match task '${task.id}'`)
     }
-    if (state.agents[assignment.assigneeAgentId] === undefined) {
+    if (ownRecord(state.agents, assignment.assigneeAgentId) === undefined) {
       throw new Error(`task assignment '${assignment.id}' references missing assignee '${assignment.assigneeAgentId}'`)
     }
     if (assignment.grantId !== undefined) {
-      const grant = state.delegationGrants[assignment.grantId]
+      const grant = ownRecord(state.delegationGrants, assignment.grantId)
       if (grant === undefined) throw new Error(`task assignment '${assignment.id}' references missing delegation grant '${assignment.grantId}'`)
       if (grant.rootTaskId !== assignment.rootTaskId) {
         throw new Error(`task assignment '${assignment.id}' and grant '${grant.id}' reference different root tasks`)
@@ -209,11 +209,11 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
     if (assignmentsByTask.get(task.id) !== 1) throw new Error(`task '${task.id}' must have exactly one assignment`)
   }
   for (const grant of Object.values(state.delegationGrants)) {
-    const task = state.tasks[grant.rootTaskId]
+    const task = ownRecord(state.tasks, grant.rootTaskId)
     if (task === undefined || task.id !== task.rootTaskId) {
       throw new Error(`delegation grant '${grant.id}' references missing root task '${grant.rootTaskId}'`)
     }
-    if (state.agents[grant.granteeAgentId] === undefined) {
+    if (ownRecord(state.agents, grant.granteeAgentId) === undefined) {
       throw new Error(`delegation grant '${grant.id}' references missing grantee '${grant.granteeAgentId}'`)
     }
     if (grant.status === 'active' && task.status !== 'open') {
@@ -222,10 +222,10 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
   }
 
   for (const childRun of Object.values(state.childRuns)) {
-    if (state.agents[childRun.parentAgentId] === undefined) {
+    if (ownRecord(state.agents, childRun.parentAgentId) === undefined) {
       throw new Error(`child run '${childRun.id}' references missing parent '${childRun.parentAgentId}'`)
     }
-    if (state.tasks[childRun.taskId] === undefined) {
+    if (ownRecord(state.tasks, childRun.taskId) === undefined) {
       throw new Error(`child run '${childRun.id}' references missing task '${childRun.taskId}'`)
     }
     const starts = state.events.filter(event => event.type === 'child/run-started' && event.subjectId === childRun.id)
@@ -249,12 +249,12 @@ export function assertWorkspaceInvariants(state: WorkspaceState, expectedWorkspa
     if (memoryIds.has(entry.id)) throw new Error(`duplicate memory entry id '${entry.id}'`)
     memoryIds.add(entry.id)
     if (!events.has(entry.eventId)) throw new Error(`memory entry '${entry.id}' references missing event '${entry.eventId}'`)
-    if (state.agents[entry.agentId] === undefined) throw new Error(`memory entry '${entry.id}' references missing agent '${entry.agentId}'`)
+    if (ownRecord(state.agents, entry.agentId) === undefined) throw new Error(`memory entry '${entry.id}' references missing agent '${entry.agentId}'`)
   }
 
   const sessionIds = new Set<string>()
   for (const [agentId, sessionId] of Object.entries(state.sessionBindings)) {
-    if (state.agents[agentId as keyof typeof state.agents] === undefined) {
+    if (ownRecord(state.agents, agentId) === undefined) {
       throw new Error(`session binding references missing agent '${agentId}'`)
     }
     if (sessionIds.has(sessionId)) throw new Error(`session '${sessionId}' is bound to more than one agent`)
@@ -366,7 +366,7 @@ function assertTaskDeliveryLifecycles(state: WorkspaceState): void {
 
 /** Verify a terminal task-result fact against task state, event order, and memory ownership. */
 function assertTaskResultTerminal(state: WorkspaceState, event: Extract<WorkspaceEvent, { readonly type: 'task/result' | 'task/result-after-cancel' }>): void {
-  const task = state.tasks[event.taskId]!
+  const task = ownRecord(state.tasks, event.taskId)!
   if (event.type === 'task/result') {
     if (task.status === 'open') throw new Error(`open task '${task.id}' has a task result`)
     const completion = state.events.find(candidate => (
@@ -397,18 +397,18 @@ function assertRecordKeys<T extends { readonly id: string }>(label: string, reco
 }
 
 function assertEventRelationships(state: WorkspaceState, event: WorkspaceEvent): void {
-  if (event.actor?.type === 'agent' && state.agents[event.actor.id] === undefined) {
+  if (event.actor?.type === 'agent' && ownRecord(state.agents, event.actor.id) === undefined) {
     throw new Error(`event '${event.id}' actor references missing agent '${event.actor.id}'`)
   }
   for (const agentId of event.mentions ?? []) {
-    if (state.agents[agentId] === undefined) throw new Error(`event '${event.id}' mentions missing agent '${agentId}'`)
+    if (ownRecord(state.agents, agentId) === undefined) throw new Error(`event '${event.id}' mentions missing agent '${agentId}'`)
   }
   switch (event.type) {
     case 'definition/created':
     case 'definition/revised': {
       requireEventSubject(event, state.definitions, 'definition')
       if (event.definitionRevisionId !== undefined
-        && state.definitionRevisions[event.definitionRevisionId]?.definitionId !== event.subjectId) {
+        && ownRecord(state.definitionRevisions, event.definitionRevisionId)?.definitionId !== event.subjectId) {
         throw new Error(`event '${event.id}' references an invalid definition revision`)
       }
       return
@@ -416,7 +416,7 @@ function assertEventRelationships(state: WorkspaceState, event: WorkspaceEvent):
     case 'agent/definition-revision-assigned': {
       const agent = requireEventSubject(event, state.agents, 'agent')
       const revisionId = event.definitionRevisionId
-      if (revisionId === undefined || state.definitionRevisions[revisionId]?.definitionId !== agent.definitionId) {
+      if (revisionId === undefined || ownRecord(state.definitionRevisions, revisionId)?.definitionId !== agent.definitionId) {
         throw new Error(`event '${event.id}' references an invalid assigned definition revision`)
       }
       return
@@ -431,7 +431,7 @@ function assertEventRelationships(state: WorkspaceState, event: WorkspaceEvent):
     case 'room/message':
       if (event.definitionRevisionId !== undefined) {
         if (event.actor?.type !== 'agent'
-          || state.definitionRevisions[event.definitionRevisionId]?.definitionId !== state.agents[event.actor.id]?.definitionId) {
+          || ownRecord(state.definitionRevisions, event.definitionRevisionId)?.definitionId !== ownRecord(state.agents, event.actor.id)?.definitionId) {
           throw new Error(`room message event '${event.id}' references an invalid definition revision`)
         }
       }
@@ -449,7 +449,7 @@ function assertEventRelationships(state: WorkspaceState, event: WorkspaceEvent):
       return
     case 'task/delegated': {
       const assignment = requireEventSubject(event, state.taskAssignments, 'task assignment')
-      const grant = assignment.grantId === undefined ? undefined : state.delegationGrants[assignment.grantId]
+      const grant = assignment.grantId === undefined ? undefined : ownRecord(state.delegationGrants, assignment.grantId)
       if (grant === undefined || event.actor?.type !== 'agent' || event.actor.id !== grant.granteeAgentId) {
         throw new Error(`delegated task event '${event.id}' actor is not its grant grantee`)
       }
@@ -503,9 +503,9 @@ function assertEventRelationships(state: WorkspaceState, event: WorkspaceEvent):
       requireTaskReference(state, event.taskId, event.id)
       if (event.definitionRevisionId !== undefined) {
         const assignment = Object.values(state.taskAssignments).find(candidate => candidate.taskId === event.taskId)
-        const assignee = assignment === undefined ? undefined : state.agents[assignment.assigneeAgentId]
+        const assignee = assignment === undefined ? undefined : ownRecord(state.agents, assignment.assigneeAgentId)
         if (assignee === undefined
-          || state.definitionRevisions[event.definitionRevisionId]?.definitionId !== assignee.definitionId) {
+          || ownRecord(state.definitionRevisions, event.definitionRevisionId)?.definitionId !== assignee.definitionId) {
           throw new Error(`event '${event.id}' definition revision does not belong to its task assignee`)
         }
       }
@@ -514,12 +514,12 @@ function assertEventRelationships(state: WorkspaceState, event: WorkspaceEvent):
     case 'task/result':
     case 'task/result-after-cancel': {
       requireTaskReference(state, event.taskId, event.id)
-      const revision = state.definitionRevisions[event.definitionRevisionId]
+      const revision = ownRecord(state.definitionRevisions, event.definitionRevisionId)
       if (revision === undefined) {
         throw new Error(`event '${event.id}' references missing definition revision '${event.definitionRevisionId}'`)
       }
       const assignment = Object.values(state.taskAssignments).find(candidate => candidate.taskId === event.taskId)
-      const assignee = assignment === undefined ? undefined : state.agents[assignment.assigneeAgentId]
+      const assignee = assignment === undefined ? undefined : ownRecord(state.agents, assignment.assigneeAgentId)
       if (assignee === undefined || revision.definitionId !== assignee.definitionId) {
         throw new Error(`event '${event.id}' definition revision '${revision.id}' does not belong to its task assignee`)
       }
@@ -535,7 +535,7 @@ function assertEventRelationships(state: WorkspaceState, event: WorkspaceEvent):
 }
 
 function requireTaskReference(state: WorkspaceState, taskId: string, eventId: string): void {
-  if (state.tasks[taskId as keyof typeof state.tasks] === undefined) {
+  if (ownRecord(state.tasks, taskId) === undefined) {
     throw new Error(`event '${eventId}' references missing task '${taskId}'`)
   }
 }
@@ -545,10 +545,16 @@ function assertNever(value: never): never {
 }
 
 function requireEventSubject<T>(event: WorkspaceEvent, records: Readonly<Record<string, T>>, label: string): T {
-  if (event.subjectId === undefined || records[event.subjectId] === undefined) {
+  const subject = event.subjectId === undefined ? undefined : ownRecord(records, event.subjectId)
+  if (subject === undefined) {
     throw new Error(`${event.type} event '${event.id}' references missing ${label} '${event.subjectId ?? ''}'`)
   }
-  return records[event.subjectId]!
+  return subject
+}
+
+/** Durable references must name dictionary entries rather than inherited JavaScript properties. */
+function ownRecord<T>(records: Readonly<Record<string, T>>, id: string): T | undefined {
+  return Object.hasOwn(records, id) ? records[id] : undefined
 }
 
 function greatestDurableId(state: WorkspaceState): number {

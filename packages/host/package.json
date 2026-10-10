@@ -38,6 +38,10 @@
       "types": "./lib/types/workspace-import.d.ts",
       "default": "./lib/types/workspace-import.js"
     },
+    "./workspace-portable": {
+      "types": "./lib/types/workspace-portable.d.ts",
+      "default": "./lib/types/workspace-portable.js"
+    },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },

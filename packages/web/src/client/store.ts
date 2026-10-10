@@ -10,6 +10,7 @@ export type WorkspaceViewMode = 'conversations' | 'colleagues' | 'tasks' | 'memo
 export interface WorkspaceUiState {
   open: boolean
   mode: WorkspaceViewMode
+  selectedWorkspaceId?: string
   selectedRoomId?: RoomId
   selectedDefinitionId?: AgentDefinitionId
   activityDrawerOpen?: boolean
@@ -27,6 +28,7 @@ export interface WorkspaceRetryState { readonly stale: true; readonly refreshed:
 export type WorkspaceUiError = WorkspaceApiError | { readonly kind: 'unexpected' }
 
 type WorkspaceUiActions = {
+  selectWorkspace: (draft: WorkspaceUiState, workspaceId: string) => void
   open: (draft: WorkspaceUiState) => void
   close: (draft: WorkspaceUiState) => void
   setMode: (draft: WorkspaceUiState, mode: WorkspaceViewMode) => void
@@ -46,6 +48,19 @@ export function createWorkspaceUiStore(): EngineStoreHandle<WorkspaceUiState, Wo
   return defineStore({
     init: (): WorkspaceUiState => ({ open: false, mode: 'conversations', busy: false }),
     actions: {
+      selectWorkspace: (draft, workspaceId) => {
+        if (draft.selectedWorkspaceId === workspaceId) return
+        draft.selectedWorkspaceId = workspaceId
+        delete draft.snapshot
+        delete draft.selectedRoomId
+        delete draft.selectedDefinitionId
+        delete draft.selectedActivityId
+        delete draft.activityDrawerOpen
+        delete draft.retry
+        delete draft.error
+        draft.mode = 'conversations'
+        draft.busy = false
+      },
       open: draft => { draft.open = true },
       close: draft => { draft.open = false },
       setMode: (draft, mode) => { draft.mode = mode },
@@ -67,7 +82,8 @@ export function createWorkspaceUiStore(): EngineStoreHandle<WorkspaceUiState, Wo
         else draft.selectedActivityId = activityId
       },
       setSnapshot: (draft, snapshot) => {
-        const selected = selectNewerWorkspaceSnapshot(draft.snapshot, snapshot)
+        if (draft.selectedWorkspaceId !== undefined && snapshot.workspaceId !== draft.selectedWorkspaceId) return
+        const selected = draft.snapshot?.workspaceId !== snapshot.workspaceId ? snapshot : selectNewerWorkspaceSnapshot(draft.snapshot, snapshot)
         if (selected !== draft.snapshot) draft.snapshot = structuredClone(selected)
       },
       setBusy: (draft, busy) => { draft.busy = busy },

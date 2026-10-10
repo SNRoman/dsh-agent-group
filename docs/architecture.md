@@ -1,10 +1,10 @@
 # Agent Workspace Architecture
 
-The Host package owns a durable single-record workspace aggregate, a long-lived DSH employee runtime, and bounded mention dispatch. The domain model is pure and independent of DSH; the adapter files (`runtime.ts`, `turn-tracker.ts`, `dispatcher.ts`) bridge it to DSH services.
+The development Host package owns a durable directory of independent organization records, scoped DSH employee runtimes, and bounded mention dispatch. The domain model is pure and independent of DSH; the adapter files (`runtime.ts`, `turn-tracker.ts`, `dispatcher.ts`) bridge it to DSH services. Published `0.4.0` remains the single-local-organization product.
 
 ## Domain model
 
-One `WorkspaceState` record holds every durable fact, stored once in a storage-domain table keyed `local`:
+Each organization stores one `WorkspaceState` aggregate inside its record in the `workspaces` table. Released single-organization data uses the `local` key; new organizations have independent identities:
 
 - `definitions` and `definitionRevisions` — reusable roles and their immutable revisions.
 - `agents` — named instances with `employmentStatus` and `employmentPeriods`.
@@ -19,13 +19,19 @@ Definitions own an ordered list of immutable revisions. Saving a definition revi
 
 ## Persistence
 
-`AgentWorkspaceDomainService` (`index.ts`) opens the `agent_workspace` domain through `ctx.storageDomain`, materializes the local aggregate on first boot, and routes every mutation through one atomic `table.update`. Reads return detached snapshots; writes serialize on the domain chain, reach durability before the detached result is returned, and emit `domain/changed`. A `room/join` command is projected through `joinRoomWithMemory` so its requested historical range is acquired atomically with the membership mutation.
+`AgentWorkspaceDomainService` (`index.ts`) opens the `agent_workspace` domain through `ctx.storageDomain`. `WorkspaceDirectory` creates `local` only for an empty table and serializes record writes through atomic `table.update`. Reads return detached snapshots; writes reach durability before the detached result is returned and emit `domain/changed`. A `room/join` command is projected through `joinRoomWithMemory` so its requested historical range is acquired atomically with the membership mutation.
 
 Every group join supplies one explicit memory-start value. `new-events` starts observation after the join; `event-range` adds the selected inclusive historical interval during the same durable mutation. Subsequent room events are projected to every active member, including members who remain silent. Mention routing controls execution, not memory acquisition.
 
 The installable bundle intentionally mounts only the Host service and Browser overlay. The enclosing DSH profile (`dsh-web-app` or `dsh-headless`) owns the storage hub, backend, domain form, and persistence root; the plugin must not redeclare those rows.
 
 ## Employee runtime
+
+The development Host owns a `WorkspaceDirectory` derived from its authoritative table. It reads released local aggregates and version-1 organization records, validates the complete directory before wrapping legacy data, and preserves the descriptor during every aggregate update. Each organization has a fixed `WorkspaceRuntime` with its own employee pool, dispatcher, task coordinator, activity stream and child controllers. Browser operations name their organization explicitly; task and memory tools resolve it from the trusted live Agent object, never from a Browser selection or model-supplied organization id.
+
+`WorkspaceAdmission` reserves work before its first asynchronous step and retains admitted continuations through durable results, Session flushing, hiding and child disposal. Archive closes admission before changing lifecycle; a failed lifecycle write restores admission without stopping work. Stop cancels exact owned work, while wait lets admitted work finish. Both wait for runtime cleanup and reject a completion claim if the final record still contains an unfinished task delivery or child run. Reopening an idle archived organization does not materialize employees or start work.
+
+Root teardown has one shared shutdown flight. It prevents new directory operations, starts runtime stops before waiting for admitted metadata requests, drains late-created runtimes and all admitted work, and closes the storage domain last. Dynamic agents removal retains coordinators and trackers until settlement and revokes the old employee generation before reinjection. Employee cleanup failures remain observable through the shutdown flight and Cordis teardown logging; Cordis itself does not reject `fiber.dispose()` for effect errors.
 
 `EmployeeAgentPool` (`runtime.ts`) admits one DSH `AgentHandle` per employed agent with single-flight `ensure()`: a materialized session resumes, a fresh one creates and durably records its `sessionBindings` row. A resume failure never falls back to create. Employee disposal invalidates an admission already in flight before waiting for it, preventing an asynchronous create/resume from publishing a stale handle after departure. `AgentWorkspaceDomainService` checks employment before materialization and disposes the live handle after a durable `agent/depart` command.
 
@@ -46,6 +52,8 @@ Unified Memory is a projection of durable events and first-acquisition provenanc
 ## Forward compatibility
 
 `forward-export.ts` freezes the producer for `dsh-agent-workspace` format version 1. It validates and clones the local aggregate, omits `workspaceId` and `sessionBindings`, computes SHA-256 over the RFC 8785 canonical envelope without `digest`, and returns the completed canonical document. The command-line adapter reads one version-0 storage document and opens the destination exclusively. v0.2 has no importer, RPC method, or Browser control for portability.
+
+Development portability adds format version 2 without changing the frozen version-1 producer. Export captures one idle organization record and excludes local sessions and creation operation metadata. Import accepts versions 1 and 2, applies explicit input budgets and strict Unicode, digest and relationship checks, then rebuilds task message identities for a new organization. Preview is read-only. Human confirmation revalidates the source and creates one new record under a durable retry operation id; it never replaces the source or starts restored employees. The released `0.4.0` packages do not contain these development controls.
 
 Workspace policy failures use stable business-error codes with JSON-safe identifiers and counters. The RPC layer distinguishes those failures from malformed requests, caller cancellation, and unexpected internal errors. The Browser maps known codes through its typed Simplified Chinese and English dictionaries instead of parsing Host prose.
 

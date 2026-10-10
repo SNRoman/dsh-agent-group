@@ -228,7 +228,9 @@ export class ChildControllerRegistry {
 
   private async closeGeneration(): Promise<void> {
     await this.waitForReservations()
-    for (const record of [...this.records.values()]) await this.converge(record)
+    const results = await Promise.allSettled([...this.records.values()].map(record => this.converge(record)))
+    const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+    if (failures.length > 0) throw new AggregateError(failures, 'child runtime shutdown failed')
   }
 
   private async waitForReservations(): Promise<void> {

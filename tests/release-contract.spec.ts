@@ -27,6 +27,31 @@ const dshRange = '>=0.2.0-rc.2 <0.2.1-0'
 const CONCURRENT_LANE_TEST_TIMEOUT_MS = 15_000
 
 describe('public release contract', () => {
+  it('preserves the public forward-export compatibility constant after runtime extraction', async () => {
+    const host = await import('../packages/host/src/index.ts')
+    expect(Reflect.get(host, 'WORKSPACE_EXPORT_COMPATIBLE_IMPORT_RANGE')).toBe('>=0.3.0 <0.4.0')
+  })
+
+  it('reads task evidence through legacy and wrapped organization storage layouts', async () => {
+    const { readDurableWorkspace } = await import('./e2e/task-tools-profile.mjs')
+    const root = await mkdtemp(join(tmpdir(), 'dsh-agent-group-evidence-record-'))
+    try {
+      const aggregate = readJson('tests/fixtures/v0.1.0/agent-workspace.json').tables.workspaces.local
+      for (const wrapped of [false, true]) {
+        for (const distributed of [false, true]) {
+          const home = join(root, `${wrapped}-${distributed}`)
+          const record = wrapped ? { recordVersion: 1, descriptor: { id: 'local', label: 'Local', lifecycle: 'active' }, aggregate } : aggregate
+          const directory = distributed ? join(home, 'storages', 'agent_workspace', 'workspaces') : join(home, 'storages')
+          await mkdir(directory, { recursive: true })
+          await writeFile(join(directory, distributed ? 'local.json' : 'agent_workspace.json'), JSON.stringify(distributed ? { value: record } : { tables: { workspaces: { local: record } } }), 'utf8')
+          await expect(readDurableWorkspace(home)).resolves.toEqual(aggregate)
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('aligns the v0.4.0 compatibility candidate and preserves the forward export surface', () => {
     const manifests = packages.map(path => readJson(path))
     const compatibility = readJson('compatibility.json')
@@ -145,6 +170,12 @@ describe('public release contract', () => {
       format: 'dsh-agent-workspace', formatVersion: 1,
     })).toThrow(/digest/i)
     expect(() => assertLegacyWorkspacePreserved(source, structuredClone(source))).not.toThrow()
+    const wrapped = { ...structuredClone(source), tables: { workspaces: { local: {
+      recordVersion: 1, descriptor: { id: 'local', label: 'Local organization', lifecycle: 'active' }, aggregate: structuredClone(state),
+    } } } }
+    expect(() => assertLegacyWorkspacePreserved(source, wrapped)).not.toThrow()
+    wrapped.tables.workspaces.local.aggregate.sessionBindings['agent-3'] = 'rewritten-session'
+    expect(() => assertLegacyWorkspacePreserved(source, wrapped)).toThrow(/rewrote.*session bindings/i)
     const rewritten = structuredClone(source)
     rewritten.tables.workspaces.local.sessionBindings['agent-3'] = 'rewritten-session'
     expect(() => assertLegacyWorkspacePreserved(source, rewritten)).toThrow(/rewrote.*session bindings/i)
@@ -259,6 +290,7 @@ describe('public release contract', () => {
       await writeFile(join(root, 'scripts', 'release-smoke.mjs'), 'smoke driver\n', 'utf8')
       await writeFile(join(root, 'scripts', 'release-smoke-contract.mjs'), 'smoke assertions\n', 'utf8')
       await writeFile(join(root, 'tests', 'e2e', 'workspace-browser.mjs'), 'browser scenario\n', 'utf8')
+      await writeFile(join(root, 'tests', 'e2e', 'recovery-observation.mjs'), 'recovery reply observation\n', 'utf8')
       await writeFile(join(root, 'tests', 'e2e', 'task-tools-profile.mjs'), 'memory evidence reader\n', 'utf8')
       await writeFile(join(root, 'tests', 'fixtures', 'task-tools', 'profile-session.expected.json'), '{}\n', 'utf8')
       await writeFile(join(root, 'tests', 'e2e', 'README.md'), 'browser operator guide\n', 'utf8')
@@ -288,12 +320,14 @@ describe('public release contract', () => {
       expect(publish.flat()).not.toContain('--filter')
 
       for (const [path, original] of [
+        [join(root, 'tests', 'e2e', 'recovery-observation.mjs'), 'recovery reply observation\n'],
         [join(root, 'tests', 'e2e', 'task-tools-profile.mjs'), 'memory evidence reader\n'],
         [join(root, 'tests', 'fixtures', 'task-tools', 'profile-session.expected.json'), '{}\n'],
       ]) {
         await writeFile(path, 'changed memory assertions\n', 'utf8')
         expect(() => verifyReleaseSmokeReceipt(root, '1.2.3', { version: '0.1.1-rc.2', commit: 'abc' })).toThrow('smoke receipt')
         await writeFile(path, original, 'utf8')
+        expect(() => verifyReleaseSmokeReceipt(root, '1.2.3', { version: '0.1.1-rc.2', commit: 'abc' })).not.toThrow()
       }
 
       await writeFile(join(root, 'tests', 'e2e', 'workspace-browser.mjs'), 'stronger browser scenario\n', 'utf8')
@@ -355,7 +389,7 @@ describe('public release contract', () => {
 
     const hostSource = readText('packages/host/src/index.ts')
     expect(hostSource).toContain("childProvider: z.string().default('spawn')")
-    expect(hostSource).toContain('this.config.childProvider')
+    expect(readText('packages/host/src/workspace-runtime.ts')).toContain('this.config.childProvider')
     expect(hostSource).not.toContain("'spawn-in-process'")
 
     const smoke = readText('tests/e2e/workspace-browser.mjs')

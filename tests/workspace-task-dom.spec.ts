@@ -385,6 +385,30 @@ describe('task center real DOM interactions', () => {
     }
   })
 
+  it('aborts both pending task refresh legs when the organization workbench unmounts', async () => {
+    const durable = deferred<WorkspaceSnapshot>()
+    const runtime = deferred<WorkspaceActivitySnapshot>()
+    const snapshotSignals: Array<AbortSignal | undefined> = []
+    const activitySignals: Array<AbortSignal | undefined> = []
+    const api = createApi({
+      snapshot: vi.fn((signal?: AbortSignal) => { snapshotSignals.push(signal); return durable.promise }),
+      activitySnapshot: vi.fn((signal?: AbortSignal) => { activitySignals.push(signal); return runtime.promise }),
+    })
+    const view = await mount(api)
+    try {
+      await click(button(view.container, actionNames().cancelRoot))
+      expect(snapshotSignals).toHaveLength(1)
+      expect(activitySignals).toHaveLength(1)
+      expect(snapshotSignals[0]).toBeInstanceOf(AbortSignal)
+      expect(activitySignals[0]).toBeInstanceOf(AbortSignal)
+      await view.unmount()
+      expect(snapshotSignals[0]?.aborted).toBe(true)
+      expect(activitySignals[0]?.aborted).toBe(true)
+    } finally {
+      await act(async () => { durable.resolve(snapshot()); runtime.resolve(activity()) })
+    }
+  })
+
   it('does not publish refresh results that settle after the task center unmounts', async () => {
     const snapshotWait = deferred<WorkspaceSnapshot>()
     const activityWait = deferred<WorkspaceActivitySnapshot>()

@@ -262,6 +262,34 @@ describe('runtime activity drawer real DOM interactions', () => {
     expect(api.activitySnapshot).toHaveBeenCalled()
   })
 
+  it('disables archived acknowledgement and stop controls while keeping activity selection available', async () => {
+    const api = { readOnly: true, stopActivity: vi.fn(), acknowledgeAgentFailure: vi.fn() }
+    const { container } = await mount(api as never)
+    const stop = button(container, 'Stop Alice current turn (activity)')
+    const acknowledge = button(container, 'Acknowledge Bob failure')
+    expect(stop.disabled).toBe(true)
+    expect(acknowledge.disabled).toBe(true)
+    expect(container.querySelector<HTMLButtonElement>('.dsh-agent-group-list-button')?.disabled).toBe(false)
+    await act(async () => { stop.click(); acknowledge.click() })
+    expect(api.stopActivity).not.toHaveBeenCalled()
+    expect(api.acknowledgeAgentFailure).not.toHaveBeenCalled()
+  })
+
+  it.each(['stop', 'acknowledge'] as const)('disables an existing %s retry after the organization becomes read-only', async kind => {
+    const stale = new WorkspaceApiError({ kind: 'business', code: 'stale-revision', message: 'stale', details: { expectedRevision: 12, actualRevision: 13 } })
+    const api = { readOnly: false, stopActivity: vi.fn().mockRejectedValue(stale), acknowledgeAgentFailure: vi.fn().mockRejectedValue(stale), snapshot: vi.fn().mockResolvedValue(snapshot(13)), activitySnapshot: vi.fn().mockResolvedValue({ ...activity(), workspaceRevision: 13 }) }
+    const view = await mount(api as never)
+    await act(async () => button(view.container, kind === 'stop' ? 'Stop Alice current turn (activity)' : 'Acknowledge Bob failure').click())
+    const retryLabel = kind === 'stop' ? 'Retry stopping Alice current turn' : 'Retry acknowledging Bob failure'
+    expect(button(view.container, retryLabel).disabled).toBe(false)
+    api.readOnly = true
+    await view.render()
+    const retry = button(view.container, retryLabel)
+    expect(retry.disabled).toBe(true)
+    await act(async () => retry.click())
+    expect(kind === 'stop' ? api.stopActivity : api.acknowledgeAgentFailure).toHaveBeenCalledTimes(1)
+  })
+
   it('treats not-active as convergence and requires explicit retry after a stale acknowledgement', async () => {
     const stale = new WorkspaceApiError({
       kind: 'business', code: 'stale-revision', message: 'stale', details: { expectedRevision: 12, actualRevision: 13 },

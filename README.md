@@ -2,6 +2,8 @@
 
 Agent Organization（智能体组织）is a persistent organization of AI colleagues for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Reusable agent roles become named colleagues with employment history and unified personal memory. Colleagues join rooms, remember admitted events even while silent, reply to mentions, receive human-authorized tasks, and run one-shot child agents. The npm package name remains `dsh-agent-group`.
 
+This branch contains unreleased organization-recovery development. Registry version `0.4.0` remains the released single-organization product; installing it does not enable the multi-organization or Browser recovery features described below. Package versions and DSH compatibility ranges have not been changed.
+
 ## Features
 
 - **Agent definitions and instances** — define reusable roles, create multiple named instances, and keep each instance's employment lifecycle, memory, memberships, tasks, and durable DSH session independent.
@@ -16,6 +18,8 @@ Agent Organization（智能体组织）is a persistent organization of AI collea
 - **Localized policy feedback** — Simplified Chinese and English dictionaries own plugin UI copy, while stable Host error codes keep localization independent from exception text.
 - **Four product views** — Definitions manages reusable roles and immutable definition revision history; Tasks shows assignment, grants, attempts, cancellation, child work, and results; Memory exposes each colleague's unified event history; Runtime shows live activity and exact stop controls.
 - **Memory with sources** — colleagues can search their own admitted event history by keyword and read original events on demand, with source and event identifiers for follow-up. Room replies and formal tasks draw on the same personal history.
+- **Independent organizations (development)** — create, rename and select persistent organizations with separate colleagues, rooms, tasks, personal memory, runtime streams and DSH sessions. Identical internal entity IDs in different organizations do not select the same employee.
+- **Recoverable organizations (development)** — archive with an explicit stop-or-wait choice, reopen after work settles, and export or restore through the Browser. Restoration creates a new organization after a read-only preview and human confirmation; it never replaces the source or restores its DSH sessions.
 - **Forward compatibility export** — the read-only `export:forward-v1` command creates a canonical, checksummed handoff for a future importer while leaving the source storage untouched. Version `0.4.0` does not include an importer.
 
 ## Requirements
@@ -80,7 +84,7 @@ Users should normally install only `dsh-agent-group`; the two scoped packages ar
 
 ## Runtime integration
 
-The Host service is exposed as `ctx.agentWorkspace`. It stores one local aggregate in the existing DSH storage-domain stack and dynamically attaches to optional Harness services such as `agents`, `subagents`, and `connection` when they are present.
+The Host service is exposed as `ctx.agentWorkspace`. Development source stores each organization descriptor and aggregate in one versioned record in the existing DSH storage-domain stack. `ctx.agentWorkspace.forWorkspace(id)` selects a fixed organization runtime; it does not read the Browser's current selection. Optional Harness services such as `agents`, `subagents`, and `connection` remain dynamically attached.
 
 The Browser transport uses the existing Harness Connection RPC service on the plugin-local Agent Workspace channel. There is no second HTTP/WebSocket server, no core API interception, and no replacement of the standard Harness conversation store.
 
@@ -91,6 +95,18 @@ Create a definition, then create named colleagues from it. Add colleagues to a g
 Keyword memory search returns references and short excerpts; colleagues can request the original events when they need detail. Each retrieved event retains its source and sequence. Search covers only events admitted to that colleague's memory, including room history explicitly chosen at joining. This is keyword retrieval, not semantic or vector search. An event from another room may be recalled by a colleague who owns it; room secrecy is not enforced.
 
 Runtime activity is intentionally ephemeral. The durable task attempt and result remain authoritative, while the drawer shows queued, responding, stopping, and settled activity for the current Host process. Exact stop targets one activity identity; an interrupted task remains open and retryable, does not acquire a task result, and does not cancel unrelated queued work.
+
+## Organization recovery (development)
+
+Use the organization directory at the top of the overlay to create, rename or switch organizations. Switching clears entity selection and drafts and cancels the old organization's subscriptions and refreshes. The original unversioned `local` record is validated and wrapped once on startup without changing its business history or Session bindings; the storage domain remains version `0`.
+
+Archiving first prevents new work and durably marks the organization read-only. Choose **Stop current work** to stop that organization's exact queued deliveries, claimed turns and children, or **Wait for current work** to let admitted work finish. The archive request waits for full settlement and cleanup. Reopening restores admission without rewriting history or assigning tasks.
+
+Export requires an idle organization and explicit confirmation because the file contains role instructions, messages and personal memory. The development exporter writes checksummed portable format version `2`, including the label and archive state but excluding local Session bindings and creation/import operation metadata. A busy organization or an unfinished durable delivery cannot be exported.
+
+Choose a JSON file under **Import organization** to validate and preview it without writing. Check the source version and entity counts, edit the destination label, then confirm creation of a new organization. The importer accepts frozen version `1` and development version `2` files, retains entity IDs and history, and rebases task-delivery identities to the new organization ID. It rejects invalid or unfinished work instead of running it automatically. Imported archived organizations remain read-only until reopened; their colleagues acquire new local DSH Sessions only when explicitly given work.
+
+The checksum detects corruption, not authorship. Keep exported files private and obtain authorization before sharing their complete organization history. Import size, string, entity, event and depth budgets are deployment settings; see the [Host configuration](packages/host/README.md#organization-recovery-development).
 
 ## Forward export
 
@@ -170,7 +186,7 @@ See the [v0.4.0 release notes](docs/releases/v0.4.0.md) for the current DSH comp
 
 ## Known limitations
 
-- **Single local organization** — the durable domain currently uses one aggregate keyed `local`; multiple organizations are not implemented.
+- **Released recovery availability** — registry version `0.4.0` is single-organization; multiple organizations and Browser recovery are unreleased source features.
 - **No per-agent model/tool/skill selection** — top-level agents currently inherit the deployment's model, tools, skills, and permissions.
 - **No hard room secrecy** — unified personal memory can recall an event from another room; secrecy is not enforced as a domain boundary.
 - **One-shot children only** — child agents are task-scoped, terminal, and not resumable colleagues.

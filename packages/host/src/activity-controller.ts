@@ -12,11 +12,11 @@ export interface WorkspaceStopResult {
 /** Live employee handles addressable by durable Workspace agent id. */
 export interface WorkspaceActivityHandleSource {
   /**
-   * Return the currently published employee handle, when materialized.
+   * Return the resident or setup-committed employee for exact control.
    * @param agentId - Durable Workspace employee identity.
-   * @returns The live handle, or `undefined` when it is not materialized.
+   * @returns The active generation's agent-only control, or `undefined` before admission or after revocation.
    */
-  handleFor(agentId: AgentId): AgentHandle | undefined
+  handleFor(agentId: AgentId): Pick<AgentHandle, 'agent'> | undefined
 }
 
 /** Stops only the claimed activity and employee handle named by all identity fields. */

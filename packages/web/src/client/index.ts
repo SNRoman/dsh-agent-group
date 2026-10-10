@@ -9,7 +9,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import { WorkspaceApiClient } from './api.ts'
 import { createWorkspaceUiStore } from './store.ts'
 import { WORKSPACE_UI_CSS, WORKSPACE_UI_STYLE_ID } from './styles.ts'
-import { WorkspaceFooterAction, WorkspaceOverlay } from './WorkspaceUi.tsx'
+import { WorkspaceFooterAction } from './WorkspaceUi.tsx'
+import { WorkspaceOrganizations } from './WorkspaceOrganizations.tsx'
 import { AGENT_WORKSPACE_LOCALE, en, zh } from './locales.ts'
 
 /** Services used only by the Browser half. */
@@ -54,5 +55,5 @@ export function apply(ctx: Context): void {
     store,
     locale: AGENT_WORKSPACE_LOCALE,
     inject: () => ({ api }),
-  }, WorkspaceOverlay))
+  }, WorkspaceOrganizations))
 }

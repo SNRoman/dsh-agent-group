@@ -43,7 +43,7 @@ import {
 type WorkspaceStoreProps = PropsStore<ReturnType<typeof createWorkspaceUiStore>>
 
 export type WorkspaceFooterActionProps = PropsRuntime<'sidebar.footer.action'> & WorkspaceStoreProps & PropsLocale<'agentWorkspace'>
-export type WorkspaceOverlayProps = PropsRuntime<'shell.overlay'> & WorkspaceStoreProps & PropsLocale<'agentWorkspace'> & { readonly api: WorkspaceApiClient }
+export type WorkspaceOverlayProps = PropsRuntime<'shell.overlay'> & WorkspaceStoreProps & PropsLocale<'agentWorkspace'> & { readonly api: WorkspaceApiClient; readonly embedded?: boolean; readonly readOnly?: boolean }
 
 const EMPTY_TURN_STREAM: WorkspaceTurnStreamSnapshot = { version: 0, workspaceRevision: 0, turns: [] }
 const EMPTY_ACTIVITY: WorkspaceActivitySnapshot = { version: 0, workspaceRevision: 0, activities: [], agents: [] }
@@ -68,7 +68,7 @@ export function WorkspaceFooterAction({ wide, actions, t }: WorkspaceFooterActio
 }
 
 /** Full workbench rendered only while the plugin-local open flag is true. */
-export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlayProps) {
+export function WorkspaceOverlay({ useStore, actions, api, t, embedded = false, readOnly = false }: WorkspaceOverlayProps) {
   const ui = useStore(state => state)
   const [creatingRoom, setCreatingRoom] = useState(false)
   const [roomName, setRoomName] = useState('')
@@ -274,7 +274,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
     revision = snapshot?.revision,
     retry: PendingMutation = { kind: 'operation', operation },
   ): Promise<boolean> => {
-    if (revision === undefined) return false
+    if (readOnly || revision === undefined) return false
     actions.setBusy(true)
     actions.setError(undefined)
     try {
@@ -323,7 +323,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
   }
 
   return (
-    <div className="dsh-agent-group-overlay-root" role="dialog" aria-modal="true" aria-label={t('workspace.title')}>
+    <div className={embedded ? 'dsh-agent-group-organization-workspace' : 'dsh-agent-group-overlay-root'} role={embedded ? undefined : 'dialog'} aria-modal={embedded ? undefined : true} aria-label={t('workspace.title')}>
       <section className="dsh-agent-group-workbench">
         <header className="dsh-agent-group-topbar">
           <WorkspaceIcon />
@@ -368,7 +368,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                 liveTurns={visibleWorkspaceTurns(snapshot.revision, turnStream)}
                 activity={activity!}
                 selectedRoomId={ui.selectedRoomId}
-                busy={ui.busy}
+                busy={ui.busy || readOnly}
                 draft={draft}
                 creatingRoom={creatingRoom}
                 roomName={roomName}
@@ -399,7 +399,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t }: WorkspaceOverlay
                 snapshot={snapshot}
                 activity={activity!}
                 selectedDefinitionId={ui.selectedDefinitionId}
-                busy={ui.busy}
+                busy={ui.busy || readOnly}
                 creatingDefinition={creatingDefinition}
                 definitionName={definitionName}
                 definitionDescription={definitionDescription}
@@ -572,7 +572,7 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
       <aside className="dsh-agent-group-panel">
         <div className="dsh-agent-group-section-head">
           <span className="dsh-agent-group-section-title">{props.t('room.conversations')}</span>
-          <button type="button" className="dsh-agent-group-icon-button dsh-agent-group-right" onClick={() => props.onCreatingRoomChange(!props.creatingRoom)} aria-label={props.t('room.newGroup')}><PlusIcon /></button>
+          <button type="button" className="dsh-agent-group-icon-button dsh-agent-group-right" disabled={props.busy} onClick={() => props.onCreatingRoomChange(!props.creatingRoom)} aria-label={props.t('room.newGroup')}><PlusIcon /></button>
         </div>
         {props.creatingRoom ? <form className="dsh-agent-group-card" onSubmit={(event) => { event.preventDefault(); void props.onCreateRoom() }}>
           <div className="dsh-agent-group-form">
@@ -761,7 +761,7 @@ function AgentWorkspace(props: AgentWorkspaceProps) {
       <aside className="dsh-agent-group-panel">
         <div className="dsh-agent-group-section-head">
           <span className="dsh-agent-group-section-title">{props.t('agent.definitions')}</span>
-          <button type="button" className="dsh-agent-group-icon-button dsh-agent-group-right" onClick={() => props.onCreatingDefinitionChange(true)} aria-label={props.t('agent.newDefinition')}><PlusIcon /></button>
+          <button type="button" className="dsh-agent-group-icon-button dsh-agent-group-right" disabled={props.busy} onClick={() => props.onCreatingDefinitionChange(true)} aria-label={props.t('agent.newDefinition')}><PlusIcon /></button>
         </div>
         <div className="dsh-agent-group-scroll dsh-agent-group-list">
           {definitions.map(definition => {

@@ -74,6 +74,13 @@ function state(): WorkspaceState {
 }
 
 describe('unified personal memory query', () => {
+  test('rejects a cursor from another organization even when internal IDs and revisions match', () => {
+    const source = state()
+    const page = queryAgentMemory(source, { agentId: aliceId, snapshotRevision: source.revision, limit: 1 })
+    expect(page.nextCursor).toBeDefined()
+    const other = { ...source, workspaceId: WorkspaceId('another-organization') }
+    expect(() => queryAgentMemory(other, { agentId: aliceId, snapshotRevision: other.revision, limit: 1, cursor: page.nextCursor })).toThrow(/organization/i)
+  })
   test('returns a pure newest-first projection with resolved sources, labels, status, revision, and first provenance', () => {
     const snapshot = state()
     const before = structuredClone(snapshot)

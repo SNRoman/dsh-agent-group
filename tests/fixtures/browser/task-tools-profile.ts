@@ -4,10 +4,9 @@ import { access, writeFile } from 'node:fs/promises'
 import { watch } from 'node:fs'
 import { basename, dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import type { AgentWorkspaceDomainService } from '../../../packages/host/src/index.ts'
-import { HumanId } from '../../../packages/host/src/ids.ts'
+import type { WorkspaceRuntime } from '../../../packages/host/src/workspace-runtime.ts'
+import { HumanId, WorkspaceId } from '../../../packages/host/src/ids.ts'
 import { assignHumanTask } from '../../../packages/host/src/tasks.ts'
-import type { WorkspaceCommand, WorkspaceState } from '../../../packages/host/src/types.ts'
 
 const TASK_TOOLS_REQUEST = 'PROFILE_TASK_TOOLS_REQUEST 请核对 UTF-8 导出需求并完成任务。'
 const MEMORY_REQUIREMENT = '导出要求：CSV 使用 UTF-8 编码，保留中文标题，不添加 BOM。'
@@ -20,12 +19,8 @@ export const inject = ['agentWorkspace', 'agents', 'tools']
 export async function apply(ctx: Context): Promise<void> {
   const fixturePath = requireTaskToolsFixturePath()
   await waitForScriptedLlmAdapter(fixturePath)
-  const service = ctx.agentWorkspace as AgentWorkspaceDomainService
-  const seed = service as unknown as {
-    executeInternal(command: WorkspaceCommand): Promise<WorkspaceState>
-    apply(mutation: (state: WorkspaceState) => WorkspaceState): Promise<WorkspaceState>
-  }
-  await seed.executeInternal({
+  const service: WorkspaceRuntime = ctx.agentWorkspace.forWorkspace(WorkspaceId('local'))
+  await service.execute(service.snapshot().revision, {
     type: 'definition/create',
     name: 'Task tools profile engineer',
     description: 'Executes the deterministic task tools smoke scenario.',
@@ -33,17 +28,17 @@ export async function apply(ctx: Context): Promise<void> {
   })
   const definition = Object.values(service.snapshot().definitions).find(item => item.name === 'Task tools profile engineer')
   if (definition === undefined) throw new Error('profile task-tools definition was not created')
-  await seed.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Task tools Alice' })
-  await seed.executeInternal({ type: 'agent/create', definitionId: definition.id, name: 'Task tools Bob' })
+  await service.execute(service.snapshot().revision, { type: 'agent/create', definitionId: definition.id, name: 'Task tools Alice' })
+  await service.execute(service.snapshot().revision, { type: 'agent/create', definitionId: definition.id, name: 'Task tools Bob' })
   const state = service.snapshot()
   const alice = Object.values(state.agents).find(agent => agent.name === 'Task tools Alice')
   const bob = Object.values(state.agents).find(agent => agent.name === 'Task tools Bob')
   if (alice === undefined || bob === undefined) throw new Error('profile task-tools employees were not created')
-  await seed.executeInternal({ type: 'room/create', kind: 'group', name: 'Task tools requirements' })
+  await service.execute(service.snapshot().revision, { type: 'room/create', kind: 'group', name: 'Task tools requirements' })
   const room = Object.values(service.snapshot().rooms).find(item => item.name === 'Task tools requirements')
   if (room === undefined) throw new Error('profile task-tools requirements room was not created')
   for (const agent of [alice, bob]) {
-    await seed.executeInternal({ type: 'room/join', roomId: room.id, agentId: agent.id, memoryStart: { type: 'new-events' } })
+    await service.execute(service.snapshot().revision, { type: 'room/join', roomId: room.id, agentId: agent.id, memoryStart: { type: 'new-events' } })
   }
   await service.postHumanMessage(service.snapshot().revision, room.id, HumanId('profile-task-human'), MEMORY_REQUIREMENT, [])
   const remembered = service.snapshot()
@@ -57,7 +52,7 @@ export async function apply(ctx: Context): Promise<void> {
     assigneeAgentId: alice.id,
     title: TASK_TOOLS_REQUEST,
   })
-  await seed.apply(() => assigned.state)
+  await service.apply(() => assigned.state)
   await writeFile(fixturePath, `${JSON.stringify({
     taskId: assigned.taskId,
     deniedAssigneeAgentId: bob.id,

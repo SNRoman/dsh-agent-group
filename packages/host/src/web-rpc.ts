@@ -6,7 +6,8 @@ import z from '@deepseek-ai/schemastery'
 import { clientRequestSchema } from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { AgentWorkspaceDomainService } from './index.ts'
-import { AGENT_WORKSPACE_RPC_CHANNEL, createWorkspaceRpcHandler } from './rpc.ts'
+import { AGENT_WORKSPACE_RPC_CHANNEL } from './rpc.ts'
+import { createOrganizationRpcHandler } from './organization-rpc.ts'
 
 const ENDPOINT_SEGMENT_PATTERN = /^[A-Za-z0-9_$.-]+$/
 
@@ -26,7 +27,7 @@ export const Config: z<Config> = z.object({
 
 /** Register the authenticated Agent Workspace RPC route in a Web profile. */
 export function apply(ctx: Context, config?: Config): void {
-  const handler = createWorkspaceRpcHandler(ctx.agentWorkspace as AgentWorkspaceDomainService)
+  const handler = createOrganizationRpcHandler(ctx.agentWorkspace as AgentWorkspaceDomainService)
   const maxRequestBodyBytes = config?.maxRequestBodyBytes ?? 1024 * 1024
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
@@ -46,7 +47,7 @@ export function apply(ctx: Context, config?: Config): void {
 async function dispatch(
   request: IncomingMessage,
   response: ServerResponse,
-  handler: ReturnType<typeof createWorkspaceRpcHandler>,
+  handler: ReturnType<typeof createOrganizationRpcHandler>,
   maxRequestBodyBytes: number,
 ): Promise<void> {
   const endpoint = endpointFromRequest(request)

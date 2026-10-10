@@ -25,7 +25,12 @@ export interface WorkspaceTaskToolHost {
   runAssignedTask(agentId: WorkspaceAgentId, taskId: WorkspaceTaskId): Promise<string>
   /** Run one child through the existing child controller and settlement owner. */
   runChild(parentAgentId: WorkspaceAgentId, taskId: WorkspaceTaskId, prompt: string, signal?: AbortSignal): Promise<string>
+  /** Admit a new delegated task before any write; result submission is an existing settlement. */
+  runNewOperation?<Value>(operation: () => Promise<Value>): Promise<Value>
 }
+
+/** Resolve one organization only from a currently published employee object. */
+export type WorkspaceTaskToolHosts = WorkspaceTaskToolHost | ((agent: Agent) => WorkspaceTaskToolHost | undefined)
 
 const taskIdParameter = {
   type: 'string' as const,
@@ -48,8 +53,8 @@ class WorkspaceTaskToolError extends Error {
 }
 
 /** Register all task tools and return one idempotent disposer for their definitions. */
-export function registerWorkspaceTaskTools(registry: WorkspaceToolRegistry, host: WorkspaceTaskToolHost): () => void {
-  const definitions = createWorkspaceTaskTools(host)
+export function registerWorkspaceTaskTools(registry: WorkspaceToolRegistry, hosts: WorkspaceTaskToolHosts): () => void {
+  const definitions = createWorkspaceTaskTools(hosts)
   const disposers: Array<() => void> = []
   try {
     for (const definition of definitions) disposers.push(registry.register(definition))
@@ -65,7 +70,7 @@ export function registerWorkspaceTaskTools(registry: WorkspaceToolRegistry, host
   }
 }
 
-function createWorkspaceTaskTools(host: WorkspaceTaskToolHost): readonly ToolDefinition[] {
+function createWorkspaceTaskTools(hosts: WorkspaceTaskToolHosts): readonly ToolDefinition[] {
   const delegate = defineTool({
     name: 'workspace_delegate_task',
     description: 'Delegate work under an assigned root task to another employed workspace agent.',
@@ -97,10 +102,11 @@ function createWorkspaceTaskTools(host: WorkspaceTaskToolHost): readonly ToolDef
     },
     execute: async (args, exec) => {
       assertExactArguments('workspace_delegate_task', args, ['rootTaskId', 'assigneeAgentId', 'title'])
+      const host = resolveHost(hosts, exec)
       const actorAgentId = resolveActor(host, exec)
       const rootTaskId = TaskId(args.rootTaskId)
       const assigneeAgentId = AgentId(args.assigneeAgentId)
-      return await runAsActiveActor(actorAgentId, async () => {
+      const delegate = async () => await runAsActiveActor(actorAgentId, async () => {
         let delegated: { readonly taskId: WorkspaceTaskId; readonly taskAssignmentId: string } | undefined
         await host.apply(current => {
           const changed = assignDelegatedTask(current, {
@@ -122,6 +128,7 @@ function createWorkspaceTaskTools(host: WorkspaceTaskToolHost): readonly ToolDef
           result,
         }
       })
+      return await (host.runNewOperation === undefined ? delegate() : host.runNewOperation(delegate))
     },
   })
 
@@ -149,6 +156,7 @@ function createWorkspaceTaskTools(host: WorkspaceTaskToolHost): readonly ToolDef
     },
     execute: async (args, exec) => {
       assertExactArguments('workspace_run_child', args, ['taskId', 'prompt'])
+      const host = resolveHost(hosts, exec)
       const actorAgentId = resolveActor(host, exec)
       const taskId = TaskId(args.taskId)
       const result = await runAsActiveActor(actorAgentId, async () => await host.runChild(actorAgentId, taskId, args.prompt, exec.signal))
@@ -181,6 +189,7 @@ function createWorkspaceTaskTools(host: WorkspaceTaskToolHost): readonly ToolDef
     },
     execute: async (args, exec) => {
       assertExactArguments('workspace_complete_task', args, ['taskId', 'result'])
+      const host = resolveHost(hosts, exec)
       const actorAgentId = resolveActor(host, exec)
       const taskId = TaskId(args.taskId)
       let attemptId: TaskDeliveryAttemptId | undefined
@@ -214,6 +223,12 @@ function createWorkspaceTaskTools(host: WorkspaceTaskToolHost): readonly ToolDef
   })
 
   return [delegate, runChild, complete]
+}
+
+function resolveHost(hosts: WorkspaceTaskToolHosts, exec: ToolRunContext): WorkspaceTaskToolHost {
+  const host = typeof hosts === 'function' ? (exec.agent === undefined ? undefined : hosts(exec.agent)) : hosts
+  if (host === undefined) throw new WorkspaceTaskToolError('WORKSPACE_TASK_CALLER_UNAVAILABLE')
+  return host
 }
 
 function resolveActor(host: WorkspaceTaskToolHost, exec: ToolRunContext): WorkspaceAgentId {

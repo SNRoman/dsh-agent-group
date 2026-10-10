@@ -102,8 +102,10 @@ function workspaceFixture(): WorkspaceFixture {
   const paths = [`${home}/storages/agent_workspace.json`, `${home}/storages/agent_workspace/workspaces/local.json`]
   for (const path of paths) {
     if (!existsSync(path)) continue
-    const document = JSON.parse(readFileSync(path, 'utf8')) as { readonly tables?: { readonly workspaces?: { readonly local?: WorkspaceFixture } }; readonly value?: WorkspaceFixture }
-    const state = (document.tables?.workspaces?.local ?? document.value ?? document) as WorkspaceFixture
+    type StoredFixture = WorkspaceFixture | { readonly aggregate: WorkspaceFixture }
+    const document = JSON.parse(readFileSync(path, 'utf8')) as { readonly tables?: { readonly workspaces?: { readonly local?: StoredFixture } }; readonly value?: StoredFixture }
+    const stored = (document.tables?.workspaces?.local ?? document.value ?? document) as StoredFixture
+    const state = 'aggregate' in stored ? stored.aggregate : stored
     if (state.tasks !== undefined && state.agents !== undefined && state.delegationGrants !== undefined) return state
   }
   throw new Error('the v0.2 Browser task fixture could not read a durable workspace')

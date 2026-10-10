@@ -28,6 +28,10 @@ export interface WorkspaceDispatcherHost {
   deliver(agentId: AgentId, delivery: UserMessage, recall?: UserMessage, source?: WorkspaceActivitySource): Promise<WorkspaceTurnOutcome>
   ensureEmployee(agentId: AgentId): Promise<AgentHandle>
   retireWorkspaceActivity?(activity: WorkspaceActivityIdentity, workspaceRevision: number): void
+  /** Stop-mode archiving prevents another room hop while allowing prior terminal writes. */
+  assertContinuationAllowed?(): void
+  /** @param error Child handle disposal failure retained for its runtime generation's teardown. */
+  recordChildCleanupFailure?(error: unknown): void
 }
 
 /** Durable formal-task delivery surface used by the dispatcher. */
@@ -210,7 +214,8 @@ export class WorkspaceDispatcher {
           try {
             await run.dispose()
           } catch (error) {
-            if (failure === undefined) failure = error
+            this.host.recordChildCleanupFailure?.(error)
+            failure = failure === undefined ? error : new AggregateError([failure, error], 'child execution and disposal failed')
           }
         }
         signal.removeEventListener('abort', abort)
@@ -249,6 +254,7 @@ export class WorkspaceDispatcher {
     let replies = 0
     let stopped = false
     while (queue.length > 0 && !stopped) {
+      this.host.assertContinuationAllowed?.()
       const item = queue.shift()
       if (item === undefined) break
       if (item.depth > this.limits.maxAgentHops || replies >= this.limits.maxRepliesPerRoot) {

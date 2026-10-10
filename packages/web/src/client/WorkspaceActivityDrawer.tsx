@@ -159,13 +159,13 @@ export function WorkspaceActivityDrawer(props: WorkspaceActivityDrawerProps) {
     {refreshFailed ? <div className="dsh-agent-group-retry" role="status">{props.t('activity.refreshFailed')}</div> : null}
     {notice ? <div className="dsh-agent-group-retry" role="status">{props.t(notice === 'stopping' ? 'activity.stopRequested' : 'activity.alreadyStopping')}</div> : null}
     {[...retries.values()].map(retry => <button
-      type="button" className="dsh-agent-group-button" key={retry.key} disabled={pending.has(retry.key)}
+      type="button" className="dsh-agent-group-button" key={retry.key} disabled={props.api.readOnly || pending.has(retry.key)}
       aria-label={retry.kind === 'stop' ? props.t('activity.retryStop', { agent: retry.item.agent.label }) : props.t('activity.retryAcknowledge', { agent: retry.agentLabel })}
       onClick={() => void (retry.kind === 'stop' ? stop(retry.item, retry.revision) : acknowledge(retry.agentId, retry.agentLabel, retry.revision))}
     >{props.t('workspace.retry')}</button>)}
     {failures.map(agent => {
       const key = `acknowledge:${agent.id}`
-      const blocked = pending.has(key) || converged.has(key) || retries.has(key)
+      const blocked = props.api.readOnly || pending.has(key) || converged.has(key) || retries.has(key)
       return <div className="dsh-agent-group-card" key={key} data-agent-id={agent.id}>
         <div className="dsh-agent-group-card-head"><strong>{agent.label}</strong><WorkspaceRuntimeBadge value={props.t('activity.status.failed')} /></div>
         {agent.error ? <p>{workspaceRuntimeErrorText(agent.error, props.t)}</p> : null}
@@ -187,24 +187,25 @@ export function WorkspaceActivityDrawer(props: WorkspaceActivityDrawerProps) {
         <WorkspaceActivityDetails blocks={selected.blocks} streaming={selected.status === 'responding' || selected.status === 'stopping'} t={props.t} />
         {selected.terminalReason ? <p>{props.t('activity.terminalReason', { reason: workspaceTerminalReasonText(selected.terminalReason, props.t) })}</p> : null}
         {selected.error ? <div className="dsh-agent-group-error">{workspaceRuntimeErrorText(selected.error, props.t)}</div> : null}
-        <StopControl item={selected} pending={pending} converged={converged} retries={retries} revision={props.snapshot.revision} stop={stop} t={props.t} />
+        <StopControl item={selected} pending={pending} converged={converged} retries={retries} revision={props.snapshot.revision} readOnly={props.api.readOnly} stop={stop} t={props.t} />
       </article> : null}
     </div>
   </aside>
 }
 
-function StopControl({ item, pending, converged, retries, revision, stop, t }: {
+function StopControl({ item, pending, converged, retries, revision, readOnly, stop, t }: {
   readonly item: ActivityProjection
   readonly pending: ReadonlySet<string>
   readonly converged: ReadonlySet<string>
   readonly retries: ReadonlyMap<string, RetryAction>
   readonly revision: number
+  readonly readOnly: boolean
   readonly stop: (item: ActivityProjection, revision: number) => Promise<void>
 } & PropsLocale<'agentWorkspace'>) {
   const key = `stop:${item.activityId}`
   const stopping = (item.status === 'stopping' && item.owned) || converged.has(key)
   if (item.stopIdentity === undefined && !stopping) return null
-  return <button type="button" className="dsh-agent-group-button" disabled={stopping || pending.has(key) || retries.has(key)} aria-label={t('activity.stopNamed', { agent: item.agent.label, activity: item.activityId })} onClick={() => void stop(item, revision)}>{stopping ? t('activity.status.stopping') : t('activity.stop')}</button>
+  return <button type="button" className="dsh-agent-group-button" disabled={readOnly || stopping || pending.has(key) || retries.has(key)} aria-label={t('activity.stopNamed', { agent: item.agent.label, activity: item.activityId })} onClick={() => void stop(item, revision)}>{stopping ? t('activity.status.stopping') : t('activity.stop')}</button>
 }
 
 function subjectLabel(item: ActivityProjection, props: PropsLocale<'agentWorkspace'>): string {

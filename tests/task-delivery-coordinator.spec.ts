@@ -13,7 +13,7 @@ import { assignHumanTask, cancelTask } from '../packages/host/src/tasks.ts'
 import type { WorkspaceState } from '../packages/host/src/types.ts'
 import { WorkspaceTurnTracker } from '../packages/host/src/turn-tracker.ts'
 import type { WorkspaceTurnOutcome } from '../packages/host/src/turn-tracker.ts'
-import { acceptTaskDelivery, failTaskDelivery, startTaskDelivery } from '../packages/host/src/task-delivery.ts'
+import { acceptTaskDelivery, failTaskDelivery, inspectTaskDelivery, startTaskDelivery } from '../packages/host/src/task-delivery.ts'
 import { WorkspaceActivityStream } from '../packages/host/src/activity-stream.ts'
 
 function assignedTask(): { state: WorkspaceState; taskId: TaskId; agentId: AgentId } {
@@ -610,6 +610,133 @@ describe('TaskDeliveryCoordinator', () => {
     await expect(coordinator.recoverAgent(built.agentId, { agent })).resolves.toEqual([
       { taskId: built.taskId, status: 'pending' },
     ])
+  })
+
+  test.each(['started', 'accepted'] as const)('archive stop settles a recovered %s attempt before drain completes', async phase => {
+    const built = phase === 'accepted' ? acceptedTask() : startedTask()
+    let state = built.state
+    const tracked = deferred<WorkspaceTurnOutcome>()
+    const coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => structuredClone(state),
+      apply: async mutation => { state = mutation(state); return structuredClone(state) },
+      ensureEmployee: async () => handle(),
+      deliver: async () => outcome('unused'),
+      recoverDelivery: async () => await tracked.promise,
+    })
+    await coordinator.recoverAgent(built.agentId, recoveredHandle([built.message], []))
+    const result = expect(coordinator.deliver(built.taskId)).rejects.toThrow(/cancel/)
+    coordinator.cancelAllDeliveries()
+    tracked.resolve({ output: [], stopReason: { kind: 'aborted' }, interrupted: true })
+    await result
+    await coordinator.drain()
+    expect(inspectTaskDelivery(state, built.taskId).phase).toBe(phase === 'accepted' ? 'settled' : 'retryable')
+    expect(state.tasks[built.taskId]?.status).toBe('open')
+    expect(state.events.filter(event => event.type === 'task/delivery-failed')).toHaveLength(1)
+    expect(state.events.filter(event => event.type === 'task/result')).toHaveLength(0)
+  })
+
+  test('drain yields to a displaced employee admission after recovered settlement', async () => {
+    const built = acceptedTask()
+    let state = built.state
+    const admissionStarted = deferred()
+    const releaseAdmission = deferred()
+    const tracked = deferred<WorkspaceTurnOutcome>()
+    const coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => structuredClone(state),
+      apply: async mutation => { state = mutation(state); return structuredClone(state) },
+      ensureEmployee: async () => { admissionStarted.resolve(); await releaseAdmission.promise; return handle() },
+      deliver: async () => outcome('unused'), recoverDelivery: async () => await tracked.promise,
+    })
+    const displaced = coordinator.deliver(built.taskId)
+    await admissionStarted.promise
+    await coordinator.recoverAgent(built.agentId, recoveredHandle([built.message], []))
+    tracked.resolve(outcome('recovered result'))
+    await expect(coordinator.deliver(built.taskId)).resolves.toBe('recovered result')
+    const timer = setImmediate(() => releaseAdmission.resolve())
+    try {
+      await coordinator.drain()
+      await expect(displaced).resolves.toBe('recovered result')
+      expect(state.events.filter(event => event.type === 'task/result')).toHaveLength(1)
+    } finally {
+      clearImmediate(timer)
+      releaseAdmission.resolve()
+      await displaced
+    }
+  })
+
+  test.each(['ordinary', 'recovered'] as const)('%s callers and drain wait for a delayed cancellation failure commit', async origin => {
+    const built = origin === 'recovered' ? acceptedTask() : assignedTask()
+    let state = built.state
+    const tracked = deferred<WorkspaceTurnOutcome>()
+    const accepted = deferred()
+    const convergenceStarted = deferred()
+    const releaseConvergence = deferred()
+    const coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => structuredClone(state),
+      apply: async mutation => {
+        const next = mutation(state)
+        if (next.events.at(-1)?.type === 'task/delivery-failed') {
+          convergenceStarted.resolve()
+          await releaseConvergence.promise
+        }
+        state = next
+        return structuredClone(state)
+      },
+      ensureEmployee: async () => handle(),
+      deliver: async (_agentId, _message, _recall, _source, hooks) => {
+        await hooks?.onClaim?.()
+        accepted.resolve()
+        return await tracked.promise
+      },
+      recoverDelivery: async () => await tracked.promise,
+    })
+    if (origin === 'recovered') await coordinator.recoverAgent(built.agentId, recoveredHandle([built.message], []))
+    const first = coordinator.deliver(built.taskId)
+    if (origin === 'ordinary') await accepted.promise
+    const second = coordinator.deliver(built.taskId)
+    let settled = 0
+    const results = [first, second].map(result => result.then(() => { settled++ }, () => { settled++ }))
+    coordinator.cancelAllDeliveries()
+    tracked.resolve({ output: [], stopReason: { kind: 'aborted' }, interrupted: true })
+    let drained = false
+    const drain = coordinator.drain().then(() => { drained = true })
+    try {
+      await convergenceStarted.promise
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(settled).toBe(0)
+      expect(drained).toBe(false)
+    } finally {
+      releaseConvergence.resolve()
+      await Promise.all([...results, drain])
+    }
+    expect(inspectTaskDelivery(state, built.taskId).phase).toBe('settled')
+    expect(state.tasks[built.taskId]?.status).toBe('open')
+  })
+
+  test('a stopped recovered flight rejects a later inbox claim before durable acceptance', async () => {
+    const built = startedTask()
+    let state = built.state
+    let hooks: WorkspaceDeliveryHooks | undefined
+    const tracked = deferred<WorkspaceTurnOutcome>()
+    const coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => structuredClone(state),
+      apply: async mutation => { state = mutation(state); return structuredClone(state) },
+      ensureEmployee: async () => handle(), deliver: async () => outcome('unused'),
+      recoverDelivery: async (_agentId, _handle, _message, _source, captured) => {
+        hooks = captured
+        return await tracked.promise
+      },
+    })
+    await coordinator.recoverAgent(built.agentId, recoveredHandle([built.message], []))
+    coordinator.cancelAllDeliveries()
+    expect(hooks).toBeDefined()
+    try {
+      await expect(Promise.resolve().then(() => hooks?.onClaim?.())).rejects.toThrow(/cancel/)
+      expect(state.events.filter(event => event.type === 'task/delivery-accepted')).toHaveLength(0)
+    } finally {
+      tracked.resolve({ output: [], stopReason: { kind: 'aborted' }, interrupted: true })
+      await coordinator.drain()
+    }
   })
 
   test('recovery restores an already accepted pending message without duplicating acceptance', async () => {

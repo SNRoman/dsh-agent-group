@@ -2,6 +2,8 @@ import { defineConfig } from 'vitest/config'
 import { fileURLToPath } from 'node:url'
 
 const browserSourceTests = [
+  'tests/workspace-organizations-store.spec.ts',
+  'tests/workspace-organizations-dom.spec.ts',
   'tests/workspace-activity-dom.spec.ts',
   'tests/workspace-activity-store.spec.ts',
   'tests/workspace-definition-view.spec.ts',

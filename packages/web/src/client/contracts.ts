@@ -1,6 +1,24 @@
 /** Strict JSON-only Browser mirror of the Agent Workspace Host contracts. */
 
 export type WorkspaceId = string
+
+/** Browser projection of directory metadata; creation-operation metadata stays on the Host. */
+export interface WorkspaceDescriptor { readonly id: WorkspaceId; readonly label: string; readonly lifecycle: 'active' | 'archived' }
+export interface WorkspaceDirectoryEntry { readonly descriptor: WorkspaceDescriptor; readonly revision: number; readonly eventCount: number; readonly agentCount: number }
+/** Read-only portable-file preview, prior to explicit human import confirmation. */
+export interface WorkspaceImportPreview {
+  readonly operationId: string
+  readonly sourceWorkspaceId: WorkspaceId
+  readonly sourcePluginVersion: string
+  readonly exportedAt: string
+  readonly label: string
+  readonly lifecycle: 'active' | 'archived'
+  readonly eventCount: number
+  readonly agentCount: number
+  readonly taskCount: number
+  readonly sessionBindingsExcluded: true
+}
+export interface WorkspaceExportResult { readonly json: string; readonly document: unknown }
 export type AgentDefinitionId = string
 export type DefinitionRevisionId = string
 export type AgentId = string

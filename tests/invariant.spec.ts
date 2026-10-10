@@ -57,6 +57,29 @@ function buildState(): WorkspaceState {
   }).state
 }
 
+describe('dictionary referents in workspace invariants', () => {
+  test.each(['definition/created', 'agent/created', 'room/created', 'room/member-joined', 'task/assigned', 'task/delegation-granted', 'task/completed', 'child/run-started'])('rejects inherited %s event subjects', type => {
+    expect(acceptsRawEvent(buildState(), { type, subjectId: 'toString' })).toBe(false)
+  })
+
+  test.each(['actor', 'mention'])('rejects an inherited event %s agent', field => {
+    const state = buildState()
+    const room = Object.values(state.rooms)[0]!
+    const extra = field === 'actor' ? { actor: { type: 'agent', id: 'toString' } } : { mentions: ['toString'] }
+    expect(acceptsRawEvent(state, { type: 'room/message', subjectId: room.id, text: 'message', ...extra })).toBe(false)
+  })
+
+  test.each(['assignment assignee', 'child parent', 'child task'])('rejects an inherited %s referent', field => {
+    const state = buildState()
+    const assignment = Object.values(state.taskAssignments)[0]!
+    const run = Object.values(state.childRuns)[0]!
+    const corrupt = field === 'assignment assignee'
+      ? { ...state, taskAssignments: { ...state.taskAssignments, [assignment.id]: { ...assignment, assigneeAgentId: AgentId('toString') } } }
+      : { ...state, childRuns: { ...state.childRuns, [run.id]: field === 'child parent' ? { ...run, parentAgentId: AgentId('toString') } : { ...run, taskId: TaskId('toString') } } }
+    expect(() => assertWorkspaceInvariants(corrupt, state.workspaceId)).toThrow(/missing/)
+  })
+})
+
 type Corruption = readonly [string, (state: WorkspaceState) => WorkspaceState, RegExp]
 
 function withRawEvent(state: WorkspaceState, event: Readonly<Record<string, unknown>>): unknown {

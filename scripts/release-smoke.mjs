@@ -333,11 +333,12 @@ async function verifyInstalledLegacyLoad(options, installCommands, fixture, scra
   await stopServer()
   const after = JSON.parse(await readFile(storagePath, 'utf8'))
   assertLegacyWorkspacePreserved(before, after)
+  const aggregate = after.tables.workspaces.local.aggregate ?? after.tables.workspaces.local
   await writeFile(join(evidence, 'legacy-load.json'), `${JSON.stringify({
     storageDomain: after.unit,
     workspaceIds: Object.keys(after.tables.workspaces),
-    sessionBindings: after.tables.workspaces.local.sessionBindings,
-    sessionSentinelPreserved: after.tables.workspaces.local.sessionBindings['agent-3'] === LEGACY_SESSION_SENTINEL,
+    sessionBindings: aggregate.sessionBindings,
+    sessionSentinelPreserved: aggregate.sessionBindings['agent-3'] === LEGACY_SESSION_SENTINEL,
     preserved: true,
   }, null, 2)}\n`, 'utf8')
   await cp(storagePath, join(evidence, 'legacy-agent-workspace-after-host.json'))

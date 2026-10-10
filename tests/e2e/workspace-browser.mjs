@@ -3,8 +3,10 @@
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { watch, existsSync, readFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { chromium } from 'playwright'
 import { collectTaskToolEvidence } from './task-tools-profile.mjs'
+import { waitForRecoveredReply } from './recovery-observation.mjs'
 import { assertBrowserDurableEvidence, inspectSafeDelegationDenial, assertTaskCausality, assertMemoryRows, assertSubsetRevisionEvidence, assertExactStopEvidence, assertRestartPersistence } from '../../scripts/release-smoke-contract.mjs'
 
 const STEP_TIMEOUT_MS = 30_000
@@ -54,16 +56,19 @@ async function capture(state, label, locator, required = []) {
   await writeFile(join(state.evidence, `${state.prefix}aria-snapshots.json`), `${JSON.stringify(state.snapshots, null, 2)}\n`, 'utf8')
 }
 
-async function readDurableWorkspace(dshHome) {
+async function readDurableWorkspace(dshHome, workspaceId = 'local') {
   const singlePath = join(dshHome, 'storages', 'agent_workspace.json')
   try {
     const document = JSON.parse(await readFile(singlePath, 'utf8'))
-    return document.tables.workspaces.local
+    const record = document.tables.workspaces[workspaceId]
+    if (record === undefined) throw new Error('selected organization is missing')
+    return record.aggregate ?? record
   } catch (singleError) {
-    const recordPath = join(dshHome, 'storages', 'agent_workspace', 'workspaces', 'local.json')
+    const recordPath = join(dshHome, 'storages', 'agent_workspace', 'workspaces', `${workspaceId}.json`)
     try {
       const document = JSON.parse(await readFile(recordPath, 'utf8'))
-      return document.value ?? document
+      const record = document.value ?? document
+      return record.aggregate ?? record
     } catch (recordError) {
       throw new AggregateError([singleError, recordError], 'could not read the durable Agent Workspace aggregate')
     }
@@ -92,10 +97,10 @@ async function waitForDurableAgentMemory(dshHome, agentName, text) {
   }, `record ${JSON.stringify(text)} in ${agentName}'s memory`)
 }
 
-async function waitForDurableWorkspace(dshHome, predicate, description) {
+async function waitForDurableWorkspace(dshHome, predicate, description, workspaceId = 'local') {
   const paths = [
     join(dshHome, 'storages', 'agent_workspace.json'),
-    join(dshHome, 'storages', 'agent_workspace', 'workspaces', 'local.json'),
+    join(dshHome, 'storages', 'agent_workspace', 'workspaces', `${workspaceId}.json`),
   ]
   const path = paths.find(candidate => existsSync(candidate))
   if (path === undefined) throw new Error('durable Agent Workspace file is unavailable')
@@ -120,7 +125,7 @@ async function waitForDurableWorkspace(dshHome, predicate, description) {
         do {
           rerun = false
           try {
-            const workspace = await readDurableWorkspace(dshHome)
+            const workspace = await readDurableWorkspace(dshHome, workspaceId)
             if (await predicate(workspace)) return finish(undefined, workspace)
           } catch (error) {
             if (!isTransientWorkspaceRead(error)) return finish(error)
@@ -619,7 +624,99 @@ async function runAfterRestart(page, args, state) {
   }
   await runtime.getByText('任务投递在产生最终结果前中断。', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   await capture(state, 'restart-runtime-zh-CN', runtime, ['运行状态', '当前没有运行活动。', '任务投递在产生最终结果前中断。'])
+  await runtime.getByRole('button', { name: '关闭运行状态', exact: true }).click()
+  await continueRecoveredOrganization(dialog, args, state)
   await writeFile(join(args.evidence, 'after-restart-durable.json'), `${JSON.stringify(durable, null, 2)}\n`, 'utf8')
+}
+
+async function recoverOrganization(dialog, args, state) {
+  const chooser = dialog.getByRole('combobox', { name: 'Organization', exact: true })
+  const label = dialog.getByRole('textbox', { name: 'Organization label', exact: true })
+  await label.fill('Empty organization')
+  await dialog.getByRole('button', { name: 'Create organization', exact: true }).click()
+  await chooser.getByRole('option', { name: 'Empty organization', exact: true }).waitFor({ state: 'attached', timeout: STEP_TIMEOUT_MS })
+  const emptyId = await chooser.inputValue()
+  if (emptyId === 'local') throw new Error('creating an organization did not select its new identity')
+  await label.fill('Empty renamed')
+  await dialog.getByRole('button', { name: 'Rename organization', exact: true }).click()
+  await chooser.getByRole('option', { name: 'Empty renamed', exact: true }).waitFor({ state: 'attached', timeout: STEP_TIMEOUT_MS })
+  await chooser.selectOption('local')
+  await dialog.getByRole('combobox', { name: 'Archive running work', exact: true }).selectOption('wait')
+  await dialog.getByRole('button', { name: 'Archive organization', exact: true }).click()
+  await dialog.getByText('Archived organization — read-only', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  const before = await readDurableWorkspace(args['dsh-home'])
+  await dialog.getByRole('button', { name: 'Export organization', exact: true }).click()
+  await dialog.getByText('The export contains messages, instructions and memory and may include sensitive information. Confirm to download the JSON file.', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  const download = dialog.page().waitForEvent('download', { timeout: STEP_TIMEOUT_MS })
+  await dialog.getByRole('button', { name: 'Confirm export and download', exact: true }).click()
+  const backupPath = join(state.evidence, 'organization-backup-v2.json')
+  await (await download).saveAs(backupPath)
+  const portable = JSON.parse(await readFile(backupPath, 'utf8'))
+  if (portable.formatVersion !== 2 || portable.workspace.descriptor.lifecycle !== 'archived'
+    || 'sessionBindings' in portable.workspace.aggregate || 'creation' in portable.workspace.descriptor) {
+    throw new Error('Browser export did not produce an archived portable organization without local bindings')
+  }
+  await dialog.getByLabel('Import organization', { exact: true }).setInputFiles(backupPath)
+  await dialog.getByText('Session bindings are excluded. Confirming creates an independent organization without replacing the current organization.', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  await dialog.getByRole('textbox', { name: 'Imported organization label', exact: true }).fill('Recovered organization')
+  await dialog.getByRole('button', { name: 'Confirm import as a new organization', exact: true }).click()
+  await chooser.getByRole('option', { name: 'Recovered organization', exact: true }).waitFor({ state: 'attached', timeout: STEP_TIMEOUT_MS })
+  if (await chooser.inputValue() !== 'local') throw new Error('import changed the selected source organization')
+  await chooser.selectOption({ label: 'Recovered organization' })
+  const restoredId = await chooser.inputValue()
+  if (restoredId === 'local' || restoredId === emptyId) throw new Error('import reused an existing organization')
+  const restored = await readDurableWorkspace(args['dsh-home'], restoredId)
+  const expectedRestored = {
+    ...before, workspaceId: restoredId, sessionBindings: {},
+    events: before.events.map(event => 'messageId' in event
+      ? { ...event, messageId: `agent-workspace-task:${restoredId}:${event.taskDeliveryAttemptId}` }
+      : event),
+  }
+  if (!isDeepStrictEqual(restored, expectedRestored)) throw new Error('import lost history or restored local sessions')
+  await dialog.getByRole('button', { name: 'Reopen organization', exact: true }).click()
+  await dialog.getByText('Archived organization — read-only', { exact: true }).waitFor({ state: 'hidden', timeout: STEP_TIMEOUT_MS })
+  await dialog.getByRole('button', { name: 'Colleagues', exact: true }).click()
+  await selectReleaseDefinition(dialog)
+  await agentRow(dialog, 'Alice').getByRole('button', { name: 'Direct', exact: true }).click()
+  const priorReplies = restored.events.filter(event => event.type === 'room/message' && event.text === 'MEMORY_OK Alice').length
+  const visibleReplies = dialog.getByRole('main').getByText('MEMORY_OK Alice', { exact: true })
+  await visibleReplies.last().waitFor({ timeout: STEP_TIMEOUT_MS })
+  const priorVisibleReplies = await visibleReplies.count()
+  await send(dialog, 'CHECK_MEMORY_RECOVERED')
+  await waitForRecoveredReply(dialog, priorVisibleReplies, ['Working…', 'Agents working…'], STEP_TIMEOUT_MS)
+  await waitForDurableWorkspace(args['dsh-home'], current => current.events.filter(event => event.type === 'room/message' && event.text === 'MEMORY_OK Alice').length > priorReplies, 'record a new recovered reply', restoredId)
+  const after = await readDurableWorkspace(args['dsh-home'], restoredId)
+  const aliceId = Object.values(after.agents).find(agent => agent.name === 'Alice')?.id
+  if (!aliceId || !after.sessionBindings[aliceId] || after.sessionBindings[aliceId] === before.sessionBindings[aliceId]) throw new Error('restored colleague did not acquire an independent new Session')
+  if (JSON.stringify(await readDurableWorkspace(args['dsh-home'])) !== JSON.stringify(before)) throw new Error('working in a restored organization modified its source')
+  await writeFile(join(state.evidence, 'organization-recovery.json'), `${JSON.stringify({ emptyId, restoredId, before, restored, after }, null, 2)}\n`, 'utf8')
+  await capture(state, 'organization-recovery', dialog, ['Recovered organization', 'MEMORY_OK Alice'])
+  await chooser.selectOption('local')
+}
+
+async function continueRecoveredOrganization(dialog, args, state) {
+  const recovery = JSON.parse(await readFile(join(state.evidence, 'organization-recovery.json'), 'utf8'))
+  const before = await readDurableWorkspace(args['dsh-home'], recovery.restoredId)
+  assertRestartPersistence(recovery.after, before)
+  await dialog.getByRole('combobox', { name: '组织', exact: true }).selectOption(recovery.restoredId)
+  await dialog.getByRole('button', { name: '同事', exact: true }).click()
+  await selectReleaseDefinition(dialog)
+  await agentRow(dialog, 'Alice').getByRole('button', { name: '私聊', exact: true }).click()
+  const composer = dialog.getByPlaceholder('输入私聊消息，Ctrl/⌘ + Enter 发送')
+  const priorReplies = before.events.filter(event => event.type === 'room/message' && event.text === 'MEMORY_OK Alice').length
+  const visibleReplies = dialog.getByRole('main').getByText('MEMORY_OK Alice', { exact: true })
+  await visibleReplies.last().waitFor({ timeout: STEP_TIMEOUT_MS })
+  const priorVisibleReplies = await visibleReplies.count()
+  await composer.fill('CHECK_MEMORY_RECOVERED_RESTART')
+  await dialog.getByRole('button', { name: '发送', exact: true }).click()
+  await waitForRecoveredReply(dialog, priorVisibleReplies, ['智能体处理中…'], STEP_TIMEOUT_MS)
+  await waitForDurableWorkspace(args['dsh-home'], current => current.events.filter(event => event.type === 'room/message' && event.text === 'MEMORY_OK Alice').length > priorReplies, 'record a new recovered reply after restart', recovery.restoredId)
+  const after = await readDurableWorkspace(args['dsh-home'], recovery.restoredId)
+  if (JSON.stringify(after.sessionBindings) !== JSON.stringify(before.sessionBindings) || after.events.length <= before.events.length) throw new Error('restored organization did not continue after restart with its own Session')
+  if (JSON.stringify(await readDurableWorkspace(args['dsh-home'])) !== JSON.stringify(recovery.before)) throw new Error('restored organization polluted the source after restart')
+  await writeFile(join(state.evidence, 'organization-recovery-after-restart.json'), `${JSON.stringify({ workspaceId: recovery.restoredId, after }, null, 2)}\n`, 'utf8')
+  await capture(state, 'organization-recovery-restart', dialog, ['Recovered organization', 'MEMORY_OK Alice'])
+  await dialog.getByRole('combobox', { name: '组织', exact: true }).selectOption('local')
 }
 
 async function runInstalledScenario(page, args, state) {
@@ -751,6 +848,7 @@ async function runInstalledScenario(page, args, state) {
   }
   if (agentMessages.length !== 7) throw new Error(`expected 7 durable agent replies, found ${agentMessages.length}`)
   await writeFile(join(state.evidence, `${state.prefix}durable-final.json`), `${JSON.stringify(durable, null, 2)}\n`, 'utf8')
+  await recoverOrganization(dialog, args, state)
 }
 
 async function main() {

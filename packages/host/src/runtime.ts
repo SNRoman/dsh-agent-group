@@ -71,6 +71,9 @@ interface EmployeeRoleContribution {
   readonly dispose: () => void
 }
 
+/** Expected rejection when a retiring generation revokes an unpublished admission. */
+class EmployeeAdmissionInvalidatedError extends Error {}
+
 /**
  * Owns the live DSH handles for employed workspace agents. `ensure()` admits
  * one handle per agent (single-flight across concurrent calls), resuming a
@@ -81,12 +84,14 @@ interface EmployeeRoleContribution {
  */
 export class EmployeeAgentPool {
   private readonly handles = new Map<AgentId, AgentHandle>()
+  private readonly admittedControls = new Map<AgentId, { readonly agent: Agent; readonly generation: number }>()
   private readonly agentIds = new WeakMap<Agent, { readonly agentId: AgentId; readonly generation: number }>()
   private readonly inFlight = new Map<AgentId, Promise<AgentHandle>>()
   private readonly generations = new Map<AgentId, number>()
   private readonly operations = new Map<AgentId, Promise<void>>()
   private readonly roles = new Map<AgentId, EmployeeRoleContribution>()
   private stopped = false
+  private disposal: Promise<void> | undefined
 
   constructor(
     private readonly agents: AgentLifecycle,
@@ -99,6 +104,20 @@ export class EmployeeAgentPool {
   /** The live handle for an agent, or `undefined` when not materialized. */
   handleFor(agentId: AgentId): AgentHandle | undefined {
     return this.handles.get(agentId)
+  }
+
+  /**
+   * Address a resident or setup-committed employee for exact stop control.
+   * @param agentId Durable employee identity in this pool.
+   * @returns Agent-only control while its generation is active; ordinary delivery still requires ensure().
+   */
+  controlHandleFor(agentId: AgentId): Pick<AgentHandle, 'agent'> | undefined {
+    if (this.stopped) return undefined
+    const resident = this.handles.get(agentId)
+    if (resident !== undefined) return { agent: resident.agent }
+    const admitted = this.admittedControls.get(agentId)
+    if (admitted === undefined || admitted.generation !== this.generationOf(agentId)) return undefined
+    return { agent: admitted.agent }
   }
 
   /** Resolve an employee Agent admitted by DSH setup in the current pool generation. */
@@ -123,10 +142,11 @@ export class EmployeeAgentPool {
           await handle.dispose()
         } finally {
           this.agentIds.delete(handle.agent)
-          throw new Error(`agent '${agentId}' admission was invalidated by disposal`)
         }
+        throw new EmployeeAdmissionInvalidatedError(`agent '${agentId}' admission was invalidated by disposal`)
       }
       this.handles.set(agentId, handle)
+      this.admittedControls.delete(agentId)
       this.agentIds.set(handle.agent, { agentId, generation })
       return handle
     }).catch(error => {
@@ -224,6 +244,7 @@ export class EmployeeAgentPool {
     const pending = this.inFlight.get(agentId)
     const operation = this.operations.get(agentId)
     this.handles.delete(agentId)
+    this.admittedControls.delete(agentId)
     this.roles.delete(agentId)
     if (handle !== undefined) this.agentIds.delete(handle.agent)
 
@@ -247,7 +268,8 @@ export class EmployeeAgentPool {
   }
 
   /** Dispose every live handle and invalidate every admission in flight. */
-  async disposeAll(): Promise<void> {
+  disposeAll(): Promise<void> {
+    if (this.disposal !== undefined) return this.disposal
     this.stopped = true
     const ids = new Set<AgentId>([...this.handles.keys(), ...this.inFlight.keys(), ...this.operations.keys()])
     for (const agentId of ids) this.generations.set(agentId, this.generationOf(agentId) + 1)
@@ -257,12 +279,17 @@ export class EmployeeAgentPool {
     const operations = [...this.operations.values()]
     for (const handle of handles) this.agentIds.delete(handle.agent)
     this.handles.clear()
+    this.admittedControls.clear()
     this.roles.clear()
-    await Promise.allSettled([
+    this.disposal = Promise.allSettled([
       ...handles.map(handle => handle.dispose()),
       ...pending,
       ...operations,
-    ])
+    ]).then(results => {
+      const failures = results.flatMap(result => result.status === 'rejected' && !(result.reason instanceof EmployeeAdmissionInvalidatedError) ? [result.reason] : [])
+      if (failures.length > 0) throw new AggregateError(failures, 'employee agent pool disposal failed')
+    })
+    return this.disposal
   }
 
   private generationOf(agentId: AgentId): number {
@@ -321,7 +348,10 @@ export class EmployeeAgentPool {
           }
           return handle
         } catch (error) {
-          if (resumedAgent !== undefined) this.agentIds.delete(resumedAgent)
+          if (resumedAgent !== undefined) {
+            this.agentIds.delete(resumedAgent)
+            if (this.admittedControls.get(agentId)?.agent === resumedAgent) this.admittedControls.delete(agentId)
+          }
           try {
             await handle?.dispose()
           } finally {
@@ -366,6 +396,7 @@ export class EmployeeAgentPool {
         // DSH invokes this synchronous commit before maintenance releases the
         // restored inbox driver; tools must authenticate those resumed turns.
         this.agentIds.set(agent, { agentId, generation })
+        this.admittedControls.set(agentId, { agent, generation })
         admitIdentity(agent)
       } }
     }
@@ -400,7 +431,7 @@ export class EmployeeAgentPool {
 
   private assertAdmissionActive(agentId: AgentId, generation: number): void {
     if (this.stopped || this.generationOf(agentId) !== generation) {
-      throw new Error(`agent '${agentId}' admission was invalidated by disposal`)
+      throw new EmployeeAdmissionInvalidatedError(`agent '${agentId}' admission was invalidated by disposal`)
     }
   }
 

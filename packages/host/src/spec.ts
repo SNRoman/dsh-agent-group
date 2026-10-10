@@ -2,8 +2,8 @@
 
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { WorkspaceId } from './ids.ts'
-import type { WorkspaceState } from './types.ts'
-import { workspaceStateSchema } from './workspace-state-schema.ts'
+import type { StoredWorkspace } from './workspace-record.ts'
+import { storedWorkspaceSchema } from './workspace-record.ts'
 
 export { workspaceStateSchema } from './workspace-state-schema.ts'
 
@@ -11,5 +11,5 @@ export { workspaceStateSchema } from './workspace-state-schema.ts'
 export const agentWorkspaceSpec = defineDomain({
   name: 'agent_workspace',
   version: 0,
-  tables: { workspaces: domainTable<WorkspaceId, WorkspaceState>(workspaceStateSchema) },
+  tables: { workspaces: domainTable<WorkspaceId, StoredWorkspace>(storedWorkspaceSchema) },
 })
