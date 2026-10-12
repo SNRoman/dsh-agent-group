@@ -32,15 +32,15 @@
 
 ### Task 1: 群聊与同事重命名
 
-**Files:** Modify `packages/host/src/types.ts`, `state.ts`, `rpc.ts`; `packages/web/src/client/contracts.ts`, `api.ts`; test `tests/state.spec.ts`, `workspace-rpc.spec.ts`, `workspace-api.spec.ts`。
+**Files:** Modify `packages/host/src/types.ts`, `state.ts`, `rpc.ts`, `runtime.ts`, `workspace-runtime.ts`, Host README; `packages/web/src/client/contracts.ts`, `api.ts`; test `tests/state.spec.ts`, `workspace-rpc.spec.ts`, `workspace-organizations-api.spec.ts`, `runtime.spec.ts`。
 
 **Interfaces:** Produces aggregate commands `{type:'room/rename', roomId, name}`、`{type:'agent/rename', agentId, name}` and Browser `renameRoom(roomId, name, expectedRevision, signal?)`, `renameAgent(agentId, name, expectedRevision, signal?)`, each returns `Promise<WorkspaceSnapshot>`; no new historical event discriminator.
 
-- [ ] 写测试：群名、姓名更新且身份、成员、记忆、角色版本不变；空名、姓名碰撞、私聊独立重命名拒绝；状态严格读取和 CAS 持久化通过。
-- [ ] 运行 `pnpm test tests/state.spec.ts tests/workspace-rpc.spec.ts tests/workspace-api.spec.ts --maxWorkers=4`，新增行为 FAIL。
-- [ ] 实现命令、严格 RPC 解析和 Browser 返回验证，名称 trim，姓名按现有碰撞规则比较。
-- [ ] 同一命令 PASS；`pnpm typecheck` PASS；文档写明身份不变。
-- [ ] 精确提交本任务改动并记录验证，不包含前轮无关 UI 改动。
+- [x] 写测试：群名、姓名更新且身份、成员、记忆、角色版本不变；空名、姓名碰撞、私聊独立重命名拒绝；状态严格读取通过，持久化沿用通用 CAS 路径。
+- [x] 运行 `pnpm test tests/state.spec.ts tests/workspace-rpc.spec.ts tests/workspace-organizations-api.spec.ts --maxWorkers=4`，新增七项行为 FAIL；同岗位版本提示词刷新单测 FAIL。
+- [x] 实现命令、严格 RPC 解析和 Browser 返回验证，名称 trim，姓名按现有碰撞规则比较；常驻身份提示词在 idle 后刷新。
+- [x] focused 四文件 203/203 PASS；`pnpm typecheck` PASS；全套 1171/1171 PASS；文档写明身份不变。
+- [x] 精确提交本任务改动并记录验证，不包含前轮无关 UI 改动。
 
 ### Task 2: 聊天气泡、成员操作和统一身份详情
 

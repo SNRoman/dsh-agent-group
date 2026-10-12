@@ -54,6 +54,47 @@ function durableStateWithEveryRecord(): WorkspaceState {
 }
 
 describe('WorkspaceState mutations', () => {
+  test('renames a group without replacing its identity, messages or memberships', () => {
+    const before = durableStateWithEveryRecord()
+    const room = Object.values(before.rooms)[0]!
+    const after = mutateWorkspace(before, { type: 'room/rename', roomId: room.id, name: '  产品讨论  ' }).state
+    expect(after.rooms[room.id]).toEqual({ ...room, name: '产品讨论' })
+    expect(after.revision).toBe(before.revision + 1)
+    expect(after.events).toEqual(before.events)
+    expect(after.memberships).toEqual(before.memberships)
+    expect(after.memoryEntries).toEqual(before.memoryEntries)
+    expect(before.rooms[room.id]).toEqual(room)
+    expect(workspaceStateSchema.safeParse(after).success).toBe(true)
+  })
+
+  test('renames only the colleague while preserving role, employment, memory and session identity', () => {
+    const before = durableStateWithEveryRecord()
+    const colleague = Object.values(before.agents)[0]!
+    const after = mutateWorkspace(before, { type: 'agent/rename', agentId: colleague.id, name: '  小林  ' }).state
+    expect(after.agents[colleague.id]).toEqual({ ...colleague, name: '小林' })
+    expect(after.definitions).toEqual(before.definitions)
+    expect(after.definitionRevisions).toEqual(before.definitionRevisions)
+    expect(after.sessionBindings).toEqual(before.sessionBindings)
+    expect(after.memoryEntries).toEqual(before.memoryEntries)
+    expect(after.revision).toBe(before.revision + 1)
+    expect(workspaceStateSchema.safeParse(after).success).toBe(true)
+  })
+
+  test('rejects blank group names and independent direct-room renaming', () => {
+    const group = mutateWorkspace(createInitialState(WorkspaceId('local')), { type: 'room/create', kind: 'group', name: '产品' })
+    expect(() => mutateWorkspace(group.state, { type: 'room/rename', roomId: group.roomId, name: '   ' })).toThrow()
+    const direct = mutateWorkspace(group.state, { type: 'room/create', kind: 'direct' })
+    expect(() => mutateWorkspace(direct.state, { type: 'room/rename', roomId: direct.roomId, name: '另一个名字' })).toThrow(/direct/)
+  })
+
+  test('rejects blank or colliding colleague names but permits retaining the current name', () => {
+    const alice = createDefinitionAndAgent()
+    const bob = mutateWorkspace(alice.state, { type: 'agent/create', definitionId: alice.state.agents[alice.agentId]!.definitionId, name: 'Bob' })
+    expect(() => mutateWorkspace(bob.state, { type: 'agent/rename', agentId: alice.agentId, name: '   ' })).toThrow()
+    expect(() => mutateWorkspace(bob.state, { type: 'agent/rename', agentId: alice.agentId, name: '  bOb  ' })).toThrow(/already used/)
+    expect(mutateWorkspace(bob.state, { type: 'agent/rename', agentId: alice.agentId, name: 'Alice' }).state.agents[alice.agentId]!.name).toBe('Alice')
+  })
+
   test.each([
     ['workspace', (state: WorkspaceState) => ({ ...state, unknown: true })],
     ['definition', (state: WorkspaceState) => {

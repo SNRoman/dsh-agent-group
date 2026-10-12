@@ -165,6 +165,8 @@ const synchronizeDefinitionPayload = z.object({
 }).strict()
 const createAgentPayload = z.object({ expectedRevision, definitionId: id, name: text }).strict()
 const agentPayload = z.object({ expectedRevision, agentId: id }).strict()
+const renameAgentPayload = z.object({ expectedRevision, agentId: id, name: text }).strict()
+const renameRoomPayload = z.object({ expectedRevision, roomId: id, name: text }).strict()
 const createRoomPayload = z.object({
   expectedRevision,
   kind: z.enum(['group', 'direct']),
@@ -263,6 +265,20 @@ export function createWorkspaceRpcHandler(service: WorkspaceRpcService): Workspa
             name: parsed.data.name,
             description: parsed.data.description,
             instructions: parsed.data.instructions,
+          }, signal))
+        }
+        case 'agent/rename': {
+          const parsed = renameAgentPayload.safeParse(payload)
+          if (!parsed.success) return invalid(parsed.error.issues)
+          return success(await service.execute(parsed.data.expectedRevision, {
+            type: 'agent/rename', agentId: AgentId(parsed.data.agentId), name: parsed.data.name,
+          }, signal))
+        }
+        case 'room/rename': {
+          const parsed = renameRoomPayload.safeParse(payload)
+          if (!parsed.success) return invalid(parsed.error.issues)
+          return success(await service.execute(parsed.data.expectedRevision, {
+            type: 'room/rename', roomId: RoomId(parsed.data.roomId), name: parsed.data.name,
           }, signal))
         }
         case 'definition/revise': {

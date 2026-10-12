@@ -731,13 +731,14 @@ export class WorkspaceRuntime {
     if (command.type === 'agent/depart') {
       await this.pool?.dispose(command.agentId)
     }
-    if (command.type === 'definition/revise' || command.type === 'definition/synchronize') {
-      const selected = command.type === 'definition/revise' ? command.synchronizeAgentIds ?? [] : command.agentIds
+    if (command.type === 'definition/revise' || command.type === 'definition/synchronize' || command.type === 'agent/rename') {
+      const selected = command.type === 'agent/rename' ? [command.agentId]
+        : command.type === 'definition/revise' ? command.synchronizeAgentIds ?? [] : command.agentIds
       await Promise.all(selected.map(async agentId => {
         const agent = next.agents[agentId]
         if (agent?.employmentStatus !== 'employed' || this.pool?.handleFor(agentId) === undefined) return
         try {
-          await this.pool.refreshRole(agentId, agent.definitionRevisionId)
+          await this.pool.refreshRole(agentId, agent.definitionRevisionId, { force: command.type === 'agent/rename' })
         } catch {
           this.activityStream.recordAgentFailureIfAbsent(agentId, {
             code: 'agent-role-refresh-failed',

@@ -174,6 +174,16 @@ export class WorkspaceApi {
     return this.mutate('room/create', { kind: 'group', name }, expectedRevision, signal).then(result => result.value)
   }
 
+  /** @param roomId Group identity. @param name Display name. @param expectedRevision CAS revision. @param signal Cancellation. @returns Committed snapshot with unchanged room identity. */
+  renameRoom(roomId: RoomId, name: string, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return this.mutate('room/rename', { roomId, name }, expectedRevision, signal).then(result => result.value)
+  }
+
+  /** @param agentId Colleague identity. @param name Display name. @param expectedRevision CAS revision. @param signal Cancellation. @returns Committed snapshot with unchanged role and personal memory. */
+  renameAgent(agentId: AgentId, name: string, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return this.mutate('agent/rename', { agentId, name }, expectedRevision, signal).then(result => result.value)
+  }
+
   async openDirect(agentId: AgentId, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceDirectRoomResult> {
     const { value } = await this.mutate('room/direct/open', { agentId }, expectedRevision, signal)
     return { snapshot: value.state, roomId: value.roomId }
@@ -295,9 +305,11 @@ function assertMutationValue(endpoint: WorkspaceMutationEndpoint, value: unknown
     case 'definition/revise':
     case 'definition/synchronize':
     case 'agent/create':
+    case 'agent/rename':
     case 'agent/depart':
     case 'agent/employ':
     case 'room/create':
+    case 'room/rename':
     case 'room/join':
     case 'room/leave':
     case 'room/post':

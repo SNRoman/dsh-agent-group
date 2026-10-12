@@ -372,6 +372,12 @@ export interface CreateAgentCommand {
   readonly name: string
 }
 
+/** Change one colleague's display name without replacing its identity or role. */
+export interface RenameAgentCommand { readonly type: 'agent/rename'; readonly agentId: AgentId; readonly name: string }
+
+/** Change a group's display name; direct rooms retain their colleague-derived labels. */
+export interface RenameRoomCommand { readonly type: 'room/rename'; readonly roomId: RoomId; readonly name: string }
+
 /** End an agent's current employment period and all active room memberships. */
 export interface DepartAgentCommand { readonly type: 'agent/depart'; readonly agentId: AgentId }
 /** Begin a new employment period for a departed agent. */
@@ -417,9 +423,11 @@ export type WorkspaceCommand =
   | ReviseDefinitionCommand
   | SynchronizeDefinitionCommand
   | CreateAgentCommand
+  | RenameAgentCommand
   | DepartAgentCommand
   | EmployAgentCommand
   | CreateRoomCommand
+  | RenameRoomCommand
   | JoinRoomCommand
   | LeaveRoomCommand
   | RoomMessageCommand

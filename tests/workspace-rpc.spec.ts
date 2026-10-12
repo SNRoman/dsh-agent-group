@@ -232,10 +232,16 @@ describe('workspace rpc handler', () => {
     ['agent/create', { expectedRevision: 13, definitionId: 'definition-1', name: 'Alice' }, {
       type: 'agent/create', definitionId: 'definition-1', name: 'Alice',
     }],
+    ['agent/rename', { expectedRevision: 13, agentId: 'agent-1', name: ' 小林 ' }, {
+      type: 'agent/rename', agentId: 'agent-1', name: '小林',
+    }],
     ['agent/depart', { expectedRevision: 14, agentId: 'agent-1' }, { type: 'agent/depart', agentId: 'agent-1' }],
     ['agent/employ', { expectedRevision: 15, agentId: 'agent-1' }, { type: 'agent/employ', agentId: 'agent-1' }],
     ['room/create', { expectedRevision: 16, kind: 'group', name: 'Engineering' }, {
       type: 'room/create', kind: 'group', name: 'Engineering',
+    }],
+    ['room/rename', { expectedRevision: 16, roomId: 'room-1', name: ' 产品讨论 ' }, {
+      type: 'room/rename', roomId: 'room-1', name: '产品讨论',
     }],
     ['room/join', {
       expectedRevision: 17,

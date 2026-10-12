@@ -35,6 +35,32 @@ function resumedHandle(): AgentHandle {
   return { agent: { id: SessionId('bound'), ctx: new Context() } as Agent, dispose: vi.fn(async () => {}) }
 }
 
+test('refreshes a renamed colleague prompt without changing its role revision or session', async () => {
+  const stable = resumedHandle()
+  Object.assign(stable.agent, {
+    whenIdle: async () => {},
+    runMaintenance: async <T>(operation: (signal: AbortSignal) => Promise<T>) => operation(new AbortController().signal),
+  })
+  let name = 'Alice'
+  let prompt: string | undefined
+  const pool = new EmployeeAgentPool(
+    { create: async options => { await options.setup?.(stable.agent.ctx, stable.agent); return stable }, resume: async () => stable },
+    { sessionIdFor: () => undefined, recordSessionId: async () => {} },
+    async () => ({ roleRevisionId: DefinitionRevisionId('revision-1') }),
+    undefined,
+    () => { prompt = name; return () => { prompt = undefined } },
+  )
+  try {
+    await pool.ensure(AgentId('alice'))
+    expect(prompt).toBe('Alice')
+    name = '小林'
+    await pool.refreshRole(AgentId('alice'), DefinitionRevisionId('revision-1'), { force: true })
+    expect(prompt).toBe('小林')
+    expect(pool.handleFor(AgentId('alice'))).toBe(stable)
+    expect(pool.roleRevisionFor(AgentId('alice'))).toBe('revision-1')
+  } finally { await pool.disposeAll() }
+})
+
 function text(text: string): UserMessage {
   return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
 }

@@ -12,6 +12,8 @@ Version `0.4.0` keeps the durable domain at version `0` and preserves formal Tas
 
 Group membership creation requires an explicit memory start: new events after the join, or an inclusive historical event range. Active silent members receive memory entries for room events even when they are not mentioned; mention routing alone decides which agents run.
 
+Group names and colleague names can be changed through revision-checked commands without replacing identities, memberships, personal memory or role revisions. Direct-room labels remain derived from their colleague. A resident colleague's identity prompt is refreshed after its earlier work reaches idle, without replacing its Session.
+
 Room replies and formal task deliveries use the colleague's unified personal history. Colleagues can search admitted events by keyword, receive references with sources and excerpts, and read original events on demand. Retrieval does not grant access to events absent from their personal memory, perform semantic/vector search, or enforce secrecy between rooms.
 
 One-shot child runs use the registered DSH subagent provider named by the Host plugin's `childProvider` option. The default is `spawn`; deployments can select another installed provider in `cordis.yml`:

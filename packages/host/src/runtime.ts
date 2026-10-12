@@ -185,7 +185,7 @@ export class EmployeeAgentPool {
    * Replace only the resident role section after all earlier work reaches idle.
    * Later plugin-owned deliveries remain queued until replacement settles.
    */
-  async refreshRole(agentId: AgentId, revisionId: DefinitionRevisionId): Promise<void> {
+  async refreshRole(agentId: AgentId, revisionId: DefinitionRevisionId, options: { readonly force?: boolean } = {}): Promise<void> {
     if (this.roleInstaller === undefined) throw new Error('employee role installer is not configured')
     await this.serialize(agentId, async () => {
       const generation = this.generationOf(agentId)
@@ -201,7 +201,7 @@ export class EmployeeAgentPool {
             throw new Error(`agent '${agentId}' role refresh was invalidated by disposal`)
           }
           const prior = this.roles.get(agentId)
-          if (prior?.revisionId === revisionId) return
+          if (prior?.revisionId === revisionId && options.force !== true) return
           if (prior === undefined) {
             const dispose = this.roleInstaller!(agentId, revisionId, handle.agent.ctx)
             this.roles.set(agentId, { revisionId, dispose })

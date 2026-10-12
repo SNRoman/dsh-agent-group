@@ -151,9 +151,11 @@ export interface WorkspaceMutationRequestMap {
   readonly 'definition/revise': ReviseDefinitionInput
   readonly 'definition/synchronize': { readonly definitionId: AgentDefinitionId; readonly definitionRevisionId: DefinitionRevisionId; readonly agentIds: readonly AgentId[] }
   readonly 'agent/create': { readonly definitionId: AgentDefinitionId; readonly name: string }
+  readonly 'agent/rename': { readonly agentId: AgentId; readonly name: string }
   readonly 'agent/depart': { readonly agentId: AgentId }
   readonly 'agent/employ': { readonly agentId: AgentId }
   readonly 'room/create': { readonly kind: 'group' | 'direct'; readonly name?: string | undefined }
+  readonly 'room/rename': { readonly roomId: RoomId; readonly name: string }
   readonly 'room/direct/open': { readonly agentId: AgentId }
   readonly 'room/join': { readonly roomId: RoomId; readonly agentId: AgentId; readonly memoryStart: MembershipMemoryStart }
   readonly 'room/leave': { readonly membershipId: MembershipId }
@@ -174,9 +176,11 @@ export interface WorkspaceMutationValueMap {
   readonly 'definition/revise': WorkspaceSnapshot
   readonly 'definition/synchronize': WorkspaceSnapshot
   readonly 'agent/create': WorkspaceSnapshot
+  readonly 'agent/rename': WorkspaceSnapshot
   readonly 'agent/depart': WorkspaceSnapshot
   readonly 'agent/employ': WorkspaceSnapshot
   readonly 'room/create': WorkspaceSnapshot
+  readonly 'room/rename': WorkspaceSnapshot
   readonly 'room/direct/open': WorkspaceDirectRoomValue
   readonly 'room/join': WorkspaceSnapshot
   readonly 'room/leave': WorkspaceSnapshot

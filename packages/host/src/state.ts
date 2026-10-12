@@ -112,9 +112,11 @@ export function mutateWorkspace(state: WorkspaceState, command: WorkspaceCommand
     case 'definition/revise': return reviseDefinition(state, command)
     case 'definition/synchronize': return synchronizeDefinition(state, command)
     case 'agent/create': return createAgent(state, command)
+    case 'agent/rename': return renameAgent(state, command.agentId, command.name)
     case 'agent/depart': return departAgent(state, command.agentId)
     case 'agent/employ': return employAgent(state, command.agentId)
     case 'room/create': return createRoom(state, command)
+    case 'room/rename': return renameRoom(state, command.roomId, command.name)
     case 'room/join': return joinRoom(state, command.roomId, command.agentId, command.memoryStart)
     case 'room/leave': return leaveRoom(state, command.membershipId)
     case 'room/message': return appendRoomMessageEvent(state, command)
@@ -392,6 +394,25 @@ function departAgent(state: WorkspaceState, agentId: InstanceId): MutationResult
       memberships,
     },
   }
+}
+
+function renameAgent(state: WorkspaceState, agentId: InstanceId, suppliedName: string): MutationResult {
+  const agent = requireAgent(state, agentId)
+  const name = suppliedName.trim()
+  requireText('agent name', name)
+  if (Object.values(state.agents).some(other => other.id !== agentId && normalizeName(other.name.trim()) === normalizeName(name))) {
+    throw new Error(`agent name '${name}' is already used in workspace '${state.workspaceId}'`)
+  }
+  return { state: { ...beginWorkspaceMutation(state), agents: { ...state.agents, [agentId]: { ...agent, name } } } }
+}
+
+function renameRoom(state: WorkspaceState, roomId: WorkspaceRoomId, suppliedName: string): MutationResult {
+  requireRoom(state, roomId)
+  const room = state.rooms[roomId]!
+  if (room.kind === 'direct') throw new Error('direct room names are derived from colleague identity')
+  const name = suppliedName.trim()
+  requireText('room name', name)
+  return { state: { ...beginWorkspaceMutation(state), rooms: { ...state.rooms, [roomId]: { ...room, name } } } }
 }
 
 function employAgent(state: WorkspaceState, agentId: InstanceId): MutationResult {

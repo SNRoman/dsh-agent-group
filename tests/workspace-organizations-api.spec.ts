@@ -13,6 +13,18 @@ const descriptor = { id: 'alpha', label: 'Alpha', lifecycle: 'active' }
 const operationId = 'cc63a502-d4a7-4b25-bc49-92bc26ce2a51'
 
 describe('explicit organization Browser scope', () => {
+  it('validates renamed snapshots and attaches organization identity and CAS revision', async () => {
+    const committed = snapshot()
+    const { api, calls } = fixture({ 'room/rename': { revision: 1, value: committed }, 'agent/rename': { revision: 1, value: committed } })
+    const scoped = api.forWorkspace('alpha')
+    await expect(scoped.renameRoom('room-1', '产品讨论', 0)).resolves.toEqual(committed)
+    await expect(scoped.renameAgent('agent-1', '小林', 0)).resolves.toEqual(committed)
+    expect(calls).toEqual([
+      { endpoint: 'room/rename', payload: { workspaceId: 'alpha', expectedRevision: 0, roomId: 'room-1', name: '产品讨论' } },
+      { endpoint: 'agent/rename', payload: { workspaceId: 'alpha', expectedRevision: 0, agentId: 'agent-1', name: '小林' } },
+    ])
+  })
+
   it('requires selection before any aggregate request reaches the transport', async () => {
     const { api, calls } = fixture({ snapshot: snapshot() })
     await expect(api.snapshot()).rejects.toThrow('selected organization')
