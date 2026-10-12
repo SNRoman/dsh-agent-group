@@ -21,7 +21,10 @@ import type {
   WorkspaceTurnStreamSnapshot,
 } from './contracts.ts'
 import type { createWorkspaceUiStore, WorkspaceUiError } from './store.ts'
-import { WorkspaceLiveTurn, WorkspaceMarkdownMessage } from './WorkspaceTurn.tsx'
+import { WorkspaceLiveTurn } from './WorkspaceTurn.tsx'
+import { WorkspaceChatMessage } from './WorkspaceChatMessage.tsx'
+import { WorkspaceColleagueProfile } from './WorkspaceColleagueProfile.tsx'
+import { WorkspacePeople } from './WorkspacePeople.tsx'
 import { WorkspaceTasks } from './WorkspaceTasks.tsx'
 import { WorkspaceMemory } from './WorkspaceMemory.tsx'
 import { WorkspaceDefinitionHistory } from './WorkspaceDefinitionHistory.tsx'
@@ -31,10 +34,9 @@ import type { WorkspaceActivityProjection } from './activity-view-model.ts'
 import { WorkspaceActivityBadges, WorkspaceActivityDrawer, WorkspaceAgentRuntimeBadges, WorkspaceRuntimeBadge } from './WorkspaceActivityDrawer.tsx'
 import {
   activeRoomMembers,
-  actorLabel,
   appendDisplayMention,
+  canonicalRoomMessageText,
   directRoomForAgent,
-  formatMessageText,
   parseRoomMentionIds,
   roomLabel,
   roomMessageEvents,
@@ -89,6 +91,8 @@ export function WorkspaceOverlay({ useStore, actions, api, t, embedded = false, 
   const [streamError, setStreamError] = useState<WorkspaceUiError | undefined>()
   const [pendingMutation, setPendingMutation] = useState<PendingMutation | undefined>()
   const [reconnectAttempt, setReconnectAttempt] = useState(0)
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [roleManagementOpen, setRoleManagementOpen] = useState(false)
   const activityTriggerRef = useRef<HTMLButtonElement>(null)
   const activityVersionRef = useRef(0)
   const refreshControllerRef = useRef<AbortController>()
@@ -209,7 +213,8 @@ export function WorkspaceOverlay({ useStore, actions, api, t, embedded = false, 
   useEffect(() => {
     if (!ui.open) return
     const onKeyDown = (event: globalThis.KeyboardEvent): void => {
-      if (event.key !== 'Escape') return
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      if (profileOpen) { setProfileOpen(false); return }
       if (ui.activityDrawerOpen === true) {
         actions.closeActivityDrawer()
         activityTriggerRef.current?.focus()
@@ -217,7 +222,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t, embedded = false, 
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [ui.open, ui.activityDrawerOpen, actions, closeWorkspace])
+  }, [ui.open, ui.activityDrawerOpen, profileOpen, actions, closeWorkspace])
 
   const snapshot = ui.snapshot
   const rooms = useMemo(() => snapshot === undefined ? [] : Object.values(snapshot.rooms), [snapshot])
@@ -232,7 +237,10 @@ export function WorkspaceOverlay({ useStore, actions, api, t, embedded = false, 
     if (ui.selectedDefinitionId === undefined || snapshot.definitions[ui.selectedDefinitionId] === undefined) {
       actions.selectDefinition(definitions[0]?.id)
     }
-  }, [snapshot, ui.selectedRoomId, ui.selectedDefinitionId, rooms, definitions, actions])
+    if (ui.selectedAgentId === undefined || snapshot.agents[ui.selectedAgentId] === undefined) {
+      actions.selectAgent(Object.values(snapshot.agents)[0]?.id)
+    }
+  }, [snapshot, ui.selectedRoomId, ui.selectedDefinitionId, ui.selectedAgentId, rooms, definitions, actions])
 
   const selectedDefinition = snapshot === undefined || ui.selectedDefinitionId === undefined
     ? undefined
@@ -304,6 +312,8 @@ export function WorkspaceOverlay({ useStore, actions, api, t, embedded = false, 
   }
 
   const openDirect = async (agentId: AgentId): Promise<void> => {
+    setProfileOpen(false)
+    actions.selectAgent(agentId)
     const existing = snapshot === undefined ? undefined : directRoomForAgent(snapshot, agentId)
     if (existing !== undefined) {
       actions.selectRoom(existing)
@@ -322,12 +332,22 @@ export function WorkspaceOverlay({ useStore, actions, api, t, embedded = false, 
     }
   }
 
+  const openColleague = (agentId: AgentId): void => { actions.selectAgent(agentId); setProfileOpen(true) }
+  const profileProps = snapshot === undefined || ui.selectedAgentId === undefined ? undefined : {
+    snapshot, agentId: ui.selectedAgentId, busy: ui.busy || readOnly, t,
+    onRename: (agentId: AgentId, name: string) => commit(revision => api.renameAgent(agentId, name, revision)),
+    onSetEmployment: (agentId: AgentId, employed: boolean) => commit(revision => api.setEmployment(agentId, employed, revision)).then(() => undefined),
+    onOpenDirect: openDirect,
+    onView: (mode: 'tasks' | 'memory', agentId: AgentId): void => { actions.selectAgent(agentId); actions.setMode(mode); setProfileOpen(false) },
+    onEditRole: (definitionId: AgentDefinitionId): void => { actions.selectDefinition(definitionId); resetRevisionDraft(snapshot, definitionId); actions.setMode('colleagues'); setRoleManagementOpen(true); setProfileOpen(false) },
+  }
+
   return (
     <div className={embedded ? 'dsh-agent-group-organization-workspace' : 'dsh-agent-group-overlay-root'} role={embedded ? undefined : 'dialog'} aria-modal={embedded ? undefined : true} aria-label={t('workspace.title')}>
       <section className="dsh-agent-group-workbench">
         <header className="dsh-agent-group-topbar">
           <WorkspaceIcon />
-          <span className="dsh-agent-group-title">{t('workspace.title')}</span>
+          {!embedded ? <span className="dsh-agent-group-title">{t('workspace.title')}</span> : null}
           <nav className="dsh-agent-group-tabs" aria-label={t('workspace.views')}>
             <button type="button" className="dsh-agent-group-tab" aria-label={t('workspace.conversations')} aria-current={ui.mode === 'conversations' ? 'page' : undefined} data-active={ui.mode === 'conversations'} onClick={() => actions.setMode('conversations')}>{t('workspace.conversations')}</button>
             <button type="button" className="dsh-agent-group-tab" aria-label={t('workspace.colleagues')} aria-current={ui.mode === 'colleagues' ? 'page' : undefined} data-active={ui.mode === 'colleagues'} onClick={() => actions.setMode('colleagues')}>{t('workspace.colleagues')}</button>
@@ -388,14 +408,27 @@ export function WorkspaceOverlay({ useStore, actions, api, t, embedded = false, 
                   const text = draft.trim()
                   if (ui.selectedRoomId === undefined || text === '') return
                   const roomId = ui.selectedRoomId as RoomId
-                  if (await commit(revision => api.postMessage(roomId, text, parseRoomMentionIds(snapshot, roomId, text), revision))) setDraft('')
+                  const mentions = parseRoomMentionIds(snapshot, roomId, text)
+                  if (await commit(revision => api.postMessage(roomId, canonicalRoomMessageText(snapshot, text, mentions), mentions, revision))) setDraft('')
                 }}
                 onJoin={(agentId, memoryStart) => ui.selectedRoomId === undefined ? Promise.resolve() : commit(revision => api.joinRoom(ui.selectedRoomId as RoomId, agentId, memoryStart, revision)).then(() => undefined)}
                 onLeave={membershipId => commit(revision => api.leaveRoom(membershipId, revision)).then(() => undefined)}
                 onOpenDirect={openDirect}
+                onOpenColleague={openColleague}
+                onRenameRoom={name => ui.selectedRoomId === undefined ? Promise.resolve(false) : commit(revision => api.renameRoom(ui.selectedRoomId as RoomId, name, revision))}
                 t={t}
               />
-            : ui.mode === 'colleagues' ? <AgentWorkspace
+            : ui.mode === 'colleagues' ? <WorkspacePeople
+                snapshot={snapshot}
+                selectedAgentId={ui.selectedAgentId}
+                busy={ui.busy || readOnly}
+                roleManagementOpen={roleManagementOpen}
+                onRoleManagementOpen={setRoleManagementOpen}
+                onSelect={actions.selectAgent}
+                onCreate={(definitionId, name) => commit(revision => api.createAgent(definitionId, name, revision))}
+                profile={profileProps === undefined ? null : <WorkspaceColleagueProfile key={profileProps.agentId} {...profileProps} />}
+                t={t}
+                roleManagement={<AgentWorkspace
                 snapshot={snapshot}
                 activity={activity!}
                 selectedDefinitionId={ui.selectedDefinitionId}
@@ -465,7 +498,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t, embedded = false, 
                 onSetEmployment={(agentId, employed) => commit(revision => api.setEmployment(agentId, employed, revision)).then(() => undefined)}
                 onOpenDirect={openDirect}
                 t={t}
-              /> : ui.mode === 'tasks' ? <WorkspaceTasks
+              />} /> : ui.mode === 'tasks' ? <WorkspaceTasks
                 snapshot={snapshot}
                 activity={activitySnapshot}
                 api={api}
@@ -485,6 +518,7 @@ export function WorkspaceOverlay({ useStore, actions, api, t, embedded = false, 
           returnFocusRef={activityTriggerRef}
           t={t}
         /> : null}
+        {profileOpen && profileProps !== undefined ? <WorkspaceColleagueProfile key={`modal:${profileProps.agentId}`} {...profileProps} modal onClose={() => setProfileOpen(false)} /> : null}
       </section>
     </div>
   )
@@ -508,6 +542,8 @@ interface ChatWorkspaceProps {
   readonly onJoin: (agentId: AgentId, memoryStart: MembershipMemoryStart) => Promise<void>
   readonly onLeave: (membershipId: MembershipId) => Promise<void>
   readonly onOpenDirect: (agentId: AgentId) => Promise<void>
+  readonly onOpenColleague: (agentId: AgentId) => void
+  readonly onRenameRoom: (name: string) => Promise<boolean>
   readonly t: TranslateNS<'agentWorkspace'>
 }
 
@@ -528,6 +564,11 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
   const [memoryStartType, setMemoryStartType] = useState<'' | MembershipMemoryStart['type']>('')
   const [startSequence, setStartSequence] = useState('')
   const [endSequence, setEndSequence] = useState('')
+  const [renaming, setRenaming] = useState(false)
+  const [renamedName, setRenamedName] = useState(selectedRoom?.name ?? '')
+  const [membersOpen, setMembersOpen] = useState(false)
+  const messagesRef = useRef<HTMLDivElement>(null)
+  const followLatest = useRef(true)
   const latestSequence = snapshot.events.at(-1)?.sequence ?? 0
   const parsedStartSequence = Number(startSequence)
   const parsedEndSequence = Number(endSequence)
@@ -540,6 +581,10 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
         && parsedEndSequence <= latestSequence
       ? { type: 'event-range', startSequence: parsedStartSequence, endSequence: parsedEndSequence }
       : undefined
+
+  useEffect(() => {
+    if (followLatest.current && messagesRef.current !== null) messagesRef.current.scrollTop = messagesRef.current.scrollHeight
+  }, [messages.at(-1)?.id, props.liveTurns])
 
   useEffect(() => {
     if (!candidates.some(agent => agent.id === candidate)) {
@@ -603,21 +648,16 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
             <div className="dsh-agent-group-section-head">
               <span className="dsh-agent-group-section-title">{selectedRoom.kind === 'group' ? '# ' : ''}{roomLabel(snapshot, selectedRoomId, props.t)}</span>
               <span className="dsh-agent-group-muted">{selectedRoom.kind === 'direct' ? props.t('room.direct') : props.t('room.members', { count: members.length })}</span>
+              {selectedRoom.kind === 'group' ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={props.busy} aria-label={props.t('room.rename')} onClick={() => { setRenamedName(selectedRoom.name ?? ''); setRenaming(true) }}>{props.t('room.rename')}</button> : null}
+              <button type="button" className="dsh-agent-group-button dsh-agent-group-member-toggle" data-variant="ghost" aria-expanded={membersOpen} onClick={() => setMembersOpen(value => !value)}>{props.t('room.memberToggle')}</button>
             </div>
-            <div className="dsh-agent-group-messages">
-              {messages.map(event => {
-                const name = actorLabel(snapshot, event.actor, props.t)
-                const text = formatMessageText(snapshot, event.text ?? '')
-                return <article className="dsh-agent-group-message" key={event.id}>
-                  <div className="dsh-agent-group-avatar">{name.slice(0, 1).toUpperCase()}</div>
-                  <div className="dsh-agent-group-message-body">
-                    <div className="dsh-agent-group-message-meta"><strong>{name}</strong><span>#{event.sequence}</span></div>
-                    <div className="dsh-agent-group-message-text">
-                      {event.actor?.type === 'agent' ? <WorkspaceMarkdownMessage text={text} t={props.t} /> : text}
-                    </div>
-                  </div>
-                </article>
-              })}
+            {renaming ? <form className="dsh-agent-group-inline dsh-agent-group-rename" onSubmit={event => { event.preventDefault(); void props.onRenameRoom(renamedName.trim()).then(saved => { if (saved) setRenaming(false) }) }}>
+              <input className="dsh-agent-group-input" aria-label={props.t('room.name')} value={renamedName} onChange={event => setRenamedName(event.target.value)} autoFocus />
+              <button type="submit" className="dsh-agent-group-button" disabled={props.busy || !renamedName.trim()}>{props.t('room.saveName')}</button>
+              <button type="button" className="dsh-agent-group-button" data-variant="ghost" onClick={() => setRenaming(false)}>{props.t('room.cancel')}</button>
+            </form> : null}
+            <div ref={messagesRef} className="dsh-agent-group-messages" onScroll={event => { const target = event.currentTarget; followLatest.current = target.scrollHeight - target.scrollTop - target.clientHeight < 48 }}>
+              {messages.map(event => <WorkspaceChatMessage key={event.id} snapshot={snapshot} event={event} onOpenColleague={props.onOpenColleague} t={props.t} />)}
               {liveTurns.map(turn => (
                 <WorkspaceLiveTurn
                   key={turn.activityId}
@@ -649,7 +689,7 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
           </>}
       </main>
 
-      <aside className="dsh-agent-group-panel" aria-label={selectedRoom?.kind === 'direct' ? props.t('room.directTarget') : props.t('room.groupMembers')}>
+      <aside className="dsh-agent-group-panel dsh-agent-group-member-panel" data-open={membersOpen} aria-label={selectedRoom?.kind === 'direct' ? props.t('room.directTarget') : props.t('room.groupMembers')}>
         <div className="dsh-agent-group-section-head"><span className="dsh-agent-group-section-title">{selectedRoom?.kind === 'direct' ? props.t('room.directTarget') : props.t('room.groupMembers')}</span></div>
         <div className="dsh-agent-group-scroll">
           {selectedRoom?.kind === 'group' && candidates.length > 0 ? <div className="dsh-agent-group-card">
@@ -699,16 +739,17 @@ function ChatWorkspace(props: ChatWorkspaceProps) {
           <div className="dsh-agent-group-list">
             {members.map(agent => {
               const membership = Object.values(snapshot.memberships).find(item => item.roomId === selectedRoomId && item.agentId === agent.id && item.leftEventId === undefined)
-              return <div className="dsh-agent-group-list-button" key={agent.id} role="group" aria-label={agent.name}>
-                <span className="dsh-agent-group-dot" data-employed="true" />
-                <span>{agent.name}</span>
+              return <div className="dsh-agent-group-member-card" key={agent.id} role="group" aria-label={agent.name}>
+                <button type="button" className="dsh-agent-group-member-identity" data-agent-id={agent.id} onClick={() => props.onOpenColleague(agent.id)}><span className="dsh-agent-group-avatar" aria-hidden="true">{agent.name.slice(0, 1)}</span><span>{agent.name}</span></button>
                 <WorkspaceAgentRuntimeBadges agent={props.activity.agents[agent.id]} t={props.t} />
+                <div className="dsh-agent-group-member-actions">
                 {selectedRoom?.kind === 'group'
                   ? <button type="button" className="dsh-agent-group-button dsh-agent-group-right" data-variant="ghost" disabled={props.busy} onClick={() => void props.onOpenDirect(agent.id)}>{props.t('room.direct')}</button>
                   : null}
                 {selectedRoom?.kind === 'group' && membership !== undefined
                   ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={props.busy} onClick={() => void props.onLeave(membership.id)}>{props.t('room.remove')}</button>
                   : null}
+                </div>
               </div>
             })}
           </div>
@@ -757,7 +798,7 @@ function AgentWorkspace(props: AgentWorkspaceProps) {
   const agents = selected === undefined ? [] : Object.values(props.snapshot.agents).filter(agent => agent.definitionId === selected.id)
 
   return (
-    <div className="dsh-agent-group-body" data-mode="colleagues">
+    <div className="dsh-agent-group-body dsh-agent-group-role-body">
       <aside className="dsh-agent-group-panel">
         <div className="dsh-agent-group-section-head">
           <span className="dsh-agent-group-section-title">{props.t('agent.definitions')}</span>
@@ -766,7 +807,7 @@ function AgentWorkspace(props: AgentWorkspaceProps) {
         <div className="dsh-agent-group-scroll dsh-agent-group-list">
           {definitions.map(definition => {
             const count = Object.values(props.snapshot.agents).filter(agent => agent.definitionId === definition.id).length
-            return <button key={definition.id} type="button" className="dsh-agent-group-list-button" data-active={!props.creatingDefinition && definition.id === props.selectedDefinitionId} onClick={() => props.onSelectDefinition(definition.id)}>
+            return <button key={definition.id} type="button" className="dsh-agent-group-list-button" data-definition-id={definition.id} data-active={!props.creatingDefinition && definition.id === props.selectedDefinitionId} onClick={() => props.onSelectDefinition(definition.id)}>
               <BotIcon /><span>{definition.name}</span><small>{count}</small>
             </button>
           })}

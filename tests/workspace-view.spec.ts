@@ -249,14 +249,14 @@ describe('workspace UI view model', () => {
   const t = (key: string) => key
 
   it.each([
-    [zh, '会话'],
+    [zh, '聊天'],
     [en, 'Conversations'],
   ] as const)('announces the selected navigation view in both locales', (dictionary, selectedLabel) => {
     const fixture = workspaceFixture()
     const harness = componentHarness()
     const tree = harness.render(WorkspaceOverlay as unknown as TestComponent, {
       useStore: (selector: (state: unknown) => unknown) => selector({ open: true, mode: 'conversations', snapshot: fixture.state, busy: false }),
-      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
+      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
       api: {},
       t: translate(dictionary),
     })
@@ -271,7 +271,7 @@ describe('workspace UI view model', () => {
     const harness = componentHarness()
     const tree = harness.render(WorkspaceOverlay as unknown as TestComponent, {
       useStore: (selector: (state: unknown) => unknown) => selector({ open: true, mode: 'tasks', snapshot: fixture.state, busy: false }),
-      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
+      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
       api: {},
       t,
     })
@@ -287,7 +287,7 @@ describe('workspace UI view model', () => {
       close: vi.fn(),
       setMode: vi.fn(),
       selectRoom: vi.fn(),
-      selectDefinition: vi.fn(),
+      selectDefinition: vi.fn(), selectAgent: vi.fn(),
       setSnapshot: vi.fn(),
       setBusy: vi.fn(),
       setError: vi.fn(), setRetry: vi.fn(),
@@ -332,7 +332,7 @@ describe('workspace UI view model', () => {
         busy: false,
       }),
       actions: {
-        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
+        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
       },
       api: {},
       t,
@@ -363,7 +363,7 @@ describe('workspace UI view model', () => {
         busy: false,
       }),
       actions: {
-        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
+        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
       },
       api: {},
       t,
@@ -403,7 +403,7 @@ describe('workspace UI view model', () => {
       close: vi.fn(),
       setMode: vi.fn(),
       selectRoom: vi.fn(),
-      selectDefinition: vi.fn(),
+      selectDefinition: vi.fn(), selectAgent: vi.fn(),
       setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
       setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
       setError: vi.fn(), setRetry: vi.fn(),
@@ -481,7 +481,7 @@ describe('workspace UI view model', () => {
         busy: false,
       }),
       actions: {
-        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
+        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
       },
       api: {},
       t,
@@ -518,7 +518,7 @@ describe('workspace UI view model', () => {
       close: vi.fn(),
       setMode: vi.fn(),
       selectRoom: vi.fn(),
-      selectDefinition: vi.fn(),
+      selectDefinition: vi.fn(), selectAgent: vi.fn(),
       setSnapshot: vi.fn(),
       setBusy: vi.fn(),
       setError: vi.fn(), setRetry: vi.fn(),
@@ -556,7 +556,7 @@ describe('workspace UI view model', () => {
     const harness = componentHarness(stream)
     const tree = harness.render(WorkspaceOverlay as unknown as TestComponent, {
       useStore: (selector: (state: unknown) => unknown) => selector({ open: true, mode: 'conversations', selectedRoomId: fixture.roomId, snapshot: fixture.state, busy: false }),
-      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
+      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
       api: {}, t,
     })
     const live = harness.findRaw(tree, element => element.type === WorkspaceLiveTurn)
@@ -576,7 +576,7 @@ describe('workspace UI view model', () => {
       close: vi.fn(),
       setMode: vi.fn(),
       selectRoom: vi.fn(),
-      selectDefinition: vi.fn(),
+      selectDefinition: vi.fn(), selectAgent: vi.fn(),
       setSnapshot: vi.fn(),
       setBusy: vi.fn(),
       setError: vi.fn(), setRetry: vi.fn(),
@@ -635,7 +635,7 @@ describe('workspace UI view model', () => {
     const harness = componentHarness()
     harness.render(WorkspaceOverlay as unknown as TestComponent, {
       useStore: (selector: (state: unknown) => unknown) => selector({ open: true, mode: 'conversations', snapshot: fixture.state, busy: false }),
-      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
+      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
       api, t,
     })
     const subscription = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[0]
@@ -660,7 +660,7 @@ describe('workspace UI view model', () => {
       close: vi.fn(),
       setMode: vi.fn(),
       selectRoom: vi.fn(),
-      selectDefinition: vi.fn(),
+      selectDefinition: vi.fn(), selectAgent: vi.fn(),
       setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
       setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
       setError: vi.fn((error: unknown) => { ui['error'] = error }),
@@ -707,7 +707,7 @@ describe('workspace UI view model', () => {
     const harness = componentHarness()
     const props = {
       useStore: (selector: (state: unknown) => unknown) => selector(ui),
-      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
+      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
       api, t,
     }
     harness.render(WorkspaceOverlay as unknown as TestComponent, props)
@@ -768,7 +768,7 @@ describe('workspace UI view model', () => {
       close: vi.fn(),
       setMode: vi.fn(),
       selectRoom: vi.fn(),
-      selectDefinition: vi.fn(),
+      selectDefinition: vi.fn(), selectAgent: vi.fn(),
       setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
       setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
       setError: vi.fn((error: unknown) => { ui['error'] = error }),
@@ -835,7 +835,7 @@ describe('workspace UI view model', () => {
     }
     const actions = {
       close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(),
-      selectDefinition: vi.fn((definitionId: unknown) => { ui['selectedDefinitionId'] = definitionId }),
+      selectDefinition: vi.fn((definitionId: unknown) => { ui['selectedDefinitionId'] = definitionId }), selectAgent: vi.fn(),
       setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
       setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
       setError: vi.fn((error: unknown) => { ui['error'] = error }),
@@ -920,7 +920,7 @@ describe('workspace UI view model', () => {
       busy: false,
     }
     const actions = {
-      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(),
+      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(),
       setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
     }
     const harness = componentHarness()
@@ -956,7 +956,7 @@ describe('workspace UI view model', () => {
       busy: false,
     }
     const actions = {
-      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(),
+      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(),
       setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
     }
     const harness = componentHarness()
@@ -998,7 +998,7 @@ describe('workspace UI view model', () => {
     }
     const actions = {
       close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(),
-      selectDefinition: vi.fn((definitionId: unknown) => { ui['selectedDefinitionId'] = definitionId }),
+      selectDefinition: vi.fn((definitionId: unknown) => { ui['selectedDefinitionId'] = definitionId }), selectAgent: vi.fn(),
       setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
     }
     const harness = componentHarness()
@@ -1016,7 +1016,7 @@ describe('workspace UI view model', () => {
     tree = render()
     const definitions = harness.findAll(
       tree,
-      element => element.type === 'button' && element.props['className'] === 'dsh-agent-group-list-button',
+      element => element.type === 'button' && element.props['data-definition-id'] !== undefined,
     )
     expect(definitions).toHaveLength(2)
     ;(definitions[1]!.props['onClick'] as () => void)()
@@ -1037,7 +1037,7 @@ describe('workspace UI view model', () => {
       busy: false,
     }
     const actions = {
-      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(),
+      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(),
       setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
       setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
       setError: vi.fn(), setRetry: vi.fn(),
@@ -1098,7 +1098,7 @@ describe('workspace UI view model', () => {
       busy: false,
     }
     const actions = {
-      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(),
+      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(),
       setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
       setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
       setError: vi.fn((error: unknown) => { ui['error'] = error }),
@@ -1147,7 +1147,7 @@ describe('workspace UI view model', () => {
       open: true, mode: 'conversations', selectedRoomId: fixture.roomId, snapshot: fixture.state, busy: false,
     }
     const actions = {
-      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(),
+      close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(),
       setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
       setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
       setError: vi.fn((error: unknown) => { ui['error'] = error }),

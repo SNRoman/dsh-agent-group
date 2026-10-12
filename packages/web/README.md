@@ -22,9 +22,19 @@ Portable export remains deliberately outside the Browser. v0.4.0 has no import, 
 
 Unreleased source adds an organization directory above the existing workbench. It provides create, rename, switch, archive with an explicit stop-or-wait choice, and reopen. Every workbench API and subscription is bound to an explicit organization identity; switching cancels the previous requests and resets drafts, entity selection and live projections. Archived workbenches retain history browsing but disable mutation controls.
 
+Organization selection stays in a compact header; **Manage organization** opens creation, naming, archive and backup controls. It opens automatically for an empty directory and closes before import/export confirmation. The workbench uses the Harness theme for controls, focus indicators and primary, secondary and destructive actions. Wide windows retain separate selection and content panes; narrow windows stack them without hiding room, colleague or memory selectors. The Tasks pane scrolls complete briefs and results together instead of clipping the editor into a second limited-height region.
+
 Export displays a sensitive-history warning before downloading the JSON file. Import first reads and validates a chosen file and shows its source label/version, counts and excluded local Session bindings. The user can edit the new label before confirming creation of a separate organization. Confirmation keeps the current selection and never overwrites it; select the restored organization to inspect or reopen it. Imported history does not automatically start any employee or task.
 
 The new directory, recovery controls and company workflow are development-source features; installing the existing registry `0.4.0` does not enable them. The transport remains the authenticated DSH Connection RPC path, not a second server or replacement core store. Business failures are decoded from its preserved error codes and exact details, including stale aggregate, workflow and draft revisions; malformed or unknown errors remain generic failures.
+
+## Chat-first colleagues development
+
+The development workbench displays human and colleague messages as distinct bubbles. Author avatars, author names, admitted mentions and group-member names open the same colleague details. Mention decoration uses Markdown text positions, excludes code, existing links and email addresses, and binds clicks to persisted recipient identities. Browser-authored mentions store stable identity markers so renaming a colleague does not retarget previous messages. Group titles have an inline rename editor; the room identity, messages and memberships remain unchanged.
+
+Colleagues is a directory of named people, with current pinned responsibilities and personal name editing. Work and memory actions share that person's selection. Shared role templates are secondary and collapsed; revision history is also collapsed. Role editing retains the explicit synchronize-none/all/subset choice. A colleague rename changes neither their pinned role nor their personal memory. Narrow windows expose group members through a panel toggle; member actions wrap independently of long names. Profile dialogs support Escape, focus containment and returning focus to the identity that opened them.
+
+Chat-driven work creation and strong message recall are separate development tasks and are not enabled by the identity UI alone.
 
 ## Company workflow development
 

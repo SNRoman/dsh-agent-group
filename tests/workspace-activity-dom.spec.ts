@@ -132,6 +132,7 @@ function WorkspaceOverlayHarness({ api, log }: { readonly api: WorkspaceApiClien
     setMode: (mode: WorkspaceUiState['mode']) => setUi(current => ({ ...current, mode })),
     selectRoom: () => {},
     selectDefinition: () => {},
+    selectAgent: () => {},
     openActivityDrawer: () => setUi(current => ({ ...current, activityDrawerOpen: true })),
     closeActivityDrawer: () => setUi(current => ({ ...current, activityDrawerOpen: false })),
     selectActivity: () => {},

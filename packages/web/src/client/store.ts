@@ -2,7 +2,7 @@
 
 import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-store'
 import type { WorkspaceApiError } from './api.ts'
-import type { AgentDefinitionId, RoomId, WorkspaceActivityId, WorkspaceSnapshot } from './contracts.ts'
+import type { AgentDefinitionId, AgentId, RoomId, WorkspaceActivityId, WorkspaceSnapshot } from './contracts.ts'
 import { selectNewerWorkspaceSnapshot } from './task-view-model.ts'
 
 export type WorkspaceViewMode = 'conversations' | 'colleagues' | 'tasks' | 'memory'
@@ -13,6 +13,7 @@ export interface WorkspaceUiState {
   selectedWorkspaceId?: string
   selectedRoomId?: RoomId
   selectedDefinitionId?: AgentDefinitionId
+  selectedAgentId?: AgentId
   activityDrawerOpen?: boolean
   selectedActivityId?: WorkspaceActivityId
   snapshot?: WorkspaceSnapshot
@@ -34,6 +35,7 @@ type WorkspaceUiActions = {
   setMode: (draft: WorkspaceUiState, mode: WorkspaceViewMode) => void
   selectRoom: (draft: WorkspaceUiState, roomId: RoomId | undefined) => void
   selectDefinition: (draft: WorkspaceUiState, definitionId: AgentDefinitionId | undefined) => void
+  selectAgent: (draft: WorkspaceUiState, agentId: AgentId | undefined) => void
   openActivityDrawer: (draft: WorkspaceUiState, activityId?: WorkspaceActivityId | undefined) => void
   closeActivityDrawer: (draft: WorkspaceUiState) => void
   selectActivity: (draft: WorkspaceUiState, activityId: WorkspaceActivityId | undefined) => void
@@ -54,6 +56,7 @@ export function createWorkspaceUiStore(): EngineStoreHandle<WorkspaceUiState, Wo
         delete draft.snapshot
         delete draft.selectedRoomId
         delete draft.selectedDefinitionId
+        delete draft.selectedAgentId
         delete draft.selectedActivityId
         delete draft.activityDrawerOpen
         delete draft.retry
@@ -71,6 +74,10 @@ export function createWorkspaceUiStore(): EngineStoreHandle<WorkspaceUiState, Wo
       selectDefinition: (draft, definitionId) => {
         if (definitionId === undefined) delete draft.selectedDefinitionId
         else draft.selectedDefinitionId = definitionId
+      },
+      selectAgent: (draft, agentId) => {
+        if (agentId === undefined) delete draft.selectedAgentId
+        else draft.selectedAgentId = agentId
       },
       openActivityDrawer: (draft, activityId) => {
         draft.activityDrawerOpen = true

@@ -184,7 +184,7 @@ describe('Agent Workspace locale runtime', () => {
   })
 
   it.each([
-    ['zh', ['智能体组织', '打开智能体组织', '会话', '同事', '任务', '记忆', '打开运行状态', '正在读取智能体组织…', '正在回复…', '正在思考…', '组织请求失败。']],
+    ['zh', ['智能体组织', '打开智能体组织', '聊天', '同事', '工作', '记忆', '打开运行状态', '正在读取智能体组织…', '正在回复…', '正在思考…', '组织请求失败。']],
     ['en', ['Agent Organization', 'Open Agent Organization', 'Conversations', 'Colleagues', 'Tasks', 'Memory', 'Open runtime activity', 'Loading Agent Organization…', 'Replying…', 'Thinking…', 'Organization request failed.']],
   ] as const)('renders footer, overlay, live, empty, error and accessibility copy in %s', (localeId, expected) => {
     const locale = new LocaleRuntime(new Context())
@@ -192,7 +192,7 @@ describe('Agent Workspace locale runtime', () => {
     const registered = registerPlugin(locale)
     const t = locale.bind('agentWorkspace' as never)
     const render = renderHarness()
-    const actions = { open: vi.fn(), close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn() }
+    const actions = { open: vi.fn(), close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn() }
     const footer = WorkspaceFooterAction({ wide: true, actions, t } as never)
     const overlay = render(WorkspaceOverlay as unknown as TestComponent, {
       useStore: (select: (state: unknown) => unknown) => select({ open: true, mode: 'conversations', busy: false, error: new Error('upstream detail') }),
@@ -302,7 +302,7 @@ describe('Agent Workspace locale runtime', () => {
     })
     const overlay = render(WorkspaceOverlay as unknown as TestComponent, {
       useStore: (select: (state: unknown) => unknown) => select({ open: true, mode: 'conversations', busy: false, error }),
-      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn() },
+      actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn() },
       api: {},
       t,
     })

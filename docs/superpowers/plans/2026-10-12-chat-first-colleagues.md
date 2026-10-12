@@ -48,10 +48,10 @@
 
 **Interfaces:** Shared UI `selectedAgentId?: AgentId` and `selectAgent(agentId)`; `WorkspaceColleagueProfile` consumes snapshot, agentId, API, t and navigation callbacks. `WorkspaceChatMessage` consumes persisted event and an identity-opening callback; recognized mentions remain tied to event.mentions.
 
-- [ ] DOM 测试点击作者、头像、@ 与成员身份打开同一人；群标题能保存名称；姓名修改不改岗位；长姓名按钮可达；代码块、邮箱不变为提及；名称冲突不改变路由。
-- [ ] 运行新增 DOM 测试，预期 FAIL；将它加入 browser-source Vitest project。
-- [ ] 拆出身份详情与消息组件，保留 Markdown renderer；职责优先、历史折叠；岗位管理作为辅助入口；输入操作支持键盘和窄屏。
-- [ ] 同一 DOM 测试 PASS；`pnpm verify:client-copy`、`pnpm typecheck` PASS。
+- [x] DOM 测试点击作者、头像、@ 与成员身份打开同一人；群标题能保存名称；姓名修改不改岗位；长姓名按钮可达；代码块、邮箱不变为提及；名称冲突不改变路由。
+- [x] 运行新增 DOM 测试，预期 FAIL；将它加入 browser-source Vitest project。
+- [x] 拆出身份详情与消息组件，保留 Markdown renderer；职责优先、历史折叠；岗位管理作为辅助入口；输入操作支持键盘和窄屏。
+- [x] 同一 DOM 测试 PASS；`pnpm verify:client-copy`、`pnpm typecheck` PASS。
 - [ ] 更新 web README、提交与记录验证。
 
 ### Task 3: 后继通信数据、来源与失效读取

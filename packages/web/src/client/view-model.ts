@@ -2,10 +2,76 @@
 
 import type { AgentId, AgentInstanceView, RoomId, WorkspaceEventView, WorkspaceSnapshot } from './contracts.ts'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
+import { fromMarkdown } from 'mdast-util-from-markdown'
 
 const MENTION_RE = /<@([^>\s]+)>/g
 const DISPLAY_MENTION_BOUNDARY = /[\s,，。.!！？?;；:：、)）\]】}》>"'“”‘’]/u
 const ALL_MENTION = '@all'
+
+/** One admitted mention in authored text, excluding code, links and email addresses. */
+export interface RoomMessageMentionSpan { readonly start: number; readonly end: number; readonly agentId: AgentId; readonly label: string }
+
+interface MarkdownNode {
+  readonly type: string
+  readonly position?: { readonly start: { readonly offset?: number | undefined }; readonly end: { readonly offset?: number | undefined } } | undefined
+  readonly children?: readonly MarkdownNode[] | undefined
+}
+
+/** @param state Current display identities. @param text Original authored Markdown. @param mentionedIds Persisted recipient identities. @returns Nonoverlapping source spans safe for interactive identity labels. */
+export function roomMessageMentionSpans(state: WorkspaceSnapshot, text: string, mentionedIds: readonly AgentId[]): RoomMessageMentionSpan[] {
+  const vocabulary = new Map<string, Set<AgentId>>()
+  const add = (token: string, id: AgentId): void => {
+    const owners = vocabulary.get(token) ?? new Set<AgentId>()
+    owners.add(id)
+    vocabulary.set(token, owners)
+  }
+  for (const id of mentionedIds) {
+    const agent = state.agents[id]
+    if (agent === undefined) continue
+    add(`<@${id}>`, id)
+    add(`@${agent.name}`, id)
+    const role = state.definitions[agent.definitionId]?.name
+    if (role !== undefined) add(`@${role}`, id)
+  }
+  const spans: RoomMessageMentionSpan[] = []
+  for (const { start, end } of markdownTextRanges(text)) {
+    for (const [token, owners] of vocabulary) {
+      if (owners.size !== 1) continue
+      const agentId = [...owners][0]!
+      let index = text.indexOf(token, start)
+      while (index >= start && index + token.length <= end) {
+        const before = text[index - 1]
+        const after = text[index + token.length]
+        if (token.startsWith('<@') || ((before === undefined || !/[A-Za-z0-9_@./\\-]/u.test(before)) && (after === undefined || DISPLAY_MENTION_BOUNDARY.test(after)))) {
+          spans.push({ start: index, end: index + token.length, agentId, label: `@${state.agents[agentId]!.name}` })
+        }
+        index = text.indexOf(token, index + token.length)
+      }
+    }
+  }
+  const admitted: RoomMessageMentionSpan[] = []
+  for (const span of spans.sort((a, b) => a.start - b.start || b.end - a.end)) {
+    if (span.start >= (admitted.at(-1)?.end ?? 0)) admitted.push(span)
+  }
+  return admitted
+}
+
+/** @param state Current identities. @param text Composer text. @param mentionedIds Resolved recipients. @returns Authored text with stable identity markers only for recognized mentions. */
+export function canonicalRoomMessageText(state: WorkspaceSnapshot, text: string, mentionedIds: readonly AgentId[]): string {
+  let canonical = text
+  for (const span of roomMessageMentionSpans(state, text, mentionedIds).reverse()) canonical = `${canonical.slice(0, span.start)}<@${span.agentId}>${canonical.slice(span.end)}`
+  return canonical
+}
+
+/** @param state Current identities. @param text Original Markdown. @param mentionedIds Persisted recipients. @returns Markdown whose admitted text mentions use local profile links, leaving code and authored links unchanged. */
+export function linkRoomMessageMentions(state: WorkspaceSnapshot, text: string, mentionedIds: readonly AgentId[]): string {
+  let linked = text
+  for (const span of roomMessageMentionSpans(state, text, mentionedIds).reverse()) {
+    const label = span.label.replace(/[\\`*_{}[\]()!<>]/g, '\\$&')
+    linked = `${linked.slice(0, span.start)}[${label}](#dsh-agent-group-person/${encodeURIComponent(span.agentId)})${linked.slice(span.end)}`
+  }
+  return linked
+}
 
 /** Active employed members of one room in durable membership order. */
 export function activeRoomMembers(state: WorkspaceSnapshot, roomId: RoomId): AgentInstanceView[] {
@@ -66,52 +132,7 @@ export function parseRoomMentionIds(state: WorkspaceSnapshot, roomId: RoomId, te
     return members.map(member => member.id)
   }
 
-  const memberIds = new Set(members.map(member => member.id))
-  const hits: Array<{ index: number; id: AgentId }> = []
-
-  for (const match of text.matchAll(MENTION_RE)) {
-    const rawId = match[1]
-    if (rawId === undefined) continue
-    const id = rawId as AgentId
-    if (memberIds.has(id)) hits.push({ index: match.index, id })
-  }
-
-  const aliases = new Map<string, Set<AgentId>>()
-  const addAlias = (alias: string | undefined, id: AgentId): void => {
-    if (alias === undefined || alias.trim() === '') return
-    const owners = aliases.get(alias) ?? new Set<AgentId>()
-    owners.add(id)
-    aliases.set(alias, owners)
-  }
-  for (const member of members) {
-    addAlias(member.name, member.id)
-    addAlias(state.definitions[member.definitionId]?.name, member.id)
-  }
-
-  for (const [alias, owners] of aliases) {
-    if (owners.size !== 1) continue
-    const id = [...owners][0]
-    if (id === undefined) continue
-    const token = `@${alias}`
-    let from = 0
-    while (from < text.length) {
-      const index = text.indexOf(token, from)
-      if (index < 0) break
-      const after = text[index + token.length]
-      if (after === undefined || DISPLAY_MENTION_BOUNDARY.test(after)) hits.push({ index, id })
-      from = index + token.length
-    }
-  }
-
-  hits.sort((left, right) => left.index - right.index)
-  const seen = new Set<AgentId>()
-  const ids: AgentId[] = []
-  for (const hit of hits) {
-    if (seen.has(hit.id)) continue
-    seen.add(hit.id)
-    ids.push(hit.id)
-  }
-  return ids
+  return [...new Set(roomMessageMentionSpans(state, text, members.map(member => member.id)).map(span => span.agentId))]
 }
 
 /** Append the visible `@name` token used by the composer without leaking ids. */
@@ -143,13 +164,28 @@ export function actorLabel(state: WorkspaceSnapshot, actor: WorkspaceEventView['
 }
 
 function containsDisplayToken(text: string, token: string): boolean {
-  let from = 0
-  while (from < text.length) {
-    const index = text.indexOf(token, from)
-    if (index < 0) return false
-    const after = text[index + token.length]
-    if (after === undefined || DISPLAY_MENTION_BOUNDARY.test(after)) return true
-    from = index + token.length
+  for (const { start, end } of markdownTextRanges(text)) {
+    let index = text.indexOf(token, start)
+    while (index >= start && index + token.length <= end) {
+      const before = text[index - 1]
+      const after = text[index + token.length]
+      if ((before === undefined || !/[A-Za-z0-9_@./\\-]/u.test(before)) && (after === undefined || DISPLAY_MENTION_BOUNDARY.test(after))) return true
+      index = text.indexOf(token, index + token.length)
+    }
   }
   return false
+}
+
+function markdownTextRanges(text: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = []
+  const nodes: MarkdownNode[] = [fromMarkdown(text)]
+  while (nodes.length > 0) {
+    const node = nodes.pop()!
+    if (['link', 'linkReference', 'image', 'imageReference', 'code', 'inlineCode', 'html'].includes(node.type)) continue
+    if (node.children !== undefined) nodes.push(...node.children)
+    const start = node.position?.start.offset
+    const end = node.position?.end.offset
+    if (node.type === 'text' && start !== undefined && end !== undefined) ranges.push({ start, end })
+  }
+  return ranges
 }

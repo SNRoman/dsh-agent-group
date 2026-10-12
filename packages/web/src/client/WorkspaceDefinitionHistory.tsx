@@ -224,8 +224,8 @@ export function WorkspaceDefinitionHistory(props: WorkspaceDefinitionHistoryProp
       </div>
     </section>
 
-    <section className="dsh-agent-group-card">
-      <div className="dsh-agent-group-card-head"><strong>{props.t('history.title')}</strong></div>
+    <details className="dsh-agent-group-card" data-revision-history>
+      <summary>{props.t('history.title')}</summary>
       <div ref={historyStatusTarget} role="status" tabIndex={-1} aria-label={props.t('history.title')} className={displayedHistoryState === 'loading' ? 'dsh-agent-group-empty' : undefined}>{displayedHistoryState === 'loading' ? props.t('history.loading') : null}</div>
       {displayedHistoryState === 'error' ? <div role="alert" className="dsh-agent-group-error">{props.t('history.error')} <button type="button" className="dsh-agent-group-button" onClick={() => setHistoryVersion(value => value + 1)}>{props.t('workspace.retry')}</button></div> : null}
       {displayedHistoryState === 'ready' && history.length === 0 ? <div className="dsh-agent-group-empty">{props.t('history.empty')}</div> : null}
@@ -241,7 +241,7 @@ export function WorkspaceDefinitionHistory(props: WorkspaceDefinitionHistoryProp
         }).join(props.t('history.listSeparator')) })}</div>
         <button ref={element => { if (element === null) historyTriggers.current.delete(item.id); else historyTriggers.current.set(item.id, element) }} type="button" className="dsh-agent-group-button" aria-label={props.t('history.synchronizeNamed', { number: item.number })} disabled={props.api.readOnly} onClick={event => { laterTrigger.current = event.currentTarget; setLaterRevisionId(item.id); setLaterAgentIds([]); setLaterState('idle') }}>{props.t('history.synchronize')}</button>
       </article>) : null}</div>
-    </section>
+    </details>
 
     {saveOpen ? <div role="dialog" aria-modal="true" aria-label={props.t('history.saveDialog')} className="dsh-agent-group-modal" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); dismissSaveAsNone() } }}>
       <div className="dsh-agent-group-modal-card">

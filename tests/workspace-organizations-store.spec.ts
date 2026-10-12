@@ -15,7 +15,7 @@ describe('organization UI store', () => {
     expect(actions['selectWorkspace']).toBeTypeOf('function')
     actions['selectWorkspace']!(state, 'alpha' as never)
     actions['setSnapshot']!(state, snapshot('alpha', 100) as never)
-    state.selectedRoomId = 'same-room'; state.selectedDefinitionId = 'same-definition'; state.activityDrawerOpen = true; state.selectedActivityId = 'same-activity'; state.retry = { stale: true, refreshed: true }; state.busy = true; state.error = { kind: 'unexpected' }
+    state.selectedRoomId = 'same-room'; state.selectedDefinitionId = 'same-definition'; state.selectedAgentId = 'same-person'; state.activityDrawerOpen = true; state.selectedActivityId = 'same-activity'; state.retry = { stale: true, refreshed: true }; state.busy = true; state.error = { kind: 'unexpected' }
     actions['selectWorkspace']!(state, 'beta' as never)
     expect(state).toEqual({ open: false, mode: 'conversations', busy: false, selectedWorkspaceId: 'beta' })
     actions['setSnapshot']!(state, snapshot('beta', 1) as never)
