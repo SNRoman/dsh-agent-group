@@ -7,7 +7,7 @@ import { storedWorkspaceSchema } from './workspace-record.ts'
 
 export { workspaceStateSchema } from './workspace-state-schema.ts'
 
-/** One-table storage declaration: every workspace mutation replaces its aggregate atomically. */
+/** One-table storage declaration: successor records commit aggregate and workflow atomically. */
 export const agentWorkspaceSpec = defineDomain({
   name: 'agent_workspace',
   version: 0,

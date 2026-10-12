@@ -1,6 +1,8 @@
 /** Browser adapter over this plugin's isolated Connection RPC channel. */
 
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
+import { WorkflowApiError, assertWorkflowRpcError } from './workflow-api.ts'
+import type { WorkflowEndpoint } from './workflow-contracts.ts'
 import { WORKSPACE_EVENT_TYPES } from './contracts.ts'
 import type {
   AgentDefinitionId, AgentId, AssignHumanTaskResultView, ChildRunId, CreateDefinitionInput,
@@ -97,6 +99,15 @@ export class WorkspaceApi {
       if (snapshot.workspaceId !== this.workspaceId) throw invalid('organization scope')
       return snapshot
     })
+  }
+
+  /** @param endpoint Workflow command or read. @param payload Caller fields. @param signal Cancellation. @returns Raw scoped value for workflow validation. */
+  async callWorkflow(endpoint: WorkflowEndpoint | 'workflow/snapshot' | 'workflow/company-template/preview', payload: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<unknown> {
+    if (this.workspaceId === undefined) throw new Error('Agent Workspace requires a selected organization')
+    if (Object.keys(payload).some(key => ['workspaceId', 'actor', 'actorAgentId', 'humanId', 'occurredAt', 'source'].includes(key))) throw new Error('Agent Workspace workflow payload contains Host-owned fields')
+    const result = await this.connection.rpc.call(CHANNEL, endpoint, { ...payload, workspaceId: this.workspaceId }, signal)
+    if (!result.ok) throw new WorkflowApiError(assertWorkflowRpcError(result.error))
+    return result.value
   }
 
   runtimeStatus(signal?: AbortSignal): Promise<WorkspaceRuntimeStatus> {
@@ -616,10 +627,15 @@ function assertMemoryStart(value: MembershipMemoryStart): void {
   }
 }
 
-function assertWorkspaceRpcError(value: unknown): WorkspaceRpcError {
-  if (!isRecord(value) || !hasExactKeys(value, ['kind', 'code', 'message', 'details'])
-    || typeof value['message'] !== 'string' || !isRecord(value['details']) || !isWorkspaceRpcErrorDetails(value)) return internalError()
-  return structuredClone(value) as WorkspaceRpcError
+/** @param value Host error or Connection-decoded fields. @returns Validated classification, or a safe internal error. */
+export function assertWorkspaceRpcError(value: unknown): WorkspaceRpcError {
+  if (!isRecord(value) || !(hasExactKeys(value, ['kind', 'code', 'message', 'details']) || hasExactKeys(value, ['code', 'message', 'details']))
+    || typeof value['message'] !== 'string' || !isRecord(value['details'])) return internalError()
+  const kind = isOneOf(value['code'], ['bad-request', 'cancelled', 'internal']) ? value['code'] : 'business'
+  if (Object.hasOwn(value, 'kind') && value['kind'] !== kind) return internalError()
+  const error = { ...value, kind }
+  if (!isWorkspaceRpcErrorDetails(error)) return internalError()
+  return structuredClone(error) as WorkspaceRpcError
 }
 
 function isWorkspaceRpcErrorDetails(value: Record<string, unknown>): boolean {

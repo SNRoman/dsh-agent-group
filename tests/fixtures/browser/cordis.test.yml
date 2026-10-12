@@ -29,8 +29,8 @@
     - id: agent-workspace-scripted-llm
       name: './scripted-llm.ts'
 
-    # This profile-only setup seeds a human task because the Browser product
-    # does not yet expose formal-task creation.  The employee itself invokes
-    # its registered tools through the normal agent loop.
+    # This profile-only setup seeds a human task with passive room memory.
+    # The employee invokes registered tools through the normal agent loop;
+    # Browser workflow tasks use their explicit human confirmation controls.
     - id: agent-workspace-task-tools-profile
       name: './task-tools-profile.ts'

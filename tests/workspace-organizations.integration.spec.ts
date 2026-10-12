@@ -17,6 +17,7 @@ import { assignHumanTask, recordChildRunStarted } from '../packages/host/src/tas
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { TaskDeliveryCoordinator } from '../packages/host/src/task-delivery-coordinator.ts'
 import { acceptTaskDelivery, inspectTaskDelivery, startTaskDelivery } from '../packages/host/src/task-delivery.ts'
+import { createInitialWorkflowState } from '../packages/host/src/workflow.ts'
 import type { WorkspaceTurnOutcome } from '../packages/host/src/turn-tracker.ts'
 
 const roots: string[] = []
@@ -499,7 +500,7 @@ describe('durable independent organizations', () => {
     await first.dispose()
     const stored = JSON.parse(await readFile(join(first.root, 'agent_workspace.json'), 'utf8'))
     expect(stored.unit.version).toBe(0)
-    expect(stored.tables.workspaces[created.descriptor.id]).toMatchObject({ recordVersion: 1, descriptor: { label: '新名字' }, aggregate: { workspaceId: created.descriptor.id } })
+    expect(stored.tables.workspaces[created.descriptor.id]).toMatchObject({ recordVersion: 2, descriptor: { label: '新名字' }, aggregate: { workspaceId: created.descriptor.id }, workflow: createInitialWorkflowState() })
     const restarted = await boot(first.root)
     try { expect(restarted.service.listOrganizations().find(entry => entry.descriptor.id === created.descriptor.id)?.descriptor.label).toBe('新名字') }
     finally { await restarted.dispose() }

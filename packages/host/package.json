@@ -42,6 +42,10 @@
       "types": "./lib/types/workspace-portable.d.ts",
       "default": "./lib/types/workspace-portable.js"
     },
+    "./workflow-contract": {
+      "types": "./lib/types/workflow-contract.d.ts",
+      "default": "./lib/types/workflow-contract.js"
+    },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },

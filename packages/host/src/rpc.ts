@@ -1,6 +1,7 @@
 /** Plugin-owned RPC contract for the browser workspace UI. */
 
 import { z } from 'zod'
+import type { CompanyTemplatePreview, CompanyTemplateRevisionId, WorkflowCommand, WorkflowEndpoint, WorkflowExpectedRevisions, WorkflowMutationResult, WorkflowMutationValueMap, WorkflowOperationId, WorkflowSnapshot } from './workflow-contract.ts'
 import { MessageId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { WorkspaceBusinessError } from './errors.ts'
@@ -56,6 +57,12 @@ export interface WorkspaceMutationResult<Value> {
 
 /** Minimal service face required by the transport adapter. */
 export interface WorkspaceRpcService {
+  /** @returns Detached workflow paired with its aggregate revision; archived records remain readable. */
+  workflowSnapshot(): WorkflowSnapshot
+  /** @param request Both revisions and durable retry identity. @param command Human action. @param signal Precommit cancellation. @returns Committed receipt; replay performs no delivery. */
+  executeWorkflow<K extends WorkflowEndpoint>(request: WorkflowExpectedRevisions & { readonly operationId: WorkflowOperationId }, command: WorkflowCommand<K>, signal?: AbortSignal): Promise<WorkflowMutationResult<WorkflowMutationValueMap[K]>>
+  /** @param expected Displayed revisions. @param id Immutable configuration revision. @returns Validated preview without writing or materializing employees. */
+  previewCompanyTemplate(expected: WorkflowExpectedRevisions, id: CompanyTemplateRevisionId): CompanyTemplatePreview
   snapshot(): WorkspaceState
   runtimeStatus(): WorkspaceRuntimeStatus
   activitySnapshot(): WorkspaceActivitySnapshot

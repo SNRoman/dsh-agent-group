@@ -2,7 +2,7 @@
 
 Agent Organization（智能体组织）is a persistent organization of AI colleagues for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Reusable agent roles become named colleagues with employment history and unified personal memory. Colleagues join rooms, remember admitted events even while silent, reply to mentions, receive human-authorized tasks, and run one-shot child agents. The npm package name remains `dsh-agent-group`.
 
-This branch contains unreleased organization-recovery development. Registry version `0.4.0` remains the released single-organization product; installing it does not enable the multi-organization or Browser recovery features described below. Package versions and DSH compatibility ranges have not been changed.
+This branch contains unreleased organization-recovery and company-workflow development. Registry version `0.4.0` remains the released single-organization product; installing it does not enable the development features described below. Package versions and DSH compatibility ranges have not been changed.
 
 ## Features
 
@@ -20,6 +20,7 @@ This branch contains unreleased organization-recovery development. Registry vers
 - **Memory with sources** — colleagues can search their own admitted event history by keyword and read original events on demand, with source and event identifiers for follow-up. Room replies and formal tasks draw on the same personal history.
 - **Independent organizations (development)** — create, rename and select persistent organizations with separate colleagues, rooms, tasks, personal memory, runtime streams and DSH sessions. Identical internal entity IDs in different organizations do not select the same employee.
 - **Recoverable organizations (development)** — archive with an explicit stop-or-wait choice, reopen after work settles, and export or restore through the Browser. Restoration creates a new organization after a read-only preview and human confirmation; it never replaces the source or restores its DSH sessions.
+- **Company workflow (development)** — prepare drafts and reusable task/company templates, explicitly confirm an assignee, and register, review or hand off exact task results. Employee proposals await human confirmation; templates and handoffs do not grant authority or start work automatically.
 - **Forward compatibility export** — the read-only `export:forward-v1` command creates a canonical, checksummed handoff for a future importer while leaving the source storage untouched. Version `0.4.0` does not include an importer.
 
 ## Requirements
@@ -84,7 +85,7 @@ Users should normally install only `dsh-agent-group`; the two scoped packages ar
 
 ## Runtime integration
 
-The Host service is exposed as `ctx.agentWorkspace`. Development source stores each organization descriptor and aggregate in one versioned record in the existing DSH storage-domain stack. `ctx.agentWorkspace.forWorkspace(id)` selects a fixed organization runtime; it does not read the Browser's current selection. Optional Harness services such as `agents`, `subagents`, and `connection` remain dynamically attached.
+The Host service is exposed as `ctx.agentWorkspace`. Development source stores each organization descriptor, aggregate and workflow in one versioned record in the existing DSH storage-domain stack. `ctx.agentWorkspace.forWorkspace(id)` selects a fixed organization runtime; it does not read the Browser's current selection. Optional Harness services such as `agents`, `subagents`, and `connection` remain dynamically attached.
 
 The Browser transport uses the existing Harness Connection RPC service on the plugin-local Agent Workspace channel. There is no second HTTP/WebSocket server, no core API interception, and no replacement of the standard Harness conversation store.
 
@@ -98,15 +99,25 @@ Runtime activity is intentionally ephemeral. The durable task attempt and result
 
 ## Organization recovery (development)
 
-Use the organization directory at the top of the overlay to create, rename or switch organizations. Switching clears entity selection and drafts and cancels the old organization's subscriptions and refreshes. The original unversioned `local` record is validated and wrapped once on startup without changing its business history or Session bindings; the storage domain remains version `0`.
+Use the organization directory at the top of the overlay to create, rename or switch organizations. Switching clears entity selection and drafts and cancels the old organization's subscriptions and refreshes. Startup validates the whole directory, then upgrades a bare `local` aggregate or version-1 record to a version-2 organization record with empty workflow metadata, without changing business history or Session bindings or inventing workflow facts. The storage domain remains version `0`.
 
 Archiving first prevents new work and durably marks the organization read-only. Choose **Stop current work** to stop that organization's exact queued deliveries, claimed turns and children, or **Wait for current work** to let admitted work finish. The archive request waits for full settlement and cleanup. Reopening restores admission without rewriting history or assigning tasks.
 
-Export requires an idle organization and explicit confirmation because the file contains role instructions, messages and personal memory. The development exporter writes checksummed portable format version `2`, including the label and archive state but excluding local Session bindings and creation/import operation metadata. A busy organization or an unfinished durable delivery cannot be exported.
+Export requires an idle organization and explicit confirmation because the file contains role instructions, messages and personal memory. The development exporter writes checksummed portable format version `3`, including the label, archive state and workflow metadata but excluding local Session bindings and organization creation/import metadata. A busy organization or an unfinished durable delivery cannot be exported.
 
-Choose a JSON file under **Import organization** to validate and preview it without writing. Check the source version and entity counts, edit the destination label, then confirm creation of a new organization. The importer accepts frozen version `1` and development version `2` files, retains entity IDs and history, and rebases task-delivery identities to the new organization ID. It rejects invalid or unfinished work instead of running it automatically. Imported archived organizations remain read-only until reopened; their colleagues acquire new local DSH Sessions only when explicitly given work.
+Choose a JSON file under **Import organization** to validate and preview it without writing. Check the source version and entity counts, edit the destination label, then confirm creation of a new organization. The importer accepts versions `1`, `2` and `3`, retains entity IDs and history, and rebases task-delivery identities to the new organization ID. Versions `1` and `2` supply empty workflow metadata; version `3` also preserves drafts, immutable templates, confirmed briefs, artifacts, reviews, handoffs and operation receipts. Imported archived organizations remain read-only until reopened; their colleagues acquire new local DSH Sessions only when explicitly given work.
 
 The checksum detects corruption, not authorship. Keep exported files private and obtain authorization before sharing their complete organization history. Import size, string, entity, event and depth budgets are deployment settings; see the [Host configuration](packages/host/README.md#organization-recovery-development).
+
+## Company workflow (development)
+
+The Tasks view contains drafts, reusable templates and result review. A draft has a short title, full instructions, expected artifacts and acceptance criteria. Creating, editing, discarding or applying a template only saves a draft. Confirmation requires an explicit employed assignee and creates one formal task; retries of the same committed operation return that task without assigning or delivering it again. If the runtime is unavailable or stops before delivery, the committed task remains undelivered and needs the existing explicit retry action; runtime availability alone does not start it.
+
+Confirmed tasks deliver the persisted full brief, including any selected handoff context, through the normal DSH Session input. Later draft or template edits cannot change it. Employees can use `workspace_propose_task` from an existing admitted turn to suggest a draft, but cannot confirm it, accept a result or grant delegation authority.
+
+Task templates retain immutable brief revisions. Company configuration templates refer to immutable role revisions and name new colleagues and optional groups in the current organization. Preview writes nothing; confirmation explicitly chooses new-events membership memory. It creates the configuration atomically without copying history, Sessions, tasks or grants, and without waking colleagues.
+
+Artifacts are human-registered labels, summaries and optional inert path or HTTP(S) references attached to an exact result event and delivery attempt. References are unverified: the plugin does not read files, execute paths or fetch links. Human acceptance is separate from model completion and applies only to the selected result, including visibly marked late results from cancelled tasks. Requesting changes or selecting artifacts for handoff creates a new draft; neither starts execution nor transfers authority. Archived organizations remain read-only throughout this workflow.
 
 ## Forward export
 
@@ -117,7 +128,7 @@ pnpm build:host
 pnpm export:forward-v1 -- --input E:/exports/agent-workspace.json --output E:/exports/workspace-portable-v1.json --exported-at 2026-09-04T00:00:00.000Z
 ```
 
-The command validates one version-`0` local aggregate, preserves definitions, colleagues, employment history, rooms, Tasks, Memory, child results, and events, omits local DSH session bindings, refuses to overwrite its output, and never changes the source. This release deliberately provides no import endpoint and no Browser backup control.
+The command validates one legacy version-`0` local aggregate, preserves definitions, colleagues, employment history, rooms, Tasks, Memory, child results, and events, omits local DSH session bindings, refuses to overwrite its output, and never changes the source. The frozen version-1 producer and the version-2 portable producer do not carry third-stage workflow metadata; use the development Browser's version-3 export for a complete workflow backup. Released `0.4.0` provides no import endpoint or Browser backup control.
 
 ## Development
 
@@ -186,7 +197,8 @@ See the [v0.4.0 release notes](docs/releases/v0.4.0.md) for the current DSH comp
 
 ## Known limitations
 
-- **Released recovery availability** — registry version `0.4.0` is single-organization; multiple organizations and Browser recovery are unreleased source features.
+- **Released development availability** — registry version `0.4.0` is single-organization; multiple organizations, Browser recovery and company workflow are unreleased source features.
+- **Unverified artifact references** — registering a path or link does not establish that its target exists, is safe or satisfies acceptance criteria.
 - **No per-agent model/tool/skill selection** — top-level agents currently inherit the deployment's model, tools, skills, and permissions.
 - **No hard room secrecy** — unified personal memory can recall an event from another room; secrecy is not enforced as a domain boundary.
 - **One-shot children only** — child agents are task-scoped, terminal, and not resumable colleagues.

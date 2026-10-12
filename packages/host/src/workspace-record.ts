@@ -2,9 +2,14 @@
 
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import { z } from 'zod'
+import { createHash } from 'node:crypto'
+import canonicalize from 'canonicalize'
 import { WorkspaceId } from './ids.ts'
 import type { WorkspaceState } from './types.ts'
 import { workspaceStateSchema } from './workspace-state-schema.ts'
+import type { WorkflowCommand, WorkflowState } from './workflow-contract.ts'
+import type { HumanId } from './ids.ts'
+import { workflowCommandSchema, workflowStateSchema } from './workflow-schema.ts'
 
 /** Identifies one retryable organization creation or import request. */
 export type WorkspaceOperationId = Branded<'AgentWorkspaceOperationId'>
@@ -39,8 +44,16 @@ export interface WorkspaceRecordV1 {
   readonly aggregate: WorkspaceState
 }
 
-/** Released local aggregate or its version one metadata wrapper. */
-export type StoredWorkspace = WorkspaceState | WorkspaceRecordV1
+/** Released local aggregate or its version one/two metadata wrapper. */
+export type StoredWorkspace = WorkspaceState | WorkspaceRecordV1 | WorkspaceRecordV2
+
+/** Successor record stores workflow beside the frozen aggregate in one atomic value. */
+export interface WorkspaceRecordV2 {
+  readonly recordVersion: 2
+  readonly descriptor: WorkspaceDescriptor
+  readonly aggregate: WorkspaceState
+  readonly workflow: WorkflowState
+}
 
 /** Detached directory entry for selecting an organization. */
 export interface WorkspaceDirectoryEntry {
@@ -84,6 +97,14 @@ export const workspaceRecordSchema = z.preprocess((value, ctx) => {
   return value
 }, recordSchema)
 
+const recordV2Schema = z.object({ recordVersion: z.literal(2), descriptor: workspaceDescriptorSchema, aggregate: workspaceStateSchema, workflow: workflowStateSchema }).strict().refine(record => record.descriptor.id === record.aggregate.workspaceId) satisfies z.ZodType<WorkspaceRecordV2>
+
+/** Strict successor reader rejects prototype keys before record conversion. */
+export const workspaceRecordV2Schema = z.preprocess((value, ctx) => {
+  if (containsPrototypeKey(value)) ctx.addIssue({ code: 'custom', message: 'invalid workspace object key' })
+  return value
+}, recordV2Schema)
+
 /** Legacy records are accepted only for the released local organization. */
 export const storedWorkspaceSchema = z.preprocess((value, ctx) => {
   if (containsPrototypeKey(value)) ctx.addIssue({ code: 'custom', message: 'invalid workspace object key' })
@@ -91,7 +112,35 @@ export const storedWorkspaceSchema = z.preprocess((value, ctx) => {
 }, z.union([
   workspaceStateSchema.refine(state => state.workspaceId === 'local'),
   recordSchema,
+  recordV2Schema,
 ])) satisfies z.ZodType<StoredWorkspace>
+
+/**
+ * Hash normalized semantic workflow fields; transport revisions and Host time are excluded.
+ * @param humanId Trusted actor recorded in the corresponding human fact.
+ * @param command Semantic command, including any expected draft revision.
+ * @returns SHA-256 retry identity shared by durable validation and new commits.
+ */
+export function workflowRequestDigest(humanId: HumanId, command: WorkflowCommand): string {
+  const json = canonicalize({ humanId, command: workflowCommandSchema.parse(command) })
+  if (json === undefined) throw new Error('invalid workflow operation request')
+  return createHash('sha256').update(json).digest('hex')
+}
+
+/**
+ * Validate persisted operation identity against its exact human fact before restart or import.
+ * @param workflow Complete workflow, with structural and relationship validation performed by its caller.
+ * @returns Nothing; throws if a digest or operation-to-fact ownership differs.
+ */
+export function assertWorkflowOperationDigests(workflow: WorkflowState): void {
+  const revisions = new Set<number>()
+  for (const operation of Object.values(workflow.operations)) {
+    const fact = workflow.facts[operation.workflowRevision - 1]
+    if (fact === undefined || fact.type === 'workflow/employee/proposed' || revisions.has(operation.workflowRevision)) throw new Error('workflow operation fact ownership is invalid')
+    revisions.add(operation.workflowRevision)
+    if (operation.requestDigest !== workflowRequestDigest(fact.actor.id, fact.command)) throw new Error('workflow operation digest does not match its fact')
+  }
+}
 
 function containsPrototypeKey(value: unknown): boolean {
   const pending: unknown[] = [value]

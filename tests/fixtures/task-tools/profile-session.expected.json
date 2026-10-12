@@ -8,6 +8,17 @@
   ],
   "result": "PROFILE_TASK_TOOL_RESULT",
   "policyError": "Workspace task request is not permitted.",
+  "proposal": {
+    "tool": "workspace_propose_task",
+    "brief": {
+      "title": "WF_EMPLOYEE_PROPOSAL",
+      "instructions": "WF_EMPLOYEE_FULL_INSTRUCTIONS",
+      "expectedArtifacts": ["WF_EMPLOYEE_ARTIFACT"],
+      "acceptanceCriteria": ["WF_EMPLOYEE_CRITERION"]
+    },
+    "status": "draft",
+    "receiptHint": "Awaiting human confirmation."
+  },
   "memory": {
     "query": "UTF-8",
     "text": "导出要求：CSV 使用 UTF-8 编码，保留中文标题，不添加 BOM。",

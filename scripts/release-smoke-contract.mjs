@@ -5,6 +5,14 @@ import { readFile, readdir } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import canonicalize from 'canonicalize'
 
+/** Remove exactly one setup row when staging seed-free restart and uninstall profiles. */
+export function removeTaskToolsProfileSeed(source) {
+  const normalized = source.replaceAll('\r\n', '\n')
+  const row = "    - id: agent-workspace-task-tools-profile\n      name: './task-tools-profile.ts'\n"
+  if (normalized.split(row).length !== 2) throw new Error('browser fixture must contain exactly one task-tools profile seed')
+  return normalized.replace(row, '')
+}
+
 const BUNDLE = 'dsh-agent-group'
 const HOST = '@dsh-agent-group/host'
 const WEB = '@dsh-agent-group/web'
@@ -388,11 +396,12 @@ export function assertLegacyWorkspacePreserved(before, after) {
     throw new Error('legacy source does not contain exactly one local workspace')
   }
   const local = after?.tables?.workspaces?.local
-  const expected = local?.recordVersion === 1 ? {
+  const expected = [1, 2].includes(local?.recordVersion) ? {
     ...before, tables: { workspaces: { local: {
-      recordVersion: 1,
+      recordVersion: local.recordVersion,
       descriptor: { id: 'local', label: 'Local organization', lifecycle: 'active' },
       aggregate: before.tables.workspaces.local,
+      ...(local.recordVersion === 2 ? { workflow: { revision: 0, nextId: 1, nextSequence: 1, drafts: {}, taskTemplates: {}, taskTemplateRevisions: {}, companyTemplates: {}, companyTemplateRevisions: {}, taskBriefs: {}, artifacts: {}, reviews: {}, operations: {}, facts: [] } } : {}),
     } } },
   } : before
   if (canonicalize(after) !== canonicalize(expected)) {

@@ -19,6 +19,7 @@ const browserFixtureFiles = [
   'tests/fixtures/task-tools/profile-session.expected.json',
   'tests/e2e/task-tools-profile.mjs',
   'tests/e2e/workspace-browser.mjs',
+  'tests/e2e/workflow-browser.mjs',
   'tests/e2e/README.md',
   '.github/workflows/registry-smoke.yml',
 ] as const
@@ -27,6 +28,18 @@ const dshRange = '>=0.2.0-rc.2 <0.2.1-0'
 const CONCURRENT_LANE_TEST_TIMEOUT_MS = 15_000
 
 describe('public release contract', () => {
+  it('removes the actual profile seed from recovery overlays regardless of fixture comments', async () => {
+    const { removeTaskToolsProfileSeed } = await import('../scripts/release-smoke-contract.mjs')
+    const source = readText('tests/fixtures/browser/cordis.test.yml')
+    const seed = "    - id: agent-workspace-task-tools-profile\n      name: './task-tools-profile.ts'\n"
+    const normalized = source.replaceAll('\r\n', '\n')
+    const result = removeTaskToolsProfileSeed(normalized)
+    expect(result).toBe(normalized.replace(seed, ''))
+    expect(result).not.toContain('id: agent-workspace-task-tools-profile')
+    expect(result).toContain("name: './scripted-llm.ts'")
+    expect(() => removeTaskToolsProfileSeed(result)).toThrow(/exactly one.*seed/i)
+    expect(() => removeTaskToolsProfileSeed(normalized + seed)).toThrow(/exactly one.*seed/i)
+  })
   it('preserves the public forward-export compatibility constant after runtime extraction', async () => {
     const host = await import('../packages/host/src/index.ts')
     expect(Reflect.get(host, 'WORKSPACE_EXPORT_COMPATIBLE_IMPORT_RANGE')).toBe('>=0.3.0 <0.4.0')
@@ -174,6 +187,13 @@ describe('public release contract', () => {
       recordVersion: 1, descriptor: { id: 'local', label: 'Local organization', lifecycle: 'active' }, aggregate: structuredClone(state),
     } } } }
     expect(() => assertLegacyWorkspacePreserved(source, wrapped)).not.toThrow()
+    const upgraded = structuredClone(wrapped)
+    upgraded.tables.workspaces.local.recordVersion = 2
+    upgraded.tables.workspaces.local.workflow = { revision: 0, nextId: 1, nextSequence: 1, drafts: {}, taskTemplates: {}, taskTemplateRevisions: {}, companyTemplates: {}, companyTemplateRevisions: {}, taskBriefs: {}, artifacts: {}, reviews: {}, operations: {}, facts: [] }
+    expect(() => assertLegacyWorkspacePreserved(source, upgraded)).not.toThrow()
+    const fabricated = structuredClone(upgraded)
+    fabricated.tables.workspaces.local.workflow.revision = 1
+    expect(() => assertLegacyWorkspacePreserved(source, fabricated)).toThrow(/rewrote/i)
     wrapped.tables.workspaces.local.aggregate.sessionBindings['agent-3'] = 'rewritten-session'
     expect(() => assertLegacyWorkspacePreserved(source, wrapped)).toThrow(/rewrote.*session bindings/i)
     const rewritten = structuredClone(source)
@@ -290,6 +310,7 @@ describe('public release contract', () => {
       await writeFile(join(root, 'scripts', 'release-smoke.mjs'), 'smoke driver\n', 'utf8')
       await writeFile(join(root, 'scripts', 'release-smoke-contract.mjs'), 'smoke assertions\n', 'utf8')
       await writeFile(join(root, 'tests', 'e2e', 'workspace-browser.mjs'), 'browser scenario\n', 'utf8')
+      await writeFile(join(root, 'tests', 'e2e', 'workflow-browser.mjs'), 'workflow scenario\n', 'utf8')
       await writeFile(join(root, 'tests', 'e2e', 'recovery-observation.mjs'), 'recovery reply observation\n', 'utf8')
       await writeFile(join(root, 'tests', 'e2e', 'task-tools-profile.mjs'), 'memory evidence reader\n', 'utf8')
       await writeFile(join(root, 'tests', 'fixtures', 'task-tools', 'profile-session.expected.json'), '{}\n', 'utf8')
@@ -320,6 +341,7 @@ describe('public release contract', () => {
       expect(publish.flat()).not.toContain('--filter')
 
       for (const [path, original] of [
+        [join(root, 'tests', 'e2e', 'workflow-browser.mjs'), 'workflow scenario\n'],
         [join(root, 'tests', 'e2e', 'recovery-observation.mjs'), 'recovery reply observation\n'],
         [join(root, 'tests', 'e2e', 'task-tools-profile.mjs'), 'memory evidence reader\n'],
         [join(root, 'tests', 'fixtures', 'task-tools', 'profile-session.expected.json'), '{}\n'],

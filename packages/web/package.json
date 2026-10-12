@@ -66,7 +66,11 @@
     "@deepseek-ai/dsh-client-ui-sidebar": ">=0.2.0-rc.2 <0.2.1-0",
     "react": "^18.2.0"
   },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
   "devDependencies": {
+    "@dsh-agent-group/host": "workspace:*",
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-client-locale": ">=0.2.0-rc.2 <0.2.1-0",
     "@deepseek-ai/dsh-client-connection": ">=0.2.0-rc.2 <0.2.1-0",

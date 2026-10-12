@@ -9,6 +9,7 @@ import { projectTaskRoots } from './task-view-model.ts'
 import { WorkspaceRuntimeBadge } from './WorkspaceActivityDrawer.tsx'
 import type { TaskProjection, TaskRootProjection } from './task-view-model.ts'
 import { workspaceRuntimeErrorText } from './runtime-copy.ts'
+import { WorkspaceWorkflow } from './WorkspaceWorkflow.tsx'
 
 interface WorkspaceTasksProps {
   readonly snapshot: WorkspaceSnapshot
@@ -152,6 +153,7 @@ export function WorkspaceTasks(props: WorkspaceTasksProps) {
       </div>
     </aside>
     <main className="dsh-agent-group-panel">
+      {api.workspaceId === props.snapshot.workspaceId ? <WorkspaceWorkflow api={api} snapshot={props.snapshot} onSnapshot={props.onSnapshot} t={props.t} /> : null}
       <div className="dsh-agent-group-section-head"><span className="dsh-agent-group-section-title">{props.t('task.roots')}</span><span className="dsh-agent-group-muted">{props.t('task.rootCount', { count: roots.length })}</span></div>
       {error !== undefined ? <div className="dsh-agent-group-error" role="alert">{error}</div> : null}
       {refreshFailed ? <div className="dsh-agent-group-retry" role="status">{props.t('task.refreshFailed')}</div> : null}

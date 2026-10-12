@@ -11,6 +11,7 @@ import { createForwardWorkspaceExportV1 } from '../packages/host/src/forward-exp
 import { createWorkspaceExportV2 } from '../packages/host/src/workspace-portable.ts'
 import { workspaceStateSchema } from '../packages/host/src/workspace-state-schema.ts'
 import type { WorkspaceState } from '../packages/host/src/types.ts'
+import { createInitialWorkflowState } from '../packages/host/src/workflow.ts'
 
 const limits = { maxBytes: 1_000_000, maxEntities: 10_000, maxEvents: 10_000, maxStringBytes: 100_000, maxDepth: 32 }
 const exportedAt = '2026-10-10T00:00:00.000Z'
@@ -51,7 +52,7 @@ describe('workspace directory', () => {
     const directory = new WorkspaceDirectory(storage.result)
     await directory.initialize()
     await directory.initialize()
-    expect(directory.record(legacy.workspaceId)).toEqual(record(legacy, 'Local organization'))
+    expect(directory.record(legacy.workspaceId)).toEqual({ ...record(legacy, 'Local organization'), recordVersion: 2, workflow: createInitialWorkflowState() })
     expect(storage.writes()).toBe(1)
     expect(directory.list()).toEqual([{ descriptor: { id: 'local', label: 'Local organization', lifecycle: 'active' }, revision: legacy.revision, eventCount: legacy.events.length, agentCount: Object.keys(legacy.agents).length }])
   })
@@ -142,7 +143,7 @@ describe('workspace directory', () => {
     expect(await directory.import(options)).toEqual(imported)
     await expect(directory.import({ ...options, label: 'changed' })).rejects.toThrow(/operation/i)
     await expect(directory.import({ ...options, json: `${json} ` })).rejects.toThrow(/operation/i)
-    const copy = await directory.import({ operationId: WorkspaceOperationId('copy'), json: createWorkspaceExportV2(imported, { exportedAt }).json, limits })
+    const copy = await directory.import({ operationId: WorkspaceOperationId('copy'), json: createWorkspaceExportV2(record(imported.aggregate, imported.descriptor.label), { exportedAt }).json, limits })
     expect(copy.descriptor.id).not.toBe(imported.descriptor.id); expect(copy.aggregate.definitions).toEqual(imported.aggregate.definitions)
     await expect(directory.create({ operationId: options.operationId, label: 'Local workspace' })).rejects.toThrow(/operation/i)
   })

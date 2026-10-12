@@ -2,6 +2,7 @@
 
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock, MessageId, UserMessage } from '@deepseek-ai/dsh-llm'
+import { freezeMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, TurnEndReason } from '@deepseek-ai/dsh-session'
 import type { AgentId, DefinitionRevisionId, TaskDeliveryAttemptId, TaskId } from './ids.ts'
 import type { TaskAssignment, TaskDeliveryProgressEvent, WorkspaceState } from './types.ts'
@@ -27,6 +28,8 @@ export interface WorkspaceDeliveryHooks {
 
 /** Host operations used by the task delivery coordinator. */
 export interface TaskDeliveryCoordinatorHost {
+  /** @param taskId Durable task. @returns Persisted full brief instructions; undefined retains legacy delivery text. */
+  taskInstructions?(taskId: TaskId): string | undefined
   /** Return the latest committed workspace aggregate. */
   snapshot(): WorkspaceState
   /** Commit one pure aggregate mutation through the workspace table. */
@@ -156,6 +159,7 @@ export class TaskDeliveryCoordinator {
     const agent = state.agents[assignment.assigneeAgentId]
     if (agent === undefined) throw new Error(`task '${taskId}' assignee does not exist`)
     const started = startTaskDelivery(state, { taskId })
+    const instructions = this.host.taskInstructions?.(taskId)
     return {
       state: started.state,
       assignment,
@@ -163,7 +167,7 @@ export class TaskDeliveryCoordinator {
       definitionRevisionId: agent.definitionRevisionId,
       taskId,
       attemptId: started.attemptId,
-      message: started.message,
+      message: instructions === undefined ? started.message : freezeMessage({ ...started.message, content: [{ type: 'text', text: instructions }] }),
     }
   }
 

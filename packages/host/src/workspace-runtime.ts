@@ -49,6 +49,10 @@ import type { TaskDeliveryProgressEvent, WorkspaceCommand, WorkspaceState } from
 import type { DelegationGrantId } from './ids.ts'
 import { projectDefinitionHistory } from './definition-history.ts'
 import type { DefinitionHistoryItem } from './definition-history.ts'
+import { WEB_WORKSPACE_HUMAN_ID } from './rpc.ts'
+import type { CompanyTemplatePreview, CompanyTemplateRevisionId, WorkflowCommand, WorkflowEndpoint, WorkflowExpectedRevisions, WorkflowMutationResult, WorkflowMutationValueMap, WorkflowOperationId, WorkflowProposalRequest, WorkflowProposalResult, WorkflowSnapshot } from './workflow-contract.ts'
+import { previewCompanyTemplate, proposeWorkflowDraft, WorkflowBusinessError } from './workflow.ts'
+import { workflowTaskInstructions } from './workflow-delivery.ts'
 
 /** Default-model seam used by the Web composition. */
 interface WorkspaceDefaultModel {
@@ -163,6 +167,7 @@ export class WorkspaceRuntime {
     this.stopping = false
     const taskDelivery = new TaskDeliveryCoordinator({
       snapshot: () => this.snapshot(),
+      taskInstructions: taskId => workflowTaskInstructions(this.directory.record(this.workspaceId), taskId),
       apply: async mutation => await this.apply(mutation),
       ensureEmployee: async agentId => await this.ensureEmployee(agentId),
       deliver: async (agentId, delivery, recall, source, hooks) => await this.deliver(agentId, delivery, recall, source, hooks),
@@ -364,6 +369,67 @@ export class WorkspaceRuntime {
   /** A detached copy of the committed local aggregate. */
   snapshot(): WorkspaceState {
     return this.directory.snapshot(this.workspaceId)
+  }
+
+  /** @returns Detached workflow and its matching aggregate revision, including archived organizations. */
+  workflowSnapshot(): WorkflowSnapshot {
+    this.assertWorkflowReadable()
+    const record = this.directory.record(this.workspaceId)
+    return { workspaceId: this.workspaceId, aggregateRevision: record.aggregate.revision, workflow: record.workflow }
+  }
+
+  /** @param request Both revision checkpoints and durable retry identity. @param command Human-only action. @param signal Precommit cancellation. @returns Durable receipt; identical replay never starts delivery. */
+  async executeWorkflow<K extends WorkflowEndpoint>(request: WorkflowExpectedRevisions & { readonly operationId: WorkflowOperationId }, command: WorkflowCommand<K>, signal?: AbortSignal): Promise<WorkflowMutationResult<WorkflowMutationValueMap[K]>> {
+    this.assertWorkflowWritable()
+    return await this.runNewOperation(async () => {
+      this.assertContinuationAllowed()
+      const result = await this.directory.executeWorkflow(this.workspaceId, { ...request, command }, { humanId: WEB_WORKSPACE_HUMAN_ID, occurredAt: new Date().toISOString() }, signal)
+      if (result.replayed) return result
+      this.syncActivityProjection(this.snapshot())
+      if (command.type === 'workflow/draft/confirm' && 'taskId' in result.value) {
+        const delivery = this.taskDelivery
+        if (delivery !== undefined) this.retainBackground(delivery.deliver(result.value.taskId).catch((_error) => {
+          // The coordinator persists the retryable failure before rejecting.
+        }))
+      }
+      return result
+    })
+  }
+
+  /** @param expected Both displayed revision checkpoints. @param id Pinned company configuration. @returns Validated preview without reserving IDs or waking employees. */
+  previewCompanyTemplate(expected: WorkflowExpectedRevisions, id: CompanyTemplateRevisionId): CompanyTemplatePreview {
+    const snapshot = this.workflowSnapshot()
+    if (snapshot.aggregateRevision !== expected.expectedAggregateRevision) throw new WorkspaceBusinessError('stale-revision', { expectedRevision: expected.expectedAggregateRevision, actualRevision: snapshot.aggregateRevision })
+    if (snapshot.workflow.revision !== expected.expectedWorkflowRevision) throw new WorkflowBusinessError('stale-workflow-revision', { expectedWorkflowRevision: expected.expectedWorkflowRevision, actualWorkflowRevision: snapshot.workflow.revision })
+    return { workspaceId: this.workspaceId, aggregateRevision: snapshot.aggregateRevision, workflowRevision: snapshot.workflow.revision, templateRevisionId: id, config: previewCompanyTemplate(this.snapshot(), snapshot.workflow, id) }
+  }
+
+  /** @param agent Actual published employee object. @param request Proposed brief with optional suggested owner. @param signal Precommit cancellation. @returns Bounded draft receipt awaiting human confirmation. */
+  async proposeTask(agent: Agent, request: WorkflowProposalRequest, signal?: AbortSignal): Promise<WorkflowProposalResult> {
+    this.assertWorkflowWritable()
+    return await this.runOperation(async () => {
+      this.assertContinuationAllowed()
+      const committed = await this.directory.updateRecord(this.workspaceId, record => {
+        if (record.descriptor.lifecycle === 'archived') throw new WorkflowBusinessError('workflow-read-only', { workspaceId: this.workspaceId })
+        this.assertContinuationAllowed()
+        const agentId = this.agentIdFor(agent)
+        if (agentId === undefined) throw new Error('Workspace proposal caller is not an active employee.')
+        const changed = proposeWorkflowDraft({ aggregate: record.aggregate, workflow: record.workflow }, request, { agentId, occurredAt: new Date().toISOString() })
+        return { record: { ...record, aggregate: changed.aggregate, workflow: changed.workflow }, value: { draftId: changed.value.draftId, summary: changed.workflow.drafts[changed.value.draftId]!.brief.title.slice(0, this.config.memoryCharacterBudget), status: 'awaiting-human-confirmation' as const } }
+      }, signal)
+      this.syncActivityProjection(committed.record.aggregate)
+      return committed.value
+    })
+  }
+
+  private assertWorkflowReadable(): void {
+    if (this.closing || this.retirement !== undefined) throw new Error('organization runtime is unavailable')
+  }
+
+  private assertWorkflowWritable(): void {
+    this.assertWorkflowReadable()
+    if (this.directory.record(this.workspaceId).descriptor.lifecycle === 'archived') throw new WorkflowBusinessError('workflow-read-only', { workspaceId: this.workspaceId })
+    this.assertContinuationAllowed()
   }
 
   /**

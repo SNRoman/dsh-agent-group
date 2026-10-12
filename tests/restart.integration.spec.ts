@@ -8,7 +8,8 @@ import { apply as domainApply, Config as DomainConfig, inject as domainInject } 
 import { apply as jsonApply, Config as JsonConfig, inject as jsonInject } from '@deepseek-ai/dsh-storage-json'
 import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
 import type { WorkspaceRuntime } from '../packages/host/src/workspace-runtime.ts'
-import type { WorkspaceRecordV1 } from '../packages/host/src/workspace-record.ts'
+import type { WorkspaceRecordV2 } from '../packages/host/src/workspace-record.ts'
+import { createInitialWorkflowState } from '../packages/host/src/workflow.ts'
 import { queryAgentMemory } from '../packages/host/src/memory-query.ts'
 import { agentWorkspaceSpec } from '../packages/host/src/spec.ts'
 import { AgentId, AgentMemoryEntryId, HumanId, TaskId, WorkspaceId } from '../packages/host/src/ids.ts'
@@ -81,11 +82,12 @@ describe('agent workspace persistence', () => {
       expect.objectContaining({ eventId: originalEntry.eventId, provenance: 'room-membership' }),
     ])
     const afterBootText = await readFile(join(root, 'agent_workspace.json'), 'utf8')
-    const afterBoot = JSON.parse(afterBootText) as { tables: { workspaces: { local: WorkspaceRecordV1 } } }
+    const afterBoot = JSON.parse(afterBootText) as { tables: { workspaces: { local: WorkspaceRecordV2 } } }
     expect(afterBoot.tables.workspaces.local).toEqual({
-      recordVersion: 1,
+      recordVersion: 2,
       descriptor: { id: 'local', label: 'Local organization', lifecycle: 'active' },
       aggregate: stored.tables.workspaces.local,
+      workflow: createInitialWorkflowState(),
     })
     await first.dispose()
 

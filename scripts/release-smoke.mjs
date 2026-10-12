@@ -20,6 +20,7 @@ import {
   assertLegacyWorkspacePreserved,
   assertUninstalledProfile,
   manifestFileTree,
+  removeTaskToolsProfileSeed,
   registryProfileCommands,
   uninstallProfileCommand,
 } from './release-smoke-contract.mjs'
@@ -160,9 +161,7 @@ async function stageFixture(scratch) {
   if (staged === stagedAdapter) throw new Error('browser fixture has no task-tools profile placeholder')
   const path = join(scratch, 'cordis.test.yml')
   await writeFile(path, staged, 'utf8')
-  const taskToolsRow = `    # This profile-only setup seeds a human task because the Browser product\n    # does not yet expose formal-task creation.  The employee itself invokes\n    # its registered tools through the normal agent loop.\n    - id: agent-workspace-task-tools-profile\n      name: './task-tools-profile.ts'\n`
-  const withoutTaskTools = source.replace(taskToolsRow, '')
-  if (withoutTaskTools === source) throw new Error('browser fixture has no removable task-tools profile row')
+  const withoutTaskTools = removeTaskToolsProfileSeed(source)
   const uninstalledPath = join(scratch, 'cordis.after-uninstall.yml')
   const seedFree = withoutTaskTools.replace("name: './scripted-llm.ts'", `name: '${absoluteAdapter}'`)
   const restartPath = join(scratch, 'cordis.after-restart.yml')

@@ -96,7 +96,20 @@ export function prepareWorkspaceImportWithSchema(
   json: string,
   options: { readonly workspaceId: WorkspaceId; readonly limits: WorkspaceImportLimits },
   schema: z.ZodType<WorkspaceImportDocument>,
-): PreparedWorkspaceImportV1 {
+): PreparedWorkspaceImportV1
+/** Project additional validated portable fields without reparsing or changing the v1 result. */
+export function prepareWorkspaceImportWithSchema<Document extends WorkspaceImportDocument, Value>(
+  json: string,
+  options: { readonly workspaceId: WorkspaceId; readonly limits: WorkspaceImportLimits },
+  schema: z.ZodType<Document>,
+  project: (document: Document, source: WorkspaceState, target: WorkspaceState, prepared: PreparedWorkspaceImportV1) => Value,
+): Value
+export function prepareWorkspaceImportWithSchema<Document extends WorkspaceImportDocument, Value>(
+  json: string,
+  options: { readonly workspaceId: WorkspaceId; readonly limits: WorkspaceImportLimits },
+  schema: z.ZodType<Document>,
+  project?: (document: Document, source: WorkspaceState, target: WorkspaceState, prepared: PreparedWorkspaceImportV1) => Value,
+): PreparedWorkspaceImportV1 | Value {
   assertImportLimits(options.limits)
   if (options.workspaceId.trim() === '' || /[\s:\u0000-\u001f\u007f-\u009f]/u.test(options.workspaceId)) {
     throw new Error('workspace import target identity is invalid')
@@ -141,13 +154,14 @@ export function prepareWorkspaceImportWithSchema(
       : event),
   }
   assertImportInvariants(state)
-  return {
+  const prepared: PreparedWorkspaceImportV1 = {
     descriptor: { ...descriptor, id: options.workspaceId },
     sourceWorkspaceId: descriptor.id,
     sourcePluginVersion: envelope.pluginVersion,
     exportedAt: envelope.exportedAt,
     state,
   }
+  return project === undefined ? prepared : project(parsed.data, source, state, prepared)
 }
 
 /**
@@ -249,7 +263,8 @@ function assertUniqueObjectKeys(json: string, maxDepth: number): void {
 }
 
 function assertCollectionLimits(input: unknown, limits: WorkspaceImportLimits): void {
-  const aggregate = requireRecord(requireRecord(requireRecord(input).workspace).aggregate)
+  const workspace = requireRecord(requireRecord(input).workspace)
+  const aggregate = requireRecord(workspace.aggregate)
   if (!Array.isArray(aggregate.events) || !Array.isArray(aggregate.memoryEntries)) throw new Error('invalid workspace import document')
   if (aggregate.events.length > limits.maxEvents) throw new Error('workspace import exceeds maxEvents')
   let entities = aggregate.memoryEntries.length
@@ -257,6 +272,15 @@ function assertCollectionLimits(input: unknown, limits: WorkspaceImportLimits): 
   for (const field of entityFields) {
     entities += Object.keys(requireRecord(aggregate[field])).length
     if (entities > limits.maxEntities) throw new Error('workspace import exceeds maxEntities')
+  }
+  if (Object.hasOwn(workspace, 'workflow')) {
+    const workflow = requireRecord(workspace.workflow)
+    if (!Array.isArray(workflow.facts)) throw new Error('invalid workspace import document')
+    if (aggregate.events.length + workflow.facts.length > limits.maxEvents) throw new Error('workspace import exceeds maxEvents')
+    for (const field of ['drafts', 'taskTemplates', 'taskTemplateRevisions', 'companyTemplates', 'companyTemplateRevisions', 'taskBriefs', 'artifacts', 'reviews', 'operations']) {
+      entities += Object.keys(requireRecord(workflow[field])).length
+      if (entities > limits.maxEntities) throw new Error('workspace import exceeds maxEntities')
+    }
   }
 }
 

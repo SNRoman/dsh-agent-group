@@ -24,7 +24,15 @@ Unreleased source adds an organization directory above the existing workbench. I
 
 Export displays a sensitive-history warning before downloading the JSON file. Import first reads and validates a chosen file and shows its source label/version, counts and excluded local Session bindings. The user can edit the new label before confirming creation of a separate organization. Confirmation keeps the current selection and never overwrites it; select the restored organization to inspect or reopen it. Imported history does not automatically start any employee or task.
 
-The new directory, recovery controls and personal-memory retrieval are development-source features; installing the existing registry `0.4.0` does not enable them. The transport remains the authenticated DSH Connection RPC path, not a second server or replacement core store.
+The new directory, recovery controls and company workflow are development-source features; installing the existing registry `0.4.0` does not enable them. The transport remains the authenticated DSH Connection RPC path, not a second server or replacement core store. Business failures are decoded from its preserved error codes and exact details, including stale aggregate, workflow and draft revisions; malformed or unknown errors remain generic failures.
+
+## Company workflow development
+
+Tasks retains the existing task tree and runtime controls and adds drafts, task/company templates and exact-result review. Draft confirmation requires an explicitly selected employed assignee; no owner is automatically selected. Draft editing, discarding, template application, employee proposal, changes-requested and handoff do not assign or start work. Company configuration preview writes nothing; confirmation explicitly chooses new-events membership memory.
+
+Results display their attempt/event identity and cancellation origin. Human acceptance is not model completion and does not apply to another result. Artifact path/link references are rendered as unverified inert text, not opened or fetched automatically. A handoff copies only the artifacts the human selects and still requires draft confirmation before execution.
+
+Workflow requests use the immutable organization API and both displayed aggregate/workflow revisions. Identical retry retains its operation identity; changed input uses a new one. Organization switching, closing and unmounting abort stale work and prevent late responses from replacing current data. Archived organizations disable all workflow mutations. Export/import format 3 carries the workflow metadata; importing older formats supplies empty workflow state and never starts employees.
 
 DeepSeek Harness compatibility is `>=0.2.0-rc.2 <0.2.1-0`, verified at `0.2.0-rc.2` commit `639ed015397290b3745d163aafe02ffee4aa3f84`.
 

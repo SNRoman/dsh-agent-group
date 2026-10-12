@@ -940,6 +940,7 @@ describe('AgentWorkspaceDomainService task-tool lifecycle', () => {
         'workspace_delegate_task',
         'workspace_run_child',
         'workspace_complete_task',
+        'workspace_propose_task',
         'workspace_search_memory',
         'workspace_read_memory',
       ])
@@ -948,6 +949,7 @@ describe('AgentWorkspaceDomainService task-tool lifecycle', () => {
       expect(disposed).toEqual([
         'workspace_read_memory',
         'workspace_search_memory',
+        'workspace_propose_task',
         'workspace_complete_task',
         'workspace_run_child',
         'workspace_delegate_task',

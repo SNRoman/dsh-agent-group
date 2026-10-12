@@ -50,6 +50,7 @@ function smokeInputFiles(root) {
     'scripts/release-smoke-contract.mjs',
     'tests/e2e/README.md',
     'tests/e2e/workspace-browser.mjs',
+    'tests/e2e/workflow-browser.mjs',
     'tests/e2e/recovery-observation.mjs',
     'tests/e2e/task-tools-profile.mjs',
     'tests/fixtures/task-tools/profile-session.expected.json',

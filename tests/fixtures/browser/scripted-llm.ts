@@ -248,6 +248,35 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
 
   override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     const request = currentText(options)
+    if (request.includes('WF_PROPOSE_REQUEST')) {
+      if (!options.tools?.some(tool => tool.name === 'workspace_propose_task')) throw new Error('workflow proposal tool is missing')
+      const calls = options.messages.slice(options.messages.indexOf(currentRequest(options)) + 1).filter(message => message.role === 'tool')
+      if (calls.length === 0) {
+        const tool = { id: ToolCallId('wf-propose-task'), name: 'workspace_propose_task', arguments: JSON.stringify({ brief: { title: 'WF_EMPLOYEE_PROPOSAL', instructions: 'WF_EMPLOYEE_FULL_INSTRUCTIONS', expectedArtifacts: ['WF_EMPLOYEE_ARTIFACT'], acceptanceCriteria: ['WF_EMPLOYEE_CRITERION'] } }) }
+        yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+        yield { type: 'tool-call-delta', index: 0, id: tool.id, name: tool.name, argumentsDelta: tool.arguments }
+        yield { type: 'block-end', index: 0, block: { type: 'tool-call', ...tool } }
+        yield { type: 'finish', reason: { kind: 'tool-calls' } }
+      } else {
+        const receipt = resultText(requiredToolResult(options, 'wf-propose-task'))
+        if (!receipt.includes('Awaiting human confirmation.')) throw new Error('proposal did not await human confirmation')
+        yield { type: 'block-start', index: 0, blockType: 'text' }
+        yield { type: 'text-delta', index: 0, text: 'WF_PROPOSAL_READY' }
+        yield { type: 'block-end', index: 0, block: { type: 'text', text: 'WF_PROPOSAL_READY' } }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      }
+      return
+    }
+    if (request.startsWith('WF_REPORT\n')) {
+      const identity = taskIdentity(options)
+      if (!options.tools?.some(tool => tool.name === 'workspace_complete_task')) throw new Error('workflow completion tool is missing')
+      const tool = { id: ToolCallId(`wf-complete-${identity.attemptId}`), name: 'workspace_complete_task', arguments: JSON.stringify({ taskId: identity.taskId, result: `WF_RESULT ${identity.taskId} ${identity.attemptId}` }) }
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+      yield { type: 'tool-call-delta', index: 0, id: tool.id, name: tool.name, argumentsDelta: tool.arguments }
+      yield { type: 'block-end', index: 0, block: { type: 'tool-call', ...tool } }
+      yield { type: 'finish', reason: { kind: 'tool-calls' } }
+      return
+    }
     if (request.includes(TASK_TOOLS_REQUEST)) {
       yield* this.taskToolResponse(options)
       return

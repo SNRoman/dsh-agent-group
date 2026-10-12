@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { chromium } from 'playwright'
 import { collectTaskToolEvidence } from './task-tools-profile.mjs'
 import { waitForRecoveredReply } from './recovery-observation.mjs'
+import { readDurableRecord, readDurableOrganizations, runWorkflowScenario, assertWorkflowImport, assertWorkflowProposal, assertWorkflowRestartQuiescence, waitForOrganizationReady, observeDirectRpcResponses } from './workflow-browser.mjs'
 import { assertBrowserDurableEvidence, inspectSafeDelegationDenial, assertTaskCausality, assertMemoryRows, assertSubsetRevisionEvidence, assertExactStopEvidence, assertRestartPersistence } from '../../scripts/release-smoke-contract.mjs'
 
 const STEP_TIMEOUT_MS = 30_000
@@ -57,22 +58,8 @@ async function capture(state, label, locator, required = []) {
 }
 
 async function readDurableWorkspace(dshHome, workspaceId = 'local') {
-  const singlePath = join(dshHome, 'storages', 'agent_workspace.json')
-  try {
-    const document = JSON.parse(await readFile(singlePath, 'utf8'))
-    const record = document.tables.workspaces[workspaceId]
-    if (record === undefined) throw new Error('selected organization is missing')
-    return record.aggregate ?? record
-  } catch (singleError) {
-    const recordPath = join(dshHome, 'storages', 'agent_workspace', 'workspaces', `${workspaceId}.json`)
-    try {
-      const document = JSON.parse(await readFile(recordPath, 'utf8'))
-      const record = document.value ?? document
-      return record.aggregate ?? record
-    } catch (recordError) {
-      throw new AggregateError([singleError, recordError], 'could not read the durable Agent Workspace aggregate')
-    }
-  }
+  const record = await readDurableRecord(dshHome, workspaceId)
+  return record.aggregate ?? record
 }
 
 async function waitForIdle(dialog) {
@@ -97,7 +84,7 @@ async function waitForDurableAgentMemory(dshHome, agentName, text) {
   }, `record ${JSON.stringify(text)} in ${agentName}'s memory`)
 }
 
-async function waitForDurableWorkspace(dshHome, predicate, description, workspaceId = 'local') {
+async function waitForDurableWorkspace(dshHome, predicate, description, workspaceId = 'local', completeRecord = false) {
   const paths = [
     join(dshHome, 'storages', 'agent_workspace.json'),
     join(dshHome, 'storages', 'agent_workspace', 'workspaces', `${workspaceId}.json`),
@@ -125,7 +112,7 @@ async function waitForDurableWorkspace(dshHome, predicate, description, workspac
         do {
           rerun = false
           try {
-            const workspace = await readDurableWorkspace(dshHome, workspaceId)
+            const workspace = completeRecord ? await readDurableRecord(dshHome, workspaceId) : await readDurableWorkspace(dshHome, workspaceId)
             if (await predicate(workspace)) return finish(undefined, workspace)
           } catch (error) {
             if (!isTransientWorkspaceRead(error)) return finish(error)
@@ -176,17 +163,21 @@ async function durableSessions(dshHome) {
 }
 
 async function waitForTaskCausality(dshHome, workspace) {
+  return await waitForSessionEvidence(dshHome, sessions => assertTaskCausality(workspace, sessions))
+}
+
+async function waitForSessionEvidence(dshHome, inspect) {
   const deadline = Date.now() + STEP_TIMEOUT_MS
   let lastError
   while (Date.now() < deadline) {
     try {
-      return assertTaskCausality(workspace, await durableSessions(dshHome))
+      return inspect(await durableSessions(dshHome))
     } catch (error) {
       lastError = error
       await new Promise(resolve => setTimeout(resolve, 100))
     }
   }
-  throw new Error(`durable task Session evidence did not settle: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
+  throw new Error(`durable Session evidence did not settle: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
 }
 
 function waitForFixtureReceipt(path) {
@@ -596,8 +587,17 @@ async function runAfterRestart(page, args, state) {
   const durable = await readDurableWorkspace(args['dsh-home'])
   const baseline = JSON.parse(await readFile(join(args.evidence, 'installed-durable-final.json'), 'utf8'))
   assertRestartPersistence(baseline, durable)
+  const workflowBaseline = JSON.parse(await readFile(join(args.evidence, 'workflow-record-final.json'), 'utf8'))
+  if (!isDeepStrictEqual(await readDurableRecord(args['dsh-home']), workflowBaseline)) throw new Error('Host restart changed complete workflow record or resumed work automatically')
+  const sessionsBaseline = JSON.parse(await readFile(join(args.evidence, 'workflow-sessions-final.json'), 'utf8'))
+  const organizationsBaseline = JSON.parse(await readFile(join(args.evidence, 'workflow-organizations-final.json'), 'utf8'))
+  const restartSessions = assertWorkflowRestartQuiescence(sessionsBaseline, await durableSessions(args['dsh-home']), args.workspace, organizationsBaseline, await readDurableOrganizations(args['dsh-home']))
+  await writeFile(join(state.evidence, 'workflow-restart-quiescence.json'), `${JSON.stringify(restartSessions, null, 2)}\n`, 'utf8')
   await dialog.getByRole('button', { name: '任务', exact: true }).click()
   await dialog.getByLabel('任务中心', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  const workflow = dialog.getByRole('region', { name: '工作流', exact: true })
+  await workflow.getByRole('combobox', { name: '草案选择', exact: true }).getByRole('option', { name: /^WF_EMPLOYEE_PROPOSAL/u }).waitFor({ state: 'attached', timeout: STEP_TIMEOUT_MS })
+  await capture(state, 'restart-workflow-zh-CN', workflow, ['WF_EMPLOYEE_PROPOSAL', 'WF_DISCARD'])
   await dialog.getByText(V020_ROOT, { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   await capture(state, 'restart-tasks-zh-CN', dialog, ['根任务', V020_ROOT, V020_CHILD])
   await dialog.getByRole('button', { name: '记忆', exact: true }).click()
@@ -645,17 +645,26 @@ async function recoverOrganization(dialog, args, state) {
   await dialog.getByRole('button', { name: 'Archive organization', exact: true }).click()
   await dialog.getByText('Archived organization — read-only', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   const before = await readDurableWorkspace(args['dsh-home'])
+  const beforeRecord = await readDurableRecord(args['dsh-home'])
+  await dialog.getByRole('button', { name: 'Tasks', exact: true }).click()
+  const archivedWorkflow = dialog.getByRole('region', { name: 'Workflow', exact: true })
+  await archivedWorkflow.getByRole('combobox', { name: 'Draft selection', exact: true }).getByRole('option', { name: /^WF_EMPLOYEE_PROPOSAL/u }).waitFor({ state: 'attached', timeout: STEP_TIMEOUT_MS })
+  if (await archivedWorkflow.getByRole('button', { name: 'Create draft', exact: true }).isEnabled()) throw new Error('archived workflow allows mutation')
+  await capture(state, 'workflow-archived-readonly', archivedWorkflow, ['WF_EMPLOYEE_PROPOSAL', 'WF_DISCARD'])
   await dialog.getByRole('button', { name: 'Export organization', exact: true }).click()
   await dialog.getByText('The export contains messages, instructions and memory and may include sensitive information. Confirm to download the JSON file.', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   const download = dialog.page().waitForEvent('download', { timeout: STEP_TIMEOUT_MS })
   await dialog.getByRole('button', { name: 'Confirm export and download', exact: true }).click()
-  const backupPath = join(state.evidence, 'organization-backup-v2.json')
+  const backupPath = join(state.evidence, 'organization-backup-v3.json')
   await (await download).saveAs(backupPath)
-  const portable = JSON.parse(await readFile(backupPath, 'utf8'))
-  if (portable.formatVersion !== 2 || portable.workspace.descriptor.lifecycle !== 'archived'
+  const backupJson = await readFile(backupPath, 'utf8')
+  const portable = JSON.parse(backupJson)
+  if (portable.formatVersion !== 3 || portable.workspace.descriptor.lifecycle !== 'archived'
     || 'sessionBindings' in portable.workspace.aggregate || 'creation' in portable.workspace.descriptor) {
     throw new Error('Browser export did not produce an archived portable organization without local bindings')
   }
+  if (!isDeepStrictEqual(portable.workspace.workflow, beforeRecord.workflow)) throw new Error('V3 export omitted workflow metadata')
+  const sessionsBeforeImport = (await durableSessions(args['dsh-home'])).sort((left, right) => left.header.id.localeCompare(right.header.id))
   await dialog.getByLabel('Import organization', { exact: true }).setInputFiles(backupPath)
   await dialog.getByText('Session bindings are excluded. Confirming creates an independent organization without replacing the current organization.', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   await dialog.getByRole('textbox', { name: 'Imported organization label', exact: true }).fill('Recovered organization')
@@ -673,6 +682,19 @@ async function recoverOrganization(dialog, args, state) {
       : event),
   }
   if (!isDeepStrictEqual(restored, expectedRestored)) throw new Error('import lost history or restored local sessions')
+  const restoredRecord = await readDurableRecord(args['dsh-home'], restoredId)
+  assertWorkflowImport(beforeRecord, restoredRecord, { json: backupJson, label: 'Recovered organization' })
+  if (!isDeepStrictEqual((await durableSessions(args['dsh-home'])).sort((left, right) => left.header.id.localeCompare(right.header.id)), sessionsBeforeImport)) throw new Error('import materialized or resumed an employee Session')
+  await dialog.getByRole('button', { name: 'Tasks', exact: true }).click()
+  await dialog.getByRole('region', { name: 'Workflow', exact: true }).getByRole('combobox', { name: 'Draft selection', exact: true }).getByRole('option', { name: /^WF_EMPLOYEE_PROPOSAL/u }).waitFor({ state: 'attached', timeout: STEP_TIMEOUT_MS })
+  await chooser.selectOption(emptyId)
+  await dialog.getByRole('button', { name: 'Tasks', exact: true }).click()
+  const emptyWorkflow = dialog.getByRole('region', { name: 'Workflow', exact: true })
+  await emptyWorkflow.getByRole('combobox', { name: 'Draft selection', exact: true }).getByRole('option', { name: 'New draft', exact: true }).waitFor({ state: 'attached', timeout: STEP_TIMEOUT_MS })
+  if (await emptyWorkflow.getByRole('combobox', { name: 'Draft selection', exact: true }).getByRole('option', { name: /^WF_/u }).count() !== 0) throw new Error('workflow leaked across organization switch')
+  await chooser.selectOption(restoredId)
+  await dialog.getByRole('button', { name: 'Tasks', exact: true }).click()
+  await dialog.getByRole('region', { name: 'Workflow', exact: true }).getByRole('combobox', { name: 'Draft selection', exact: true }).getByRole('option', { name: /^WF_EMPLOYEE_PROPOSAL/u }).waitFor({ state: 'attached', timeout: STEP_TIMEOUT_MS })
   await dialog.getByRole('button', { name: 'Reopen organization', exact: true }).click()
   await dialog.getByText('Archived organization — read-only', { exact: true }).waitFor({ state: 'hidden', timeout: STEP_TIMEOUT_MS })
   await dialog.getByRole('button', { name: 'Colleagues', exact: true }).click()
@@ -688,8 +710,10 @@ async function recoverOrganization(dialog, args, state) {
   const after = await readDurableWorkspace(args['dsh-home'], restoredId)
   const aliceId = Object.values(after.agents).find(agent => agent.name === 'Alice')?.id
   if (!aliceId || !after.sessionBindings[aliceId] || after.sessionBindings[aliceId] === before.sessionBindings[aliceId]) throw new Error('restored colleague did not acquire an independent new Session')
-  if (JSON.stringify(await readDurableWorkspace(args['dsh-home'])) !== JSON.stringify(before)) throw new Error('working in a restored organization modified its source')
-  await writeFile(join(state.evidence, 'organization-recovery.json'), `${JSON.stringify({ emptyId, restoredId, before, restored, after }, null, 2)}\n`, 'utf8')
+  if (!isDeepStrictEqual(await readDurableRecord(args['dsh-home']), beforeRecord)) throw new Error('working in a restored organization modified its complete source record')
+  const afterRecord = await readDurableRecord(args['dsh-home'], restoredId)
+  if (!isDeepStrictEqual(afterRecord.workflow, beforeRecord.workflow)) throw new Error('independent resumed employee changed imported workflow')
+  await writeFile(join(state.evidence, 'organization-recovery.json'), `${JSON.stringify({ emptyId, restoredId, before, restored, after, beforeRecord, restoredRecord, afterRecord }, null, 2)}\n`, 'utf8')
   await capture(state, 'organization-recovery', dialog, ['Recovered organization', 'MEMORY_OK Alice'])
   await chooser.selectOption('local')
 }
@@ -698,6 +722,7 @@ async function continueRecoveredOrganization(dialog, args, state) {
   const recovery = JSON.parse(await readFile(join(state.evidence, 'organization-recovery.json'), 'utf8'))
   const before = await readDurableWorkspace(args['dsh-home'], recovery.restoredId)
   assertRestartPersistence(recovery.after, before)
+  if (!isDeepStrictEqual(await readDurableRecord(args['dsh-home'], recovery.restoredId), recovery.afterRecord)) throw new Error('restart changed recovered workflow or resumed work automatically')
   await dialog.getByRole('combobox', { name: '组织', exact: true }).selectOption(recovery.restoredId)
   await dialog.getByRole('button', { name: '同事', exact: true }).click()
   await selectReleaseDefinition(dialog)
@@ -713,7 +738,8 @@ async function continueRecoveredOrganization(dialog, args, state) {
   await waitForDurableWorkspace(args['dsh-home'], current => current.events.filter(event => event.type === 'room/message' && event.text === 'MEMORY_OK Alice').length > priorReplies, 'record a new recovered reply after restart', recovery.restoredId)
   const after = await readDurableWorkspace(args['dsh-home'], recovery.restoredId)
   if (JSON.stringify(after.sessionBindings) !== JSON.stringify(before.sessionBindings) || after.events.length <= before.events.length) throw new Error('restored organization did not continue after restart with its own Session')
-  if (JSON.stringify(await readDurableWorkspace(args['dsh-home'])) !== JSON.stringify(recovery.before)) throw new Error('restored organization polluted the source after restart')
+  if (!isDeepStrictEqual(await readDurableRecord(args['dsh-home']), recovery.beforeRecord)) throw new Error('restored organization polluted the complete source after restart')
+  if (!isDeepStrictEqual((await readDurableRecord(args['dsh-home'], recovery.restoredId)).workflow, recovery.beforeRecord.workflow)) throw new Error('restart lost workflow metadata')
   await writeFile(join(state.evidence, 'organization-recovery-after-restart.json'), `${JSON.stringify({ workspaceId: recovery.restoredId, after }, null, 2)}\n`, 'utf8')
   await capture(state, 'organization-recovery-restart', dialog, ['Recovered organization', 'MEMORY_OK Alice'])
   await dialog.getByRole('combobox', { name: '组织', exact: true }).selectOption('local')
@@ -726,6 +752,7 @@ async function runInstalledScenario(page, args, state) {
   await page.getByRole('button', { name: 'Open Agent Organization', exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   await page.getByRole('button', { name: 'Open Agent Organization', exact: true }).click()
   let dialog = page.getByRole('dialog', { name: 'Agent Organization', exact: true })
+  await waitForOrganizationReady(dialog, STEP_TIMEOUT_MS)
   await capture(state, '00-empty', dialog, ['Agent Organization', 'Conversations'])
 
   await createDefinitionAndAgents(dialog)
@@ -847,8 +874,34 @@ async function runInstalledScenario(page, args, state) {
     throw new Error('durable @all replies do not contain each employed member exactly once')
   }
   if (agentMessages.length !== 7) throw new Error(`expected 7 durable agent replies, found ${agentMessages.length}`)
-  await writeFile(join(state.evidence, `${state.prefix}durable-final.json`), `${JSON.stringify(durable, null, 2)}\n`, 'utf8')
+  const workflowEvidence = await runWorkflowScenario(dialog, {
+    read: () => readDurableRecord(args['dsh-home']),
+    wait: (predicate, description) => waitForDurableWorkspace(args['dsh-home'], predicate, description, 'local', true),
+    sessionEvidence: inspect => waitForSessionEvidence(args['dsh-home'], inspect),
+    capture: (label, locator, required) => capture(state, label, locator, required),
+  })
+  await dialog.getByRole('button', { name: 'Colleagues', exact: true }).click()
+  await selectReleaseDefinition(dialog)
+  await agentRow(dialog, 'Bob').getByRole('button', { name: 'Direct', exact: true }).click()
+  const proposalBefore = await readDurableRecord(args['dsh-home'])
+  await send(dialog, 'WF_PROPOSE_REQUEST')
+  await dialog.getByText('WF_PROPOSAL_READY', { exact: true }).last().waitFor({ timeout: STEP_TIMEOUT_MS })
+  await waitForIdle(dialog)
+  const proposalAfter = await waitForDurableWorkspace(args['dsh-home'], record => Object.values(record.workflow.drafts).some(draft => draft.brief.title === 'WF_EMPLOYEE_PROPOSAL'), 'employee proposal', 'local', true)
+  const bobId = Object.values(proposalAfter.aggregate.agents).find(agent => agent.name === 'Bob').id
+  const proposalExpected = JSON.parse(await readFile(new URL('../fixtures/task-tools/profile-session.expected.json', import.meta.url), 'utf8')).proposal
+  const proposal = await waitForSessionEvidence(args['dsh-home'], sessions => {
+    const session = sessions.find(value => value.header.id === proposalAfter.aggregate.sessionBindings[bobId])
+    if (session === undefined) throw new Error('employee proposal Session is missing')
+    return assertWorkflowProposal(proposalBefore, proposalAfter, bobId, session.rows, proposalExpected)
+  })
+  await writeFile(join(state.evidence, 'workflow-evidence.json'), `${JSON.stringify({ ...workflowEvidence, proposal }, null, 2)}\n`, 'utf8')
+  const finalDurable = proposalAfter.aggregate
+  await writeFile(join(state.evidence, `${state.prefix}durable-final.json`), `${JSON.stringify(finalDurable, null, 2)}\n`, 'utf8')
   await recoverOrganization(dialog, args, state)
+  await writeFile(join(state.evidence, 'workflow-record-final.json'), `${JSON.stringify(await readDurableRecord(args['dsh-home']), null, 2)}\n`, 'utf8')
+  await writeFile(join(state.evidence, 'workflow-sessions-final.json'), `${JSON.stringify((await durableSessions(args['dsh-home'])).sort((left, right) => left.header.id.localeCompare(right.header.id)), null, 2)}\n`, 'utf8')
+  await writeFile(join(state.evidence, 'workflow-organizations-final.json'), `${JSON.stringify(await readDurableOrganizations(args['dsh-home']), null, 2)}\n`, 'utf8')
 }
 
 async function main() {
@@ -865,6 +918,8 @@ async function main() {
     const context = await browser.newContext({ viewport: { width: 1440, height: 960 }, locale: args.phase === 'after-restart' ? 'zh-CN' : 'en-US' })
     try {
       const page = await context.newPage()
+      const directRpcResponses = []
+      const stopDirectRpcObservation = observeDirectRpcResponses(page, directRpcResponses)
       const consoleFailures = []
       const networkFailures = []
       page.on('console', message => {
@@ -882,9 +937,13 @@ async function main() {
         if (args.phase === 'installed') await runInstalledScenario(page, args, state)
         else if (args.phase === 'after-restart') await runAfterRestart(page, args, state)
         else await runAfterUninstall(page, args, state)
+        await stopDirectRpcObservation()
+        await writeFile(join(args.evidence, `${prefix}direct-rpc-responses.json`), `${JSON.stringify(directRpcResponses, null, 2)}\n`, 'utf8')
         if (consoleFailures.length > 0) throw new Error(`browser console failures:\n${consoleFailures.join('\n')}`)
         await writeFile(join(args.evidence, `${prefix}browser-console.json`), '[]\n', 'utf8')
       } catch (error) {
+        await stopDirectRpcObservation()
+        await writeFile(join(args.evidence, `${prefix}direct-rpc-responses.json`), `${JSON.stringify(directRpcResponses, null, 2)}\n`, 'utf8')
         const activityButton = page.getByRole('button', { name: 'Open runtime activity', exact: true })
         const activityDrawer = page.getByRole('dialog', { name: 'Runtime activity', exact: true })
         if (await activityButton.count() > 0 && await activityDrawer.count() === 0) {
@@ -900,6 +959,7 @@ async function main() {
           aria,
           consoleFailures: consoleFailures.map(redact),
           networkFailures,
+          directRpcResponses,
           durable,
         }, null, 2)}\n`, 'utf8')
         throw error

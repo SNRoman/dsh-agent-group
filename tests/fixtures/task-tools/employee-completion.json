@@ -56,6 +56,30 @@
       }
     },
     {
+      "name": "workspace_propose_task",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "brief": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "title": { "type": "string" },
+              "instructions": { "type": "string" },
+              "expectedArtifacts": { "type": "array", "items": { "type": "string" } },
+              "acceptanceCriteria": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["title", "instructions", "expectedArtifacts", "acceptanceCriteria"]
+          },
+          "suggestedAssigneeAgentId": {
+            "type": "string",
+            "description": "Optional employed colleague suggestion; no assignment is made."
+          }
+        },
+        "required": ["brief"]
+      }
+    },
+    {
       "name": "workspace_search_memory",
       "parameters": {
         "type": "object",

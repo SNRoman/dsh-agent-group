@@ -13,6 +13,7 @@ import { assertWorkspaceInvariants } from '../packages/host/src/invariant.ts'
 import { assignHumanTask, recordChildRunStarted } from '../packages/host/src/tasks.ts'
 import { startTaskDelivery } from '../packages/host/src/task-delivery.ts'
 import { HumanId } from '../packages/host/src/ids.ts'
+import { createInitialWorkflowState } from '../packages/host/src/workflow.ts'
 
 const exportedAt = '2026-10-10T00:00:00.000Z'
 const workspaceId = WorkspaceId('org-target')
@@ -59,14 +60,14 @@ describe('portable workspace version two', () => {
 
   test('imports frozen v1 exactly as the original reader does', async () => {
     const json = createForwardWorkspaceExportV1((await source()).aggregate, { exportedAt }).json
-    expect(prepareWorkspaceImport(json, { workspaceId, limits })).toEqual(prepareWorkspaceImportV1(json, { workspaceId, limits }))
+    expect(prepareWorkspaceImport(json, { workspaceId, limits })).toEqual({ ...prepareWorkspaceImportV1(json, { workspaceId, limits }), workflow: createInitialWorkflowState() })
   })
 
   test('preserves the frozen v1 reader treatment of nonempty whitespace labels', async () => {
     const document = JSON.parse(createForwardWorkspaceExportV1((await source()).aggregate, { exportedAt }).json)
     document.workspace.descriptor.label = ' '
     const json = signed(document)
-    expect(prepareWorkspaceImport(json, { workspaceId, limits })).toEqual(prepareWorkspaceImportV1(json, { workspaceId, limits }))
+    expect(prepareWorkspaceImport(json, { workspaceId, limits })).toEqual({ ...prepareWorkspaceImportV1(json, { workspaceId, limits }), workflow: createInitialWorkflowState() })
   })
 
   test('checks the raw envelope digest before accepting reordered or changed values', async () => {
