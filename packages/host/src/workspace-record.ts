@@ -10,6 +10,8 @@ import { workspaceStateSchema } from './workspace-state-schema.ts'
 import type { WorkflowCommand, WorkflowState } from './workflow-contract.ts'
 import type { HumanId } from './ids.ts'
 import { workflowCommandSchema, workflowStateSchema } from './workflow-schema.ts'
+import type { CommunicationState } from './communication-contract.ts'
+import { communicationStateSchema } from './communication-schema.ts'
 
 /** Identifies one retryable organization creation or import request. */
 export type WorkspaceOperationId = Branded<'AgentWorkspaceOperationId'>
@@ -44,8 +46,8 @@ export interface WorkspaceRecordV1 {
   readonly aggregate: WorkspaceState
 }
 
-/** Released local aggregate or its version one/two metadata wrapper. */
-export type StoredWorkspace = WorkspaceState | WorkspaceRecordV1 | WorkspaceRecordV2
+/** Released local aggregate, frozen metadata wrappers or communication successor record. */
+export type StoredWorkspace = WorkspaceState | WorkspaceRecordV1 | WorkspaceRecordV2 | WorkspaceRecordV3
 
 /** Successor record stores workflow beside the frozen aggregate in one atomic value. */
 export interface WorkspaceRecordV2 {
@@ -53,6 +55,12 @@ export interface WorkspaceRecordV2 {
   readonly descriptor: WorkspaceDescriptor
   readonly aggregate: WorkspaceState
   readonly workflow: WorkflowState
+}
+
+/** Successor record preserves raw audit data alongside communication and context rebuild metadata. */
+export interface WorkspaceRecordV3 extends Omit<WorkspaceRecordV2, 'recordVersion'> {
+  readonly recordVersion: 3
+  readonly communication: CommunicationState
 }
 
 /** Detached directory entry for selecting an organization. */
@@ -105,6 +113,14 @@ export const workspaceRecordV2Schema = z.preprocess((value, ctx) => {
   return value
 }, recordV2Schema)
 
+const recordV3Schema = z.object({ recordVersion: z.literal(3), descriptor: workspaceDescriptorSchema, aggregate: workspaceStateSchema, workflow: workflowStateSchema, communication: communicationStateSchema }).strict().refine(record => record.descriptor.id === record.aggregate.workspaceId) satisfies z.ZodType<WorkspaceRecordV3>
+
+/** Strict communication successor reader; relationship validation belongs to the durable owner. */
+export const workspaceRecordV3Schema = z.preprocess((value, ctx) => {
+  if (containsPrototypeKey(value)) ctx.addIssue({ code: 'custom', message: 'invalid workspace object key' })
+  return value
+}, recordV3Schema)
+
 /** Legacy records are accepted only for the released local organization. */
 export const storedWorkspaceSchema = z.preprocess((value, ctx) => {
   if (containsPrototypeKey(value)) ctx.addIssue({ code: 'custom', message: 'invalid workspace object key' })
@@ -113,6 +129,7 @@ export const storedWorkspaceSchema = z.preprocess((value, ctx) => {
   workspaceStateSchema.refine(state => state.workspaceId === 'local'),
   recordSchema,
   recordV2Schema,
+  recordV3Schema,
 ])) satisfies z.ZodType<StoredWorkspace>
 
 /**

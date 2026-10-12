@@ -1,10 +1,13 @@
-/** Pure portable organization version two/three producers and version one/two/three reader. */
+/** Frozen portable producers and communication successor export/import without Host effects. */
 
 import { createHash } from 'node:crypto'
 import canonicalize from 'canonicalize'
 import { z } from 'zod'
-import type { WorkspaceRecordV1, WorkspaceRecordV2, WorkspaceDescriptor } from './workspace-record.ts'
-import { workspaceDescriptorSchema, workspaceRecordSchema, workspaceRecordV2Schema, assertWorkflowOperationDigests } from './workspace-record.ts'
+import type { WorkspaceRecordV1, WorkspaceRecordV2, WorkspaceRecordV3, WorkspaceDescriptor } from './workspace-record.ts'
+import { workspaceDescriptorSchema, workspaceRecordSchema, workspaceRecordV2Schema, workspaceRecordV3Schema, assertWorkflowOperationDigests } from './workspace-record.ts'
+import type { CommunicationState, FileBlobId, FileByteSnapshot } from './communication-contract.ts'
+import { communicationStateSchema } from './communication-schema.ts'
+import { assertCommunicationRelationships, createInitialCommunicationState } from './communication.ts'
 import type { WorkflowState } from './workflow-contract.ts'
 import { workflowStateSchema } from './workflow-schema.ts'
 import { assertWorkflowInvariants, createInitialWorkflowState } from './workflow.ts'
@@ -20,6 +23,8 @@ import { assertWorkspaceInvariants } from './invariant.ts'
 export const WORKSPACE_EXPORT_FORMAT_VERSION_V2 = 2 as const
 /** Portable successor includes complete workflow facts and operation receipts. */
 export const WORKSPACE_EXPORT_FORMAT_VERSION_V3 = 3 as const
+/** Unreleased successor carries communication sources, withdrawals and rebuild status. */
+export const WORKSPACE_EXPORT_FORMAT_VERSION_V4 = 4 as const
 
 /** Identity and user metadata portable without creation-operation metadata. */
 export type PortableWorkspaceDescriptor = Omit<WorkspaceDescriptor, 'creation'>
@@ -51,6 +56,20 @@ export interface WorkspaceExportEnvelopeV3 extends Omit<WorkspaceExportEnvelopeV
 /** Complete successor document uses the raw envelope RFC8785 digest. */
 export interface WorkspaceExportDocumentV3 extends WorkspaceExportEnvelopeV3 {
   readonly digest: WorkspaceExportDocumentV2['digest']
+}
+
+/** Communication successor omits local Session bindings and cannot restore checkpoint bytes. */
+export interface WorkspaceExportEnvelopeV4 extends Omit<WorkspaceExportEnvelopeV3, 'formatVersion' | 'workspace'> {
+  readonly formatVersion: typeof WORKSPACE_EXPORT_FORMAT_VERSION_V4
+  readonly workspace: WorkspaceExportEnvelopeV3['workspace'] & { readonly communication: CommunicationState }
+}
+/** Complete communication successor hashed over its original envelope. */
+export interface WorkspaceExportDocumentV4 extends WorkspaceExportEnvelopeV4 {
+  readonly digest: WorkspaceExportDocumentV2['digest']
+}
+/** Detached successor import; no local Session can be resumed from this result. */
+export interface PreparedWorkspaceImportV4 extends PreparedWorkspaceImport {
+  readonly communication: CommunicationState
 }
 
 /** Source metadata, aggregate and workflow prepared by the version one/two/three reader. */
@@ -85,10 +104,11 @@ const documentSchema = z.discriminatedUnion('formatVersion', [
   z.object({ ...envelopeFields, formatVersion: z.literal(2) }).strict(),
   z.object({ ...envelopeFields, formatVersion: z.literal(3), workspace: envelopeFields.workspace.extend({ workflow: workflowStateSchema }).strict() }).strict(),
 ])
+const documentV4Schema = z.union([documentSchema, z.object({ ...envelopeFields, formatVersion: z.literal(4), workspace: envelopeFields.workspace.extend({ workflow: workflowStateSchema, communication: communicationStateSchema }).strict() }).strict()])
 
 /**
  * Validate and export a version-one record without sessions or creation-operation metadata.
- * This frozen producer omits all third-stage workflow metadata; live successor records use V3.
+ * This frozen producer omits workflow and communication metadata; live successor records use V4.
  * Rejects isolated Unicode surrogates in source strings and object keys without changing the source.
  * @param record Source record; the function never mutates it.
  * @param metadata Canonical UTC export timestamp.
@@ -137,6 +157,67 @@ export function createWorkspaceExportV3(record: WorkspaceRecordV2, metadata: { r
   const envelope: WorkspaceExportEnvelopeV3 = { format: WORKSPACE_EXPORT_FORMAT, formatVersion: 3, pluginVersion: AGENT_WORKSPACE_PLUGIN_VERSION, compatibleImportRange: '>=0.4.0 <0.5.0', exportedAt: metadata.exportedAt, workspace: { descriptor: { id, label, lifecycle }, aggregate, workflow: structuredClone(parsed.workflow) } }
   const document: WorkspaceExportDocumentV3 = { ...envelope, digest: { algorithm: 'sha-256', canonicalization: 'RFC8785', hex: createHash('sha256').update(canonicalJson(envelope)).digest('hex') } }
   return { document, json: canonicalJson(document) }
+}
+
+/**
+ * Export communication audit metadata without local Session proofs or file byte storage.
+ * @param record Raw successor record; the source remains unchanged.
+ * @param metadata Canonical UTC export timestamp.
+ * @returns Detached format-four document with descriptive unreleased compatibility metadata.
+ */
+export function createWorkspaceExportV4(record: WorkspaceRecordV3, metadata: { readonly exportedAt: string }): { readonly document: WorkspaceExportDocumentV4; readonly json: string } {
+  if (!timestampSchema.safeParse(metadata.exportedAt).success) throw new Error('exportedAt must be a canonical UTC timestamp')
+  assertExportUnicode(record)
+  const parsed = workspaceRecordV3Schema.parse(structuredClone(record))
+  assertWorkspaceInvariants(parsed.aggregate, parsed.descriptor.id)
+  assertWorkflowInvariants(parsed.aggregate, parsed.workflow)
+  assertWorkflowOperationDigests(parsed.workflow)
+  assertCommunicationRelationships(parsed.aggregate, parsed.communication, parsed.workflow)
+  const { workspaceId: _workspaceId, sessionBindings: _sessions, ...aggregate } = parsed.aggregate
+  const { id, label, lifecycle } = parsed.descriptor
+  const communication = portableCommunication(parsed.communication)
+  const envelope: WorkspaceExportEnvelopeV4 = { format: WORKSPACE_EXPORT_FORMAT, formatVersion: 4, pluginVersion: `${AGENT_WORKSPACE_PLUGIN_VERSION}-unreleased`, compatibleImportRange: 'unreleased: communication format 4 reader required', exportedAt: metadata.exportedAt, workspace: { descriptor: { id, label, lifecycle }, aggregate, workflow: parsed.workflow, communication } }
+  const document: WorkspaceExportDocumentV4 = { ...envelope, digest: { algorithm: 'sha-256', canonicalization: 'RFC8785', hex: createHash('sha256').update(canonicalJson(envelope)).digest('hex') } }
+  return { document, json: canonicalJson(document) }
+}
+
+/**
+ * Read frozen predecessors or communication successor without persistence or task execution.
+ * @param json Untrusted portable JSON.
+ * @param options New organization identity and explicit resource budgets.
+ * @returns Detached raw aggregate, workflow and communication with no local Session proofs.
+ */
+export function prepareWorkspaceImportV4(json: string, options: { readonly workspaceId: WorkspaceId; readonly limits: WorkspaceImportLimits }): PreparedWorkspaceImportV4 {
+  return prepareWorkspaceImportWithSchema(json, options, documentV4Schema, (document, source, target, prepared) => {
+    const workflow = document.formatVersion >= 3 && 'workflow' in document.workspace ? structuredClone(document.workspace.workflow) : createInitialWorkflowState()
+    const communication = document.formatVersion === 4 && 'communication' in document.workspace ? portableCommunication(document.workspace.communication) : createInitialCommunicationState()
+    try {
+      assertWorkflowInvariants(source, workflow)
+      assertWorkflowInvariants(target, workflow)
+      assertWorkflowOperationDigests(workflow)
+      if (document.formatVersion === 4 && 'communication' in document.workspace) assertCommunicationRelationships(source, document.workspace.communication, workflow)
+      assertCommunicationRelationships(target, communication, workflow)
+    } catch (_error) {
+      // Portable contents must not appear in import diagnostics.
+      throw new Error('invalid workspace import workflow or communication relationships or counters')
+    }
+    return { ...prepared, workflow, communication }
+  })
+}
+
+function portableCommunication(source: CommunicationState): CommunicationState {
+  return {
+    ...structuredClone(source),
+    contexts: Object.fromEntries(Object.entries(source.contexts).map(([agentId, context]) => {
+      const { sessionId: _sessionId, ...portable } = context
+      return [agentId, portable]
+    })),
+    fileCheckpoints: Object.fromEntries(Object.entries(source.fileCheckpoints).map(([id, checkpoint]) => [id, { ...structuredClone(checkpoint), before: portableByteSnapshot(checkpoint.before), after: portableByteSnapshot(checkpoint.after), restore: { status: 'unavailable' as const, reason: 'checkpoint bytes are not included in portable backups' } }])),
+  }
+}
+
+function portableByteSnapshot(snapshot: FileByteSnapshot): FileByteSnapshot {
+  return snapshot.existed ? { ...snapshot, blobId: `portable-unavailable:${snapshot.sha256}` as FileBlobId } : { existed: false }
 }
 
 /**

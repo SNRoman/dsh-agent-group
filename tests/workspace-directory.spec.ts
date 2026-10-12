@@ -5,13 +5,14 @@ import { describe, expect, test } from 'vitest'
 import { WorkspaceDirectory } from '../packages/host/src/workspace-directory.ts'
 import { WorkspaceOperationId } from '../packages/host/src/workspace-record.ts'
 import type { StoredWorkspace, WorkspaceRecordV1 } from '../packages/host/src/workspace-record.ts'
-import { WorkspaceId } from '../packages/host/src/ids.ts'
+import { HumanId, WorkspaceEventId, WorkspaceId } from '../packages/host/src/ids.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import { createForwardWorkspaceExportV1 } from '../packages/host/src/forward-export.ts'
 import { createWorkspaceExportV2 } from '../packages/host/src/workspace-portable.ts'
 import { workspaceStateSchema } from '../packages/host/src/workspace-state-schema.ts'
 import type { WorkspaceState } from '../packages/host/src/types.ts'
 import { createInitialWorkflowState } from '../packages/host/src/workflow.ts'
+import { createInitialCommunicationState } from '../packages/host/src/communication.ts'
 
 const limits = { maxBytes: 1_000_000, maxEntities: 10_000, maxEvents: 10_000, maxStringBytes: 100_000, maxDepth: 32 }
 const exportedAt = '2026-10-10T00:00:00.000Z'
@@ -39,6 +40,39 @@ function record(aggregate: WorkspaceState, label = '组织'): WorkspaceRecordV1 
 }
 
 describe('workspace directory', () => {
+  test('upgrades v2 once and preserves successor communication through aggregate and descriptor writes', async () => {
+    const id = WorkspaceId('org-old')
+    const old = { ...record(createInitialState(id)), recordVersion: 2 as const, workflow: createInitialWorkflowState() }
+    const storage = table([[id, old]])
+    const directory = new WorkspaceDirectory(storage.result)
+    await directory.initialize()
+    await directory.initialize()
+    expect(storage.writes()).toBe(1)
+    expect(directory.record(id)).toEqual({ ...old, recordVersion: 3, communication: createInitialCommunicationState() })
+    const room = mutateWorkspace(directory.snapshot(id), { type: 'room/create', kind: 'group', name: 'Team' })
+    const message = mutateWorkspace(room.state, { type: 'room/message', roomId: room.roomId, actor: { type: 'human', id: HumanId('owner') }, text: 'Raw audit', mentions: [] })
+    await directory.updateRecord(id, current => ({ record: { ...current, aggregate: message.state, communication: { ...current.communication, revision: 1, messages: { [message.eventId]: { eventId: message.eventId, intent: 'assignment' } } } }, value: undefined }))
+    const communication = directory.record(id).communication
+    await directory.rename(id, 'Renamed')
+    await directory.updateAggregate(id, state => mutateWorkspace(state, { type: 'room/rename', roomId: room.roomId, name: 'Renamed team' }).state)
+    await directory.setLifecycle(id, 'archived')
+    const restarted = new WorkspaceDirectory(storage.result)
+    await restarted.initialize()
+    expect(restarted.record(id).communication).toEqual(communication)
+    expect(restarted.snapshot(id).events.find(event => event.id === message.eventId)?.text).toBe('Raw audit')
+  })
+
+  test('rejects communication relationship corruption before any directory write', async () => {
+    const id = WorkspaceId('org-one')
+    const storage = table([[id, record(createInitialState(id))]])
+    const directory = new WorkspaceDirectory(storage.result)
+    await directory.initialize()
+    const before = directory.record(id)
+    const writes = storage.writes()
+    await expect(directory.updateRecord(id, current => ({ record: { ...current, communication: { ...current.communication, messages: { missing: { eventId: WorkspaceEventId('missing'), intent: 'message' } } } }, value: undefined }))).rejects.toThrow(/communication event/)
+    expect(directory.record(id)).toEqual(before)
+    expect(storage.writes()).toBe(writes)
+  })
   test.each(['toString', 'constructor', 'hasOwnProperty'])('rejects inherited agent referent %s on initialization', async agentId => {
     const aggregate = { ...createInitialState(WorkspaceId('local')), sessionBindings: { [agentId]: SessionId('orphan-session') } }
     const storage = table([[aggregate.workspaceId, aggregate]])
@@ -52,7 +86,7 @@ describe('workspace directory', () => {
     const directory = new WorkspaceDirectory(storage.result)
     await directory.initialize()
     await directory.initialize()
-    expect(directory.record(legacy.workspaceId)).toEqual({ ...record(legacy, 'Local organization'), recordVersion: 2, workflow: createInitialWorkflowState() })
+    expect(directory.record(legacy.workspaceId)).toEqual({ ...record(legacy, 'Local organization'), recordVersion: 3, workflow: createInitialWorkflowState(), communication: createInitialCommunicationState() })
     expect(storage.writes()).toBe(1)
     expect(directory.list()).toEqual([{ descriptor: { id: 'local', label: 'Local organization', lifecycle: 'active' }, revision: legacy.revision, eventCount: legacy.events.length, agentCount: Object.keys(legacy.agents).length }])
   })

@@ -1,15 +1,16 @@
 /** Durable directory of independent organization records. */
 
+import { assertCommunicationRelationships, createInitialCommunicationState } from './communication.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import canonicalize from 'canonicalize'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { WorkspaceId } from './ids.ts'
-import type { StoredWorkspace, WorkspaceRecordV2, WorkspaceOperationId, WorkspaceDirectoryEntry, WorkspaceDescriptor } from './workspace-record.ts'
-import { storedWorkspaceSchema, workspaceRecordV2Schema, workspaceDescriptorSchema, assertWorkflowOperationDigests, workflowRequestDigest } from './workspace-record.ts'
+import type { StoredWorkspace, WorkspaceRecordV3, WorkspaceOperationId, WorkspaceDirectoryEntry, WorkspaceDescriptor } from './workspace-record.ts'
+import { storedWorkspaceSchema, workspaceRecordV3Schema, workspaceDescriptorSchema, assertWorkflowOperationDigests, workflowRequestDigest } from './workspace-record.ts'
 import type { WorkspaceState } from './types.ts'
 import type { WorkspaceImportLimits } from './workspace-import.ts'
 import { assertWorkspaceImportBudget } from './workspace-import.ts'
-import { prepareWorkspaceImport } from './workspace-portable.ts'
+import { prepareWorkspaceImportV4 } from './workspace-portable.ts'
 import { assertWorkspaceInvariants } from './invariant.ts'
 import { createInitialState } from './state.ts'
 import type { HumanId } from './ids.ts'
@@ -60,7 +61,7 @@ export class WorkspaceDirectory {
         await this.table.put(id, wrapLegacy(createInitialState(id)))
       } else {
         for (const [id, value] of this.table.entries()) {
-          if (!('recordVersion' in value) || value.recordVersion !== 2) {
+          if (!('recordVersion' in value) || value.recordVersion !== 3) {
             await this.table.update(id, current => {
               const parsed = validateEntries(this.table.entries()).get(id)
               if (parsed === undefined) throw new Error('workspace record is missing')
@@ -89,7 +90,7 @@ export class WorkspaceDirectory {
    * @param id Organization identity.
    * @returns Detached record, or throws when the organization does not exist or the directory is invalid.
    */
-  record(id: WorkspaceId): WorkspaceRecordV2 {
+  record(id: WorkspaceId): WorkspaceRecordV3 {
     const record = this.records().get(id)
     if (record === undefined) throw new Error('workspace record is missing')
     return structuredClone(record)
@@ -118,7 +119,7 @@ export class WorkspaceDirectory {
    * @param signal Cancellation checked after queue admission and before the atomic callback.
    * @returns Detached committed record and transform value. Cancellation after commit does not undo it.
    */
-  updateRecord<Value>(id: WorkspaceId, transform: (record: WorkspaceRecordV2) => { readonly record: WorkspaceRecordV2; readonly value: Value }, signal?: AbortSignal): Promise<{ readonly record: WorkspaceRecordV2; readonly value: Value }> {
+  updateRecord<Value>(id: WorkspaceId, transform: (record: WorkspaceRecordV3) => { readonly record: WorkspaceRecordV3; readonly value: Value }, signal?: AbortSignal): Promise<{ readonly record: WorkspaceRecordV3; readonly value: Value }> {
     return this.enqueue(async () => {
       signal?.throwIfAborted()
       this.records()
@@ -166,7 +167,7 @@ export class WorkspaceDirectory {
    * @param request Stable operation identifier and organization label.
    * @returns Detached committed record with a newly generated identity.
    */
-  create(request: CreateWorkspaceRequest): Promise<WorkspaceRecordV2> {
+  create(request: CreateWorkspaceRequest): Promise<WorkspaceRecordV3> {
     return this.enqueue(async () => {
       request.signal?.throwIfAborted()
       const digest = requestDigest({ kind: 'created', label: request.label })
@@ -174,12 +175,13 @@ export class WorkspaceDirectory {
       if (previous !== undefined) return structuredClone(previous)
       const id = WorkspaceId(`org-${randomUUID()}`)
       return this.insert({
-        recordVersion: 2,
+        recordVersion: 3,
         descriptor: { id, label: request.label, lifecycle: 'active', creation: {
           kind: 'created', createdAt: new Date().toISOString(), operationId: request.operationId, requestDigest: digest,
         } },
         aggregate: createInitialState(id),
         workflow: createInitialWorkflowState(),
+        communication: createInitialCommunicationState(),
       })
     })
   }
@@ -189,7 +191,7 @@ export class WorkspaceDirectory {
    * @param request Raw source JSON, optional label override, operation identity and explicit budgets.
    * @returns Detached committed record with a new identity and no source session bindings.
    */
-  import(request: ImportWorkspaceRequest): Promise<WorkspaceRecordV2> {
+  import(request: ImportWorkspaceRequest): Promise<WorkspaceRecordV3> {
     return this.enqueue(async () => {
       request.signal?.throwIfAborted()
       assertWorkspaceImportBudget(request.json, request.limits)
@@ -198,14 +200,15 @@ export class WorkspaceDirectory {
       const previous = this.operationRetry(request.operationId, digest)
       if (previous !== undefined) return structuredClone(previous)
       const id = WorkspaceId(`org-${randomUUID()}`)
-      const prepared = prepareWorkspaceImport(request.json, { workspaceId: id, limits: request.limits })
+      const prepared = prepareWorkspaceImportV4(request.json, { workspaceId: id, limits: request.limits })
       return this.insert({
-        recordVersion: 2,
+        recordVersion: 3,
         descriptor: { ...prepared.descriptor, label: request.label ?? prepared.descriptor.label, creation: {
           kind: 'imported', createdAt: new Date().toISOString(), operationId: request.operationId, requestDigest: digest,
         } },
         aggregate: prepared.state,
         workflow: prepared.workflow,
+        communication: prepared.communication,
       })
     })
   }
@@ -216,7 +219,7 @@ export class WorkspaceDirectory {
    * @param label Nonblank display label.
    * @returns Detached committed record with its aggregate unchanged.
    */
-  rename(id: WorkspaceId, label: string, signal?: AbortSignal): Promise<WorkspaceRecordV2> {
+  rename(id: WorkspaceId, label: string, signal?: AbortSignal): Promise<WorkspaceRecordV3> {
     return this.updateDescriptor(id, descriptor => ({ ...descriptor, label }), signal)
   }
 
@@ -226,16 +229,16 @@ export class WorkspaceDirectory {
    * @param lifecycle New lifecycle.
    * @returns Detached committed record with its aggregate unchanged.
    */
-  setLifecycle(id: WorkspaceId, lifecycle: WorkspaceDescriptor['lifecycle'], signal?: AbortSignal): Promise<WorkspaceRecordV2> {
+  setLifecycle(id: WorkspaceId, lifecycle: WorkspaceDescriptor['lifecycle'], signal?: AbortSignal): Promise<WorkspaceRecordV3> {
     return this.updateDescriptor(id, descriptor => ({ ...descriptor, lifecycle }), signal)
   }
 
-  private records(): Map<WorkspaceId, WorkspaceRecordV2> {
+  private records(): Map<WorkspaceId, WorkspaceRecordV3> {
     if (!this.initialized) throw new Error('workspace directory is not initialized')
     return validateEntries(this.table.entries())
   }
 
-  private operationRetry(operationId: WorkspaceOperationId, digest: string): WorkspaceRecordV2 | undefined {
+  private operationRetry(operationId: WorkspaceOperationId, digest: string): WorkspaceRecordV3 | undefined {
     if (!workspaceDescriptorSchema.shape.creation.unwrap().shape.operationId.safeParse(operationId).success) {
       throw new Error('workspace operation identity is invalid')
     }
@@ -247,7 +250,7 @@ export class WorkspaceDirectory {
     return undefined
   }
 
-  private async insert(record: WorkspaceRecordV2): Promise<WorkspaceRecordV2> {
+  private async insert(record: WorkspaceRecordV3): Promise<WorkspaceRecordV3> {
     const id = record.descriptor.id
     if (this.table.get(id) !== undefined) throw new Error('workspace identity already exists')
     const validated = this.validateReplacement(id, record)
@@ -255,7 +258,7 @@ export class WorkspaceDirectory {
     return structuredClone(validated)
   }
 
-  private updateDescriptor(id: WorkspaceId, fn: (descriptor: WorkspaceDescriptor) => WorkspaceDescriptor, signal?: AbortSignal): Promise<WorkspaceRecordV2> {
+  private updateDescriptor(id: WorkspaceId, fn: (descriptor: WorkspaceDescriptor) => WorkspaceDescriptor, signal?: AbortSignal): Promise<WorkspaceRecordV3> {
     return this.enqueue(async () => {
       signal?.throwIfAborted()
       this.records()
@@ -268,8 +271,8 @@ export class WorkspaceDirectory {
     })
   }
 
-  private validateReplacement(id: WorkspaceId, candidate: WorkspaceRecordV2): WorkspaceRecordV2 {
-    const parsed = workspaceRecordV2Schema.safeParse(candidate)
+  private validateReplacement(id: WorkspaceId, candidate: WorkspaceRecordV3): WorkspaceRecordV3 {
+    const parsed = workspaceRecordV3Schema.safeParse(candidate)
     if (!parsed.success) throw new Error('invalid workspace record')
     const entries = new Map(this.table.entries())
     entries.set(id, parsed.data)
@@ -285,8 +288,8 @@ export class WorkspaceDirectory {
   }
 }
 
-function validateEntries(entries: Iterable<[WorkspaceId, StoredWorkspace]>): Map<WorkspaceId, WorkspaceRecordV2> {
-  const result = new Map<WorkspaceId, WorkspaceRecordV2>()
+function validateEntries(entries: Iterable<[WorkspaceId, StoredWorkspace]>): Map<WorkspaceId, WorkspaceRecordV3> {
+  const result = new Map<WorkspaceId, WorkspaceRecordV3>()
   const sessions = new Set<string>()
   const operations = new Set<WorkspaceOperationId>()
   for (const [id, value] of entries) {
@@ -305,21 +308,22 @@ function validateEntries(entries: Iterable<[WorkspaceId, StoredWorkspace]>): Map
   return result
 }
 
-function validateRecord(id: WorkspaceId, value: StoredWorkspace): WorkspaceRecordV2 {
+function validateRecord(id: WorkspaceId, value: StoredWorkspace): WorkspaceRecordV3 {
   const parsed = storedWorkspaceSchema.safeParse(value)
   if (!parsed.success) throw new Error('invalid workspace record')
   const record = 'recordVersion' in parsed.data
-    ? parsed.data.recordVersion === 2 ? parsed.data : { ...parsed.data, recordVersion: 2 as const, workflow: createInitialWorkflowState() }
+    ? parsed.data.recordVersion === 3 ? parsed.data : { ...parsed.data, recordVersion: 3 as const, workflow: parsed.data.recordVersion === 2 ? parsed.data.workflow : createInitialWorkflowState(), communication: createInitialCommunicationState() }
     : wrapLegacy(parsed.data)
   if (record.descriptor.id !== id) throw new Error('workspace descriptor does not match its table key')
   assertWorkspaceInvariants(record.aggregate, id)
   assertWorkflowInvariants(record.aggregate, record.workflow)
   assertWorkflowOperationDigests(record.workflow)
+  assertCommunicationRelationships(record.aggregate, record.communication, record.workflow)
   return record
 }
 
-function wrapLegacy(aggregate: WorkspaceState): WorkspaceRecordV2 {
-  return { recordVersion: 2, descriptor: { id: aggregate.workspaceId, label: 'Local organization', lifecycle: 'active' }, aggregate, workflow: createInitialWorkflowState() }
+function wrapLegacy(aggregate: WorkspaceState): WorkspaceRecordV3 {
+  return { recordVersion: 3, descriptor: { id: aggregate.workspaceId, label: 'Local organization', lifecycle: 'active' }, aggregate, workflow: createInitialWorkflowState(), communication: createInitialCommunicationState() }
 }
 
 function requestDigest(value: { kind: 'created'; label: string } | { kind: 'imported'; label: string | null; sourceDigest: string }): string {

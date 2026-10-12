@@ -6,7 +6,7 @@ import type { WorkspaceRpcService, WorkspaceRpcResult } from './rpc.ts'
 import { createWorkflowRpcHandler } from './workflow-rpc.ts'
 import type { WorkspaceWorkflowRpcResult } from './workflow-rpc.ts'
 import { WorkspaceOperationId, workspaceIdentitySchema } from './workspace-record.ts'
-import type { WorkspaceDirectoryEntry, WorkspaceRecordV2 } from './workspace-record.ts'
+import type { WorkspaceDirectoryEntry, WorkspaceRecordV3 } from './workspace-record.ts'
 
 /** Read-only import facts shown before human confirmation; no candidate is persisted. */
 export interface OrganizationImportPreview {
@@ -35,17 +35,17 @@ export interface OrganizationRpcService {
   /** @returns Detached organization directory, including archived records. */
   listOrganizations(): readonly WorkspaceDirectoryEntry[]
   /** @param operationId Retry identity. @param label Display name. @returns The new or previously created record. */
-  createOrganization(operationId: WorkspaceOperationId, label: string, signal?: AbortSignal): Promise<WorkspaceRecordV2>
+  createOrganization(operationId: WorkspaceOperationId, label: string, signal?: AbortSignal): Promise<WorkspaceRecordV3>
   /** @param json Untrusted document. @returns Validated preview without writing. */
   previewImport(json: string): OrganizationImportPreview
   /** @param operationId Retry identity. @param json Source document. @param label Confirmed display name. @returns A new or already restored record. */
-  importOrganization(operationId: WorkspaceOperationId, json: string, label: string, signal?: AbortSignal): Promise<WorkspaceRecordV2>
+  importOrganization(operationId: WorkspaceOperationId, json: string, label: string, signal?: AbortSignal): Promise<WorkspaceRecordV3>
   /** @param id Selected organization. @param label New display name. @returns Committed record. */
-  renameOrganization(id: WorkspaceId, label: string, signal?: AbortSignal): Promise<WorkspaceRecordV2>
+  renameOrganization(id: WorkspaceId, label: string, signal?: AbortSignal): Promise<WorkspaceRecordV3>
   /** @param id Selected organization. @param mode Explicit stop-or-drain choice. @returns Archived record after quiescence. */
-  archiveOrganization(id: WorkspaceId, mode: 'stop' | 'wait', signal?: AbortSignal): Promise<WorkspaceRecordV2>
+  archiveOrganization(id: WorkspaceId, mode: 'stop' | 'wait', signal?: AbortSignal): Promise<WorkspaceRecordV3>
   /** @param id Quiescent archived organization. @returns Committed active record. */
-  reopenOrganization(id: WorkspaceId, signal?: AbortSignal): Promise<WorkspaceRecordV2>
+  reopenOrganization(id: WorkspaceId, signal?: AbortSignal): Promise<WorkspaceRecordV3>
   /** @param id Selected idle organization. @returns Canonical portable document without Session bindings. */
   exportOrganization(id: WorkspaceId, signal?: AbortSignal): Promise<OrganizationExport>
 }

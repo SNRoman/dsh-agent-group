@@ -20,6 +20,10 @@ import { acceptTaskDelivery, startTaskDelivery, terminalizeTask } from '../packa
 import { proposeWorkflowDraft } from '../packages/host/src/workflow.ts'
 import type { WorkflowCommand, WorkflowEndpoint } from '../packages/host/src/workflow-contract.ts'
 
+function predecessorRecord(record: ReturnType<WorkspaceDirectory['record']>) {
+  return { recordVersion: 2 as const, descriptor: record.descriptor, aggregate: record.aggregate, workflow: record.workflow }
+}
+
 const roots: string[] = []
 const context = { humanId: HumanId('owner'), occurredAt: '2026-10-11T00:00:00.000Z' }
 const brief = { title: 'Report', instructions: 'Write report', expectedArtifacts: ['report'], acceptanceCriteria: ['accepted'] }
@@ -65,7 +69,7 @@ test('bare and v1 upgrade once to empty workflow without invented facts', async 
     const update = vi.spyOn(host.table, 'update')
     await host.directory.initialize(); await host.directory.initialize()
     expect(update).toHaveBeenCalledTimes(2)
-    for (const workspaceId of [local, id]) { const record = host.directory.record(workspaceId); expect(record.recordVersion).toBe(2); expect(record.workflow).toEqual(createInitialWorkflowState()); expect(record.descriptor.creation).toBeUndefined() }
+    for (const workspaceId of [local, id]) { const record = host.directory.record(workspaceId); expect(record.recordVersion).toBe(3); expect(record.workflow).toEqual(createInitialWorkflowState()); expect(record.descriptor.creation).toBeUndefined() }
   } finally { await host.dispose() }
 })
 test('receipt retry after restart bypasses stale CAS without reassigning', async () => {
@@ -122,7 +126,7 @@ test('durable and imported operation digests match the recorded human semantic c
   const host = await seeded()
   try {
     await host.directory.executeWorkflow(local, request(host.directory, { type: 'workflow/draft/create', brief }, 'draft'), context)
-    const original = host.directory.record(local); const exported = createWorkspaceExportV3(original, { exportedAt: context.occurredAt })
+    const original = predecessorRecord(host.directory.record(local)); const exported = createWorkspaceExportV3(original, { exportedAt: context.occurredAt })
     const damaged = JSON.parse(exported.json); damaged.workspace.workflow.operations.draft.requestDigest = 'a'.repeat(64)
     expect(() => prepareWorkspaceImport(sign(damaged), { workspaceId: WorkspaceId('invalid'), limits })).toThrow(/relationships/i)
     const broken = { ...original, workflow: { ...original.workflow, operations: { ...original.workflow.operations, [WorkflowOperationId('draft')]: { ...original.workflow.operations[WorkflowOperationId('draft')]!, requestDigest: 'a'.repeat(64) } } } }
@@ -156,17 +160,17 @@ test('abort after backend durability returns the committed receipt', async () =>
 test('v3 retains workflow and equal internal IDs across imported organizations', async () => {
   const host = await seeded()
   try { await host.directory.executeWorkflow(local, request(host.directory, { type: 'workflow/draft/create', brief, suggestedAssigneeAgentId: host.agentId }, 'draft'), context)
-    const original = host.directory.record(local); const exported = createWorkspaceExportV3(original, { exportedAt: context.occurredAt })
+    const original = predecessorRecord(host.directory.record(local)); const exported = createWorkspaceExportV3(original, { exportedAt: context.occurredAt })
     const copy = prepareWorkspaceImport(exported.json, { workspaceId: WorkspaceId('copy'), limits })
     expect(copy.workflow).toEqual(original.workflow); expect(copy.state.agents).toEqual(original.aggregate.agents); expect(copy.descriptor).not.toHaveProperty('creation'); expect(copy.state.sessionBindings).toEqual({})
     expect(workspaceRecordV2Schema.safeParse({ recordVersion: 2, descriptor: copy.descriptor, aggregate: copy.state, workflow: copy.workflow }).success).toBe(true)
-    expect(host.directory.record(local)).toEqual(original)
+    expect(predecessorRecord(host.directory.record(local))).toEqual(original)
   } finally { await host.dispose() }
 })
 test('v3 rejects raw digest corruption, workflow references and collection budget excess', async () => {
   const host = await seeded()
   try { await host.directory.executeWorkflow(local, request(host.directory, { type: 'workflow/draft/create', brief }, 'draft'), context)
-    const exported = createWorkspaceExportV3(host.directory.record(local), { exportedAt: context.occurredAt }); const document = JSON.parse(exported.json)
+    const exported = createWorkspaceExportV3(predecessorRecord(host.directory.record(local)), { exportedAt: context.occurredAt }); const document = JSON.parse(exported.json)
     document.workspace.workflow.drafts[Object.keys(document.workspace.workflow.drafts)[0]!].suggestedAssigneeAgentId = AgentId('toString')
     expect(() => prepareWorkspaceImport(sign(document), { workspaceId: WorkspaceId('copy'), limits })).toThrow(/relationships/i)
     expect(() => prepareWorkspaceImport(exported.json.replace('Write report', 'Changed report'), { workspaceId: WorkspaceId('copy'), limits })).toThrow(/digest/i)
@@ -201,7 +205,7 @@ test('v3 preserves templates, confirmed briefs, results, selected handoffs and o
     await host.directory.executeWorkflow(local, request(host.directory, { type: 'workflow/company-template/confirm', templateRevisionId: company.value.templateRevisionId, confirmed: true, memoryStart: { type: 'new-events' } }, 'company-confirm'), context)
     await host.directory.updateRecord(local, record => { const proposal = proposeWorkflowDraft(record, { brief, suggestedAssigneeAgentId: host.agentId }, { agentId: host.agentId, occurredAt: context.occurredAt }); return { record: { ...record, aggregate: proposal.aggregate, workflow: proposal.workflow }, value: proposal.value } })
     await host.directory.updateAggregate(local, state => mutateWorkspace(state, { type: 'agent/depart', agentId: host.agentId }).state)
-    const original = host.directory.record(local); const exported = createWorkspaceExportV3(original, { exportedAt: context.occurredAt })
+    const original = predecessorRecord(host.directory.record(local)); const exported = createWorkspaceExportV3(original, { exportedAt: context.occurredAt })
     const copy = prepareWorkspaceImport(exported.json, { workspaceId: WorkspaceId('copied'), limits })
     expect(copy.workflow).toEqual(original.workflow)
     expect(copy.workflow.drafts[handoff.value.draftId]?.handoff?.artifacts.map(item => item.id)).toEqual([selected.value.artifactId])
