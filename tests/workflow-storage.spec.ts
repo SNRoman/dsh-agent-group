@@ -43,12 +43,13 @@ async function seeded() {
   const host = await boot(); await host.directory.initialize()
   const definition = mutateWorkspace(host.directory.snapshot(local), { type: 'definition/create', name: 'Role', description: 'd', instructions: 'i' })
   const agent = mutateWorkspace(definition.state, { type: 'agent/create', definitionId: definition.definitionId, name: 'Ada' })
-  await host.directory.updateAggregate(local, () => agent.state)
+  const room = mutateWorkspace(agent.state, { type: 'room/create', kind: 'group', name: 'Work' })
+  await host.directory.updateAggregate(local, () => mutateWorkspace(room.state, { type: 'room/join', roomId: room.roomId, agentId: agent.agentId, memoryStart: { type: 'new-events' } }).state)
   return { ...host, agentId: agent.agentId }
 }
 function request<K extends WorkflowEndpoint>(directory: WorkspaceDirectory, command: WorkflowCommand<K>, op: string) {
   const record = directory.record(local)
-  return { expectedAggregateRevision: record.aggregate.revision, expectedWorkflowRevision: record.workflow.revision, operationId: WorkflowOperationId(op), command }
+  return { expectedAggregateRevision: record.aggregate.revision, expectedWorkflowRevision: record.workflow.revision, operationId: WorkflowOperationId(op), command, ...(command.type === 'workflow/result/handoff' || command.type === 'workflow/result/review' && command.decision === 'changes-requested' ? { roomId: Object.values(record.aggregate.rooms)[0]!.id } : {}) }
 }
 function sign(document: Record<string, unknown>): string { const { digest: _digest, ...envelope } = document; return JSON.stringify({ ...envelope, digest: { algorithm: 'sha-256', canonicalization: 'RFC8785', hex: createHash('sha256').update(canonicalize(envelope)!).digest('hex') } }) }
 

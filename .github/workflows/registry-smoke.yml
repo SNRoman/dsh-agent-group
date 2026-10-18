@@ -68,6 +68,7 @@ jobs:
           pnpm smoke:registry --
           --version "${{ inputs.plugin-version }}"
           --dsh "$GITHUB_WORKSPACE/deepseek-harness"
+          --scratch-root "$GITHUB_WORKSPACE/plugin/dsh-agent-group/.release-smoke"
 
       - name: Upload registry evidence
         if: always()

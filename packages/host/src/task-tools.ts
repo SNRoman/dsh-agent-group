@@ -4,10 +4,10 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition, ToolRunContext, ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { WorkspaceBusinessError } from './errors.ts'
-import { AgentId, TaskId } from './ids.ts'
+import { AgentId, RoomId, TaskId } from './ids.ts'
 import type { AgentId as WorkspaceAgentId, TaskDeliveryAttemptId, TaskId as WorkspaceTaskId } from './ids.ts'
 import { inspectTaskDelivery, recordTaskResultAfterCancel, terminalizeTask } from './task-delivery.ts'
-import { assignDelegatedTask } from './tasks.ts'
+import type { AssignDelegatedTaskRequest, AssignDelegatedTaskResult } from './tasks.ts'
 import type { WorkspaceState } from './types.ts'
 
 /** Registry face used to install and remove one complete task-tool set. */
@@ -21,6 +21,8 @@ export interface WorkspaceTaskToolHost {
   snapshot(): WorkspaceState
   /** Commit one pure aggregate mutation through the workspace table. */
   apply(mutation: (state: WorkspaceState) => WorkspaceState): Promise<WorkspaceState>
+  /** Authenticate the actual caller and atomically persist its chat message, source and granted assignment. */
+  delegateTask(agent: Agent, request: Omit<AssignDelegatedTaskRequest, 'actorAgentId'> & { readonly roomId: RoomId }, signal?: AbortSignal): Promise<Omit<AssignDelegatedTaskResult, 'state'>>
   /** Deliver one assigned task through the durable task coordinator. */
   runAssignedTask(agentId: WorkspaceAgentId, taskId: WorkspaceTaskId): Promise<string>
   /** Run one child through the existing child controller and settlement owner. */
@@ -75,6 +77,7 @@ function createWorkspaceTaskTools(hosts: WorkspaceTaskToolHosts): readonly ToolD
     name: 'workspace_delegate_task',
     description: 'Delegate work under an assigned root task to another employed workspace agent.',
     parameters: {
+      roomId: { type: 'string', required: true, description: 'Selected chat with both the caller and the peer colleague as active members.' },
       rootTaskId: taskIdParameter,
       assigneeAgentId: {
         type: 'string',
@@ -101,25 +104,17 @@ function createWorkspaceTaskTools(hosts: WorkspaceTaskToolHosts): readonly ToolD
       render: (_args, value) => textOutput(`Delegated task ${value.taskId} completed.\n\n${value.result}`),
     },
     execute: async (args, exec) => {
-      assertExactArguments('workspace_delegate_task', args, ['rootTaskId', 'assigneeAgentId', 'title'])
+      assertExactArguments('workspace_delegate_task', args, ['roomId', 'rootTaskId', 'assigneeAgentId', 'title'])
       const host = resolveHost(hosts, exec)
       const actorAgentId = resolveActor(host, exec)
+      const agent = exec.agent
+      if (agent === undefined) throw new WorkspaceTaskToolError('WORKSPACE_TASK_CALLER_UNAVAILABLE')
+      if (typeof args.roomId !== 'string' || args.roomId.trim() === '') throw new WorkspaceTaskToolError('WORKSPACE_TASK_POLICY_DENIED')
+      const roomId = RoomId(args.roomId.trim())
       const rootTaskId = TaskId(args.rootTaskId)
       const assigneeAgentId = AgentId(args.assigneeAgentId)
       const delegate = async () => await runAsActiveActor(actorAgentId, async () => {
-        let delegated: { readonly taskId: WorkspaceTaskId; readonly taskAssignmentId: string } | undefined
-        await host.apply(current => {
-          const changed = assignDelegatedTask(current, {
-            actorAgentId,
-            rootTaskId,
-            assigneeAgentId,
-            title: args.title,
-          })
-          delegated = { taskId: changed.taskId, taskAssignmentId: changed.taskAssignmentId }
-          return changed.state
-        })
-        if (delegated === undefined) throw new Error('Workspace task delegation did not publish durable ids.')
-        const published = delegated
+        const published = await host.delegateTask(agent, { roomId, rootTaskId, assigneeAgentId, title: args.title }, exec.signal)
         const result = await host.runAssignedTask(assigneeAgentId, published.taskId)
         return {
           taskId: published.taskId,
@@ -195,6 +190,7 @@ function createWorkspaceTaskTools(hosts: WorkspaceTaskToolHosts): readonly ToolD
       let attemptId: TaskDeliveryAttemptId | undefined
       await runAsActiveActor(actorAgentId, async () => {
         await host.apply(current => {
+          if (exec.agent === undefined || host.agentIdFor(exec.agent) !== actorAgentId) throw new WorkspaceTaskToolError('WORKSPACE_TASK_CALLER_UNAVAILABLE')
           const inspection = inspectTaskDelivery(current, taskId)
           if (inspection.attemptId === undefined || inspection.phase !== 'accepted') {
             throw new WorkspaceTaskToolError('WORKSPACE_TASK_POLICY_DENIED')

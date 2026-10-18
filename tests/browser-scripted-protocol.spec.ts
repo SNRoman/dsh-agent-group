@@ -1,10 +1,17 @@
 import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createSystemMessage, createToolResultMessage, createUserMessage, ToolCallId, type GenerateOptions, type LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
-import { describe, expect, it } from 'vitest'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import { assertObjectJsonSchema, validateJsonSchemaValue, type ToolDefinition } from '@deepseek-ai/dsh-tools'
+import { describe, expect, it, vi } from 'vitest'
 import { apply, protocolStep, taskIdentity, waitForObservedStop } from './fixtures/browser/scripted-llm.ts'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { HumanId, TaskDeliveryAttemptId, WorkspaceEventId, WorkspaceId } from '../packages/host/src/ids.ts'
+import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
+import { assignDelegatedTask, assignHumanTask, grantTaskDelegation } from '../packages/host/src/tasks.ts'
+import { registerWorkspaceTaskTools, type WorkspaceTaskToolHost } from '../packages/host/src/task-tools.ts'
 
 function adapter(): LlmAdapter {
   let registered: LlmAdapter | undefined
@@ -27,6 +34,78 @@ async function output(options: GenerateOptions): Promise<StreamChunk[]> {
 }
 
 describe('Browser scripted request protocol', () => {
+  it.each(['v020-safe-failure', 'v020-hold-tool', 'v020-delegate'] as const)('routes %s through the selected chat schema and delegation authority', async callId => {
+    const directory = await mkdtemp(join(tmpdir(), 'browser-delegation-protocol-'))
+    const definition = mutateWorkspace(createInitialState(WorkspaceId('local')), { type: 'definition/create', name: 'Release engineer', description: 'Release', instructions: 'Run the fixture' })
+    const alice = mutateWorkspace(definition.state, { type: 'agent/create', definitionId: definition.definitionId, name: 'Alice' })
+    const bob = mutateWorkspace(alice.state, { type: 'agent/create', definitionId: definition.definitionId, name: 'Bob' })
+    const decoy = mutateWorkspace(bob.state, { type: 'room/create', kind: 'group', name: 'Task tools requirements' })
+    const room = mutateWorkspace(decoy.state, { type: 'room/create', kind: 'group', name: 'Release room' })
+    let state = room.state
+    for (const agentId of [alice.agentId, bob.agentId]) state = mutateWorkspace(state, { type: 'room/join', roomId: room.roomId, agentId, memoryStart: { type: 'new-events' } }).state
+    const held = callId === 'v020-hold-tool'
+    const title = held ? 'V020_HOLD' : 'V020_ROOT V020_DELEGATE'
+    const assigned = assignHumanTask(state, { humanId: HumanId('owner'), assigneeAgentId: alice.agentId, title })
+    state = assigned.state
+    const granted = callId === 'v020-delegate'
+    if (granted) state = grantTaskDelegation(state, { humanId: HumanId('owner'), rootTaskId: assigned.taskId, granteeAgentId: alice.agentId }).state
+    const caller = { id: SessionId('scripted-alice') } as Agent
+    const host: WorkspaceTaskToolHost = {
+      agentIdFor: agent => agent === caller ? alice.agentId : undefined,
+      snapshot: () => structuredClone(state),
+      apply: async mutation => { state = mutation(state); return structuredClone(state) },
+      delegateTask: async (_agent, request) => {
+        const changed = assignDelegatedTask(state, { ...request, actorAgentId: alice.agentId })
+        state = changed.state
+        return { taskId: changed.taskId, taskAssignmentId: changed.taskAssignmentId }
+      },
+      runAssignedTask: async () => 'peer result',
+      runChild: async () => { throw new Error('delegation fixture must not run a child') },
+    }
+    const tools: ToolDefinition[] = []
+    const dispose = registerWorkspaceTaskTools({ register: tool => { tools.push(tool); return () => {} } }, host)
+    const gate = join(directory, 'browser-gate')
+    try {
+      vi.stubEnv('DSH_HOME', directory)
+      vi.stubEnv('DSH_AGENT_GROUP_SMOKE_GATE', gate)
+      vi.stubEnv('DSH_AGENT_GROUP_TASK_TOOLS_FIXTURE', undefined)
+      await mkdir(join(directory, 'storages'))
+      await writeFile(join(directory, 'storages', 'agent_workspace.json'), JSON.stringify({ tables: { workspaces: { local: { aggregate: state } } } }), 'utf8')
+      if (granted) await writeFile(`${gate}.denial-observed`, 'release\n', 'utf8')
+      const options: GenerateOptions = {
+        ...request(title), sessionId: caller.id, tools,
+        messages: [createUserMessage({ content: [{ type: 'text', text: title }], source: {
+          kind: 'agent-workspace-delivery', workspaceId: state.workspaceId,
+          source: { kind: 'task', taskId: assigned.taskId }, sourceEventId: WorkspaceEventId('source-event'), taskDeliveryAttemptId: TaskDeliveryAttemptId('attempt'),
+        } })],
+      }
+      if (granted) options.messages.push(createToolResultMessage({ callId: ToolCallId('v020-safe-failure'), content: [{ type: 'text', text: 'Workspace task request is not permitted.' }], isError: true }))
+      const chunk = (await output(options)).find(chunk => chunk.type === 'block-end' && chunk.block.type === 'tool-call')
+      if (chunk?.type !== 'block-end' || chunk.block.type !== 'tool-call') throw new Error('scripted delegation call is missing')
+      expect(chunk.block.id).toBe(callId)
+      expect(chunk.block.name).toBe('workspace_delegate_task')
+      const args: unknown = JSON.parse(chunk.block.arguments)
+      const tool = tools.find(tool => tool.name === chunk.block.name)
+      if (tool === undefined) throw new Error('workspace delegation tool is missing')
+      assertObjectJsonSchema(tool.parameters)
+      expect(validateJsonSchemaValue(tool.parameters, args)).toEqual([])
+      expect(args).toEqual({ roomId: room.roomId, rootTaskId: assigned.taskId, assigneeAgentId: bob.agentId, title: granted ? 'V020_CHILD' : held ? 'V020_HOLD_SAFE_FAILURE' : 'V020_SAFE_FAILURE' })
+      const before = structuredClone(state)
+      const execution = tool.execute(args, { agent: caller, signal: new AbortController().signal, concludeTurn: () => {}, deferContext: () => {} } as never)
+      if (granted) {
+        await expect(execution).resolves.toMatchObject({ result: 'peer result' })
+        expect(Object.values(state.tasks).find(task => task.title === 'V020_CHILD')?.rootTaskId).toBe(assigned.taskId)
+      } else {
+        await expect(execution).rejects.toMatchObject({ name: 'WorkspaceTaskToolError', code: 'WORKSPACE_TASK_POLICY_DENIED', message: 'Workspace task request is not permitted.' })
+        expect(state).toEqual(before)
+      }
+    } finally {
+      dispose()
+      vi.unstubAllEnvs()
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it('requires the visible held-turn tool before starting the stop hold', async () => {
     const options = request('V020_HOLD')
     const held = { ...options, sessionId: 'session', messages: [{ ...options.messages[0], source: { kind: 'agent-workspace-delivery', source: { kind: 'task', taskId: 'held' }, taskDeliveryAttemptId: 'attempt' } }] } as unknown as GenerateOptions

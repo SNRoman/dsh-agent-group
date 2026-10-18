@@ -204,6 +204,100 @@ describe('unified event memory', () => {
     expect(memoryEventIds(rejoined.state, workspace.aliceId)).toEqual([earlier.eventId])
   })
 
+  test('synchronizes complete group history without acquiring unknown events from another group', () => {
+    const workspace = createWorkspace()
+    const other = mutateWorkspace(workspace.state, { type: 'room/create', kind: 'group', name: 'Other team' })
+    const otherJoined = join(other.state, other.roomId, workspace.aliceId)
+    const known = appendRoomMessage(otherJoined, {
+      roomId: other.roomId, actor: { type: 'human', id: HumanId('owner') }, text: 'Previously acquired personal memory', mentions: [],
+    })
+    const leftOther = mutateWorkspace(known.state, { type: 'room/leave', membershipId: Object.values(otherJoined.memberships)[0]!.id })
+    const unknown = appendRoomMessage(leftOther.state, {
+      roomId: other.roomId, actor: { type: 'human', id: HumanId('owner') }, text: 'Not acquired after leaving the other team', mentions: [],
+    })
+    const room = mutateWorkspace(unknown.state, { type: 'room/create', kind: 'group', name: 'Engineering' })
+    const createdEventId = room.state.events.at(-1)!.id
+    const earlier = appendRoomMessage(room.state, {
+      roomId: room.roomId, actor: { type: 'human', id: HumanId('owner') }, text: 'Earlier group planning', mentions: [],
+    })
+    const later = appendRoomMessage(earlier.state, {
+      roomId: room.roomId, actor: { type: 'human', id: HumanId('owner') }, text: 'Latest group planning', mentions: [],
+    })
+    const latestOther = appendRoomMessage(later.state, {
+      roomId: other.roomId, actor: { type: 'human', id: HumanId('owner') }, text: 'The latest workspace event belongs to another group', mentions: [],
+    })
+
+    const joined = joinRoomWithMemory(latestOther.state, {
+      type: 'room/join', roomId: room.roomId, agentId: workspace.aliceId,
+      memoryStart: { type: 'event-range', startSequence: 1, endSequence: latestOther.state.events.at(-1)!.sequence },
+    })
+
+    expect(memoryEventIds(joined.state, workspace.aliceId)).toEqual([known.eventId, createdEventId, earlier.eventId, later.eventId])
+    expect(joined.state.memoryEntries.map(entry => entry.acquiredBy)).toEqual([
+      'room-membership', 'history-sync', 'history-sync', 'history-sync',
+    ])
+    expect(recallAgentEvents(joined.state, {
+      agentId: workspace.aliceId, query: 'personal', matchingOnly: true, characterBudget: 2_000,
+    }).eventIds).toEqual([known.eventId])
+  })
+
+  test('joins a group with no messages and acquires messages arriving after admission', () => {
+    const workspace = createWorkspace()
+    const room = mutateWorkspace(workspace.state, { type: 'room/create', kind: 'group', name: 'Engineering' })
+    const createdEventId = room.state.events.at(-1)!.id
+    const joined = joinRoomWithMemory(room.state, {
+      type: 'room/join', roomId: room.roomId, agentId: workspace.aliceId,
+      memoryStart: { type: 'event-range', startSequence: 1, endSequence: room.state.events.at(-1)!.sequence },
+    })
+
+    expect(memoryEventIds(joined.state, workspace.aliceId)).toEqual([createdEventId])
+
+    const future = appendRoomMessage(joined.state, {
+      roomId: room.roomId, actor: { type: 'human', id: HumanId('owner') }, text: 'First message after admission', mentions: [],
+    })
+    expect(memoryEventIds(future.state, workspace.aliceId)).toEqual([createdEventId, future.eventId])
+    expect(future.state.memoryEntries.at(-1)?.acquiredBy).toBe('room-membership')
+  })
+
+  test('a full-history rejoin fills the membership gap without duplicating earlier memory', () => {
+    const workspace = createWorkspace()
+    const room = mutateWorkspace(workspace.state, { type: 'room/create', kind: 'group', name: 'Engineering' })
+    const createdEventId = room.state.events.at(-1)!.id
+    const earlier = appendRoomMessage(room.state, {
+      roomId: room.roomId, actor: { type: 'human', id: HumanId('owner') }, text: 'Planning before the first join', mentions: [],
+    })
+    const firstJoin = joinRoomWithMemory(earlier.state, {
+      type: 'room/join', roomId: room.roomId, agentId: workspace.aliceId,
+      memoryStart: { type: 'event-range', startSequence: 1, endSequence: earlier.state.events.at(-1)!.sequence },
+    })
+    const present = appendRoomMessage(firstJoin.state, {
+      roomId: room.roomId, actor: { type: 'human', id: HumanId('owner') }, text: 'Planning during the first membership', mentions: [],
+    })
+    const left = mutateWorkspace(present.state, { type: 'room/leave', membershipId: Object.values(firstJoin.state.memberships)[0]!.id })
+    const missed = appendRoomMessage(left.state, {
+      roomId: room.roomId, actor: { type: 'human', id: HumanId('owner') }, text: 'Planning while the colleague is absent', mentions: [],
+    })
+    expect(memoryEventIds(missed.state, workspace.aliceId)).toEqual([createdEventId, earlier.eventId, present.eventId])
+
+    const rejoined = joinRoomWithMemory(missed.state, {
+      type: 'room/join', roomId: room.roomId, agentId: workspace.aliceId,
+      memoryStart: { type: 'event-range', startSequence: 1, endSequence: missed.state.events.at(-1)!.sequence },
+    })
+
+    expect(rejoined.state.memoryEntries.map(entry => ({ eventId: entry.eventId, acquiredBy: entry.acquiredBy }))).toEqual([
+      { eventId: createdEventId, acquiredBy: 'history-sync' },
+      { eventId: earlier.eventId, acquiredBy: 'history-sync' },
+      { eventId: present.eventId, acquiredBy: 'room-membership' },
+      { eventId: missed.eventId, acquiredBy: 'history-sync' },
+    ])
+    const future = appendRoomMessage(rejoined.state, {
+      roomId: room.roomId, actor: { type: 'human', id: HumanId('owner') }, text: 'Planning after rejoining', mentions: [],
+    })
+    expect(memoryEventIds(future.state, workspace.aliceId)).toEqual([
+      createdEventId, earlier.eventId, present.eventId, missed.eventId, future.eventId,
+    ])
+  })
+
   test('recalls relevant personal events before unrelated current-room events across every acquisition source', () => {
     const workspace = createWorkspace()
     const group = mutateWorkspace(workspace.state, { type: 'room/create', kind: 'group', name: 'Engineering' })

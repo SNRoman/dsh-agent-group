@@ -12,7 +12,6 @@ import { AgentId, HumanId, RoomId, TaskId } from './ids.ts'
 import type { AgentDefinitionId, ChildRunId as ChildId, WorkspaceEventId } from './ids.ts'
 import { finishChildRun } from './child-runs.ts'
 import { ChildControllerRegistry } from './child-controller.ts'
-import { recallAgentEvents } from './memory.ts'
 import { assertRoomMessageAuthorized } from './room-policy.ts'
 import { recordChildRunStarted } from './tasks.ts'
 import { assertAssignedTaskRunnable } from './task-policy.ts'
@@ -30,8 +29,8 @@ export interface WorkspaceDispatcherHost {
   retireWorkspaceActivity?(activity: WorkspaceActivityIdentity, workspaceRevision: number): void
   /** Stop-mode archiving prevents another room hop while allowing prior terminal writes. */
   assertContinuationAllowed?(): void
-  /** @param error Child handle disposal failure retained for its runtime generation's teardown. */
-  recordChildCleanupFailure?(error: unknown): void
+  /** @param error Child handle disposal failure. @param parentAgentId Owner whose context must stay blocked. @param retry Retained child-handle cleanup to complete before a later context rebuild. */
+  recordChildCleanupFailure?(error: unknown, parentAgentId: AgentId, retry: () => Promise<void>): void
 }
 
 /** Durable formal-task delivery surface used by the dispatcher. */
@@ -214,7 +213,8 @@ export class WorkspaceDispatcher {
           try {
             await run.dispose()
           } catch (error) {
-            this.host.recordChildCleanupFailure?.(error)
+            const failedRun = run
+            this.host.recordChildCleanupFailure?.(error, parentAgentId, async () => { await failedRun.dispose() })
             failure = failure === undefined ? error : new AggregateError([failure, error], 'child execution and disposal failed')
           }
         }
@@ -293,21 +293,11 @@ export class WorkspaceDispatcher {
 
   private async wakeOutcome(agentId: AgentId, source: DeliverySource, sourceEventId: WorkspaceEventId, query: string): Promise<WorkspaceTurnOutcome> {
     const state = this.host.snapshot()
-    const roomId = source.roomId
-    const recall = recallAgentEvents(state, { agentId, roomId, query, characterBudget: this.limits.recallCharacterBudget })
-    const collaboration = renderCollaborationContext(state, roomId)
     const delivery = createUserMessage({
       content: [{ type: 'text', text: query }],
       source: { kind: 'agent-workspace-delivery', workspaceId: state.workspaceId, source, sourceEventId },
     })
-    const supplemental = [recall.rendered, collaboration].filter(value => value.trim() !== '').join('\n\n')
-    const recallMessage = supplemental === ''
-      ? undefined
-      : createUserMessage({
-        content: [{ type: 'text', text: supplemental }],
-        source: { kind: 'agent-workspace-recall' },
-      })
-    return await this.host.deliver(agentId, delivery, recallMessage, source)
+    return await this.host.deliver(agentId, delivery, undefined, source)
   }
 
   private isEmployed(state: WorkspaceState, agentId: AgentId): boolean {
@@ -395,27 +385,6 @@ function activeRoomMembers(state: WorkspaceState, roomId: RoomId): ActiveRoomMem
     members.push({ id: agent.id, name: agent.name, definitionId: agent.definitionId })
   }
   return members
-}
-
-function renderCollaborationContext(state: WorkspaceState, roomId: RoomId): string {
-  const members = activeRoomMembers(state, roomId)
-  if (members.length === 0) return ''
-  const roleCounts = new Map<string, number>()
-  for (const member of members) {
-    const role = state.definitions[member.definitionId]?.name
-    if (role !== undefined) roleCounts.set(role, (roleCounts.get(role) ?? 0) + 1)
-  }
-  const rows = members.map(member => {
-    const role = state.definitions[member.definitionId]?.name
-    if (role === undefined) return `- @${member.name}`
-    const roleAlias = roleCounts.get(role) === 1 && role !== member.name ? `；唯一角色别名 @${role}` : ''
-    return `- @${member.name} — ${role}${roleAlias}`
-  })
-  return [
-    '当前房间可协作成员：',
-    ...rows,
-    '需要其他成员继续处理时，优先使用准确的实例显示名称 @成员名；上面标注了“唯一角色别名”的角色也可以直接 @角色名。不要输出内部 agent id。',
-  ].join('\n')
 }
 
 function childStatus(stopReason: string): 'completed' | 'failed' | 'cancelled' {

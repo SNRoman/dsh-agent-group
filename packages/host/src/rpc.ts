@@ -26,6 +26,10 @@ import type { MemoryPage, MemoryQuery } from './memory-query.ts'
 import { WORKSPACE_EVENT_TYPES } from './types.ts'
 import type { WorkspaceCommand, WorkspaceState } from './types.ts'
 import type { AssignHumanTaskResult, GrantTaskDelegationResult } from './tasks.ts'
+import type { ChatWorkCommand, ChatWorkRequest, ChatWorkResult, CommunicationSnapshot } from './chat-work-contract.ts'
+import type { MessageRecallPreview } from './message-recall.ts'
+import type { ContextResetId } from './communication-contract.ts'
+import type { WorkspaceEventId } from './ids.ts'
 
 /** Logical Connection channel owned exclusively by this plugin. */
 export const AGENT_WORKSPACE_RPC_CHANNEL = '/agent-workspace'
@@ -57,10 +61,23 @@ export interface WorkspaceMutationResult<Value> {
 
 /** Minimal service face required by the transport adapter. */
 export interface WorkspaceRpcService {
+  /** @param request Membership and stable retry identity. @param signal Precommit cancellation. @returns Left membership after personal room memory and native context are cleared. */
+  leaveRoomAndForget(request: { readonly membershipId: MembershipId; readonly operationId: ContextResetId; readonly expectedRevision: number }, signal?: AbortSignal): Promise<WorkspaceMutationResult<WorkspaceState>>
+  /** @param roomId Persisted chat. @param eventId Human-authored source. @returns Conservative withdrawal impact. */
+  previewRecall(roomId: RoomId, eventId: WorkspaceEventId): MessageRecallPreview | Promise<MessageRecallPreview>
+  retryRecallFiles(id: ContextResetId): Promise<CommunicationSnapshot>
+  /** @param request Author-owned stable reset request. @param signal Precommit cancellation. @returns Reset after replacement sessions are bound. */
+  recallMessage(request: { readonly operationId: ContextResetId; readonly roomId: RoomId; readonly eventId: WorkspaceEventId; readonly expectedRevision: number; readonly restoreFiles: boolean }, signal?: AbortSignal): Promise<CommunicationSnapshot>
+  /** @returns Communication metadata with current aggregate/workflow revision checkpoints. */
+  communicationSnapshot(): CommunicationSnapshot
+  /** @param request Real chat and complete brief with explicit owner. @param signal Precommit cancellation. @returns Stable work/source receipt; no repeated delivery on replay. */
+  assignChatWork(request: ChatWorkRequest<Extract<ChatWorkCommand, { type: 'communication/assign' }>>, signal?: AbortSignal): Promise<ChatWorkResult>
+  /** @param request Real chat and pending proposal with explicit owner. @param signal Precommit cancellation. @returns Stable work/source receipt after human confirmation. */
+  confirmChatWork(request: ChatWorkRequest<Extract<ChatWorkCommand, { type: 'communication/confirm' }>>, signal?: AbortSignal): Promise<ChatWorkResult>
   /** @returns Detached workflow paired with its aggregate revision; archived records remain readable. */
   workflowSnapshot(): WorkflowSnapshot
   /** @param request Both revisions and durable retry identity. @param command Human action. @param signal Precommit cancellation. @returns Committed receipt; replay performs no delivery. */
-  executeWorkflow<K extends WorkflowEndpoint>(request: WorkflowExpectedRevisions & { readonly operationId: WorkflowOperationId }, command: WorkflowCommand<K>, signal?: AbortSignal): Promise<WorkflowMutationResult<WorkflowMutationValueMap[K]>>
+  executeWorkflow<K extends WorkflowEndpoint>(request: WorkflowExpectedRevisions & { readonly operationId: WorkflowOperationId; readonly roomId?: RoomId }, command: WorkflowCommand<K>, signal?: AbortSignal): Promise<WorkflowMutationResult<WorkflowMutationValueMap[K]>>
   /** @param expected Displayed revisions. @param id Immutable configuration revision. @returns Validated preview without writing or materializing employees. */
   previewCompanyTemplate(expected: WorkflowExpectedRevisions, id: CompanyTemplateRevisionId): CompanyTemplatePreview
   snapshot(): WorkspaceState
@@ -182,6 +199,7 @@ const membershipMemoryStart = z.discriminatedUnion('type', [
 ])
 const joinRoomPayload = z.object({ expectedRevision, roomId: id, agentId: id, memoryStart: membershipMemoryStart }).strict()
 const leaveRoomPayload = z.object({ expectedRevision, membershipId: id }).strict()
+const leaveRoomAndForgetPayload = leaveRoomPayload.extend({ operationId: id }).strict()
 const postRoomPayload = z.object({ expectedRevision, roomId: id, text, mentions: z.array(id) }).strict()
 const taskAssignPayload = z.object({ expectedRevision, assigneeAgentId: id, title: text }).strict()
 const taskGrantPayload = z.object({ expectedRevision, granteeAgentId: id, rootTaskId: id }).strict()
@@ -349,6 +367,11 @@ export function createWorkspaceRpcHandler(service: WorkspaceRpcService): Workspa
           if (!parsed.success) return invalid(parsed.error.issues)
           return success(await service.execute(parsed.data.expectedRevision, { type: 'room/leave', membershipId: MembershipId(parsed.data.membershipId) }, signal))
         }
+        case 'room/leave-and-forget': {
+          const parsed = leaveRoomAndForgetPayload.safeParse(payload)
+          if (!parsed.success) return invalid(parsed.error.issues)
+          return success(await service.leaveRoomAndForget({ ...parsed.data, membershipId: MembershipId(parsed.data.membershipId), operationId: parsed.data.operationId as ContextResetId }, signal))
+        }
         case 'room/post': {
           const parsed = postRoomPayload.safeParse(payload)
           if (!parsed.success) return invalid(parsed.error.issues)
@@ -366,13 +389,7 @@ export function createWorkspaceRpcHandler(service: WorkspaceRpcService): Workspa
         case 'task/assign': {
           const parsed = taskAssignPayload.safeParse(payload)
           if (!parsed.success) return invalid(parsed.error.issues)
-          return success(await service.assignTask(
-            parsed.data.expectedRevision,
-            WEB_WORKSPACE_HUMAN_ID,
-            AgentId(parsed.data.assigneeAgentId),
-            parsed.data.title,
-            signal,
-          ))
+          return invalid([])
         }
         case 'task/grant': {
           const parsed = taskGrantPayload.safeParse(payload)

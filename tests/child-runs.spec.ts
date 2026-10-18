@@ -25,6 +25,36 @@ function childFixture(workspaceId: string) {
 }
 
 describe('child run terminalization', () => {
+  test('draining starts waits for reserved publications without stopping children or closing the registry', async () => {
+    const fixture = childFixture('drain-starts')
+    let durable = fixture.state
+    let aborted = false
+    const registry = new ChildControllerRegistry(async request => {
+      durable = finishChildRun(durable, request).state
+    })
+    const reservation = registry.reserveStart()
+    let drained = false
+    const draining = registry.drainStarts().then(() => { drained = true })
+    try {
+      await Promise.resolve()
+      expect(drained).toBe(false)
+      const published = reservation.register({ childRunId: fixture.childRunId, parentAgentId: fixture.agentId, taskId: fixture.taskId, abort: () => { aborted = true } })
+      expect(published.startAllowed).toBe(true)
+      reservation.release()
+      await draining
+      expect(aborted).toBe(false)
+      expect(durable.childRuns[fixture.childRunId]?.status).toBe('running')
+      const later = registry.reserveStart()
+      later.release()
+      await expect(published.settlement.settle('completed', 'Child completed normally.')).resolves.toBe(true)
+      expect(durable.childRuns[fixture.childRunId]?.status).toBe('completed')
+    } finally {
+      reservation.release()
+      await draining
+      await registry.stopAll()
+    }
+  })
+
   test('a started child can finish after its parent departs', () => {
     let state = createInitialState(WorkspaceId('local'))
     const definition = mutateWorkspace(state, {

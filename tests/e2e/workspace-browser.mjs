@@ -238,29 +238,41 @@ async function send(dialog, text) {
 
 async function createDefinitionAndAgents(dialog) {
   await dialog.getByRole('button', { name: 'Colleagues', exact: true }).click()
-  await dialog.getByRole('button', { name: 'New definition', exact: true }).click()
-  await dialog.getByPlaceholder('For example: Java engineer', { exact: true }).fill('Release engineer')
-  await dialog.getByPlaceholder('What is this role responsible for?', { exact: true }).fill('Verify the release workspace')
-  await dialog.getByPlaceholder('Instructions for the agent role', { exact: true }).fill('Reply with the deterministic marker.')
-  await dialog.getByRole('button', { name: 'Create definition', exact: true }).click()
-  await dialog.getByText('Release engineer', { exact: true }).first().waitFor({ timeout: STEP_TIMEOUT_MS })
-  await selectReleaseDefinition(dialog)
-
-  const agentName = dialog.getByPlaceholder('Instance name, for example: backend-Alice', { exact: true })
+  const form = dialog.locator('[data-mode="colleagues"] aside form')
   for (const name of ['Alice', 'Bob', 'Charlie']) {
-    await agentName.fill(name)
-    await dialog.getByRole('button', { name: 'Create instance', exact: true }).click()
-    await dialog.getByText(name, { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+    await dialog.getByRole('button', { name: 'Add colleague', exact: true }).click()
+    await form.getByRole('textbox', { name: 'Colleague name', exact: true }).fill(name)
+    if (name === 'Alice') {
+      await form.getByRole('button', { name: 'Create shared role', exact: true }).click()
+      await form.getByRole('textbox', { name: 'New role name', exact: true }).fill('Release engineer')
+      await form.getByRole('textbox', { name: 'Responsibilities', exact: true }).fill('Verify the release workspace')
+      await form.getByRole('textbox', { name: 'Instructions', exact: true }).fill('Reply with the deterministic marker.')
+      await form.getByRole('button', { name: 'Save and select role', exact: true }).click()
+    }
+    await form.getByRole('combobox', { name: 'Select role template', exact: true }).selectOption({ label: 'Release engineer' })
+    await form.getByRole('button', { name: 'Add colleague', exact: true }).click()
+    await dialog.locator('[data-colleague-list] strong').getByText(name, { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   }
+}
+
+async function assignChatTask(dialog, text) {
+  await dialog.getByRole('button', { name: 'Conversations', exact: true }).click()
+  await dialog.getByRole('button', { name: /^Release room \d+$/u }).click()
+  await dialog.getByRole('button', { name: 'Assign work', exact: true }).click()
+  await dialog.getByRole('combobox', { name: 'Assignee', exact: true }).selectOption({ label: 'Alice' })
+  await dialog.locator('[data-allow-delegation]').uncheck()
+  const composer = dialog.getByRole('textbox', { name: 'Send message', exact: true })
+  await composer.fill(text)
+  await dialog.getByRole('button', { name: 'Send and assign', exact: true }).click()
+  await dialog.page().waitForFunction(element => element.value === '', await composer.elementHandle(), { timeout: STEP_TIMEOUT_MS })
+  await dialog.getByRole('button', { name: 'Tasks', exact: true }).click()
+  await dialog.getByRole('combobox', { name: 'Colleague', exact: true }).selectOption({ label: 'Alice' })
 }
 
 async function startV020Task(dialog, args, state) {
   const dshHome = args['dsh-home']
-  await dialog.getByRole('button', { name: 'Tasks', exact: true }).click()
-  await dialog.getByPlaceholder('Describe the work to complete', { exact: true }).fill(V020_ROOT)
-  await dialog.getByRole('combobox', { name: 'Assignee', exact: true }).selectOption({ label: 'Alice' })
-  await dialog.getByRole('button', { name: 'Assign task', exact: true }).click()
-  await dialog.getByText(V020_ROOT, { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  await assignChatTask(dialog, V020_ROOT)
+  await dialog.getByRole('heading', { name: V020_ROOT, exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   await waitForFixtureReceipt(`${args.gate}.denial-result-ready`)
   const workspace = await readDurableWorkspace(dshHome)
   const denial = inspectSafeDelegationDenial(await taskToolSessionRows(dshHome), workspace)
@@ -271,7 +283,8 @@ async function startV020Task(dialog, args, state) {
   await writeFile(join(args.evidence, 'v020-denial-observed.json'), `${JSON.stringify(denial, null, 2)}\n`, 'utf8')
   await dialog.getByRole('button', { name: /^Grant delegation for “V020_ROOT V020_DELEGATE” to Alice \([^)]+\)$/u }).click()
   await writeFile(`${args.gate}.denial-observed`, 'release\n', { encoding: 'utf8', flag: 'wx' })
-  await dialog.getByText(V020_CHILD, { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  await dialog.getByRole('combobox', { name: 'Colleague', exact: true }).selectOption({ label: 'Bob' })
+  await dialog.getByRole('heading', { name: V020_CHILD, exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   const drawer = await openRuntime(dialog, V020_CHILD)
   await drawer.getByText('Using tool', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   await drawer.getByText('Tool: workspace_run_child', { exact: true }).click()
@@ -308,11 +321,12 @@ async function startV020Task(dialog, args, state) {
   }, 'the root task, derived task, child run, and results')
   for (const title of [V020_ROOT, V020_CHILD]) {
     const task = Object.values(durable.tasks).find(task => task.title === title)
+    await dialog.getByRole('combobox', { name: 'Colleague', exact: true }).selectOption({ label: title === V020_ROOT ? 'Alice' : 'Bob' })
     await dialog.getByLabel(`View result for task “${title}” (${task.id})`, { exact: true }).click()
+    const result = title === V020_ROOT ? 'V020_ROOT_RESULT' : 'V020_CHILD_RESULT'
+    await dialog.locator(`[data-task-id="${task.id}"] .dsh-agent-group-task-result`).getByText(result, { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+    await capture(state, `task-result-${title}`, dialog, [result])
   }
-  await dialog.getByText('V020_ROOT_RESULT', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
-  await dialog.getByText('V020_CHILD_RESULT', { exact: true }).first().waitFor({ timeout: STEP_TIMEOUT_MS })
-  await capture(state, 'task-results', dialog, ['V020_ROOT_RESULT', 'V020_CHILD_RESULT', 'Parent agent: Bob'])
   const causal = await waitForTaskCausality(dshHome, durable)
   await writeFile(join(args.evidence, 'v020-task-causality.json'), `${JSON.stringify(causal, null, 2)}\n`, 'utf8')
   await dialog.getByRole('button', { name: 'Conversations', exact: true }).click()
@@ -320,11 +334,8 @@ async function startV020Task(dialog, args, state) {
 }
 
 async function stopV020HeldTask(dialog, args, state) {
-  await dialog.getByRole('button', { name: 'Tasks', exact: true }).click()
-  await dialog.getByPlaceholder('Describe the work to complete', { exact: true }).fill(V020_HOLD)
-  await dialog.getByRole('combobox', { name: 'Assignee', exact: true }).selectOption({ label: 'Alice' })
-  await dialog.getByRole('button', { name: 'Assign task', exact: true }).click()
-  await dialog.getByText(V020_HOLD, { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  await assignChatTask(dialog, V020_HOLD)
+  await dialog.getByRole('heading', { name: V020_HOLD, exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   const toolReady = await waitForFixtureReceipt(`${args.gate}.stop.tool-ready`)
   let drawer = await openRuntime(dialog, V020_HOLD)
   await drawer.getByText('Tool: workspace_delegate_task', { exact: true }).click()
@@ -342,9 +353,7 @@ async function stopV020HeldTask(dialog, args, state) {
   await drawer.getByRole('article').getByText('Responding', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   protocol.push('responding-observed')
   await drawer.getByRole('button', { name: 'Close runtime activity', exact: true }).click()
-  await dialog.getByPlaceholder('Describe the work to complete', { exact: true }).fill('V020_QUEUED')
-  await dialog.getByRole('combobox', { name: 'Assignee', exact: true }).selectOption({ label: 'Alice' })
-  await dialog.getByRole('button', { name: 'Assign task', exact: true }).click()
+  await assignChatTask(dialog, 'V020_QUEUED')
   drawer = await openRuntime(dialog, V020_HOLD)
   await drawer.getByRole('button', { name: 'Task: V020_QUEUED Queued', exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   protocol.push('queued-observed')
@@ -382,7 +391,9 @@ async function stopV020HeldTask(dialog, args, state) {
 
 async function inspectV020Memory(dialog, dshHome, state, names = ['Alice', 'Bob', 'Charlie'], status = 'Employed') {
   await dialog.getByRole('button', { name: 'Memory', exact: true }).click()
-  const agent = dialog.getByRole('combobox', { name: 'Agent', exact: true })
+  const agent = dialog.getByRole('combobox', { name: 'Colleague', exact: true })
+  await dialog.locator('[data-memory-source-filters] > summary').click()
+  await dialog.locator('[data-memory-advanced] > summary').click()
   const search = dialog.getByRole('searchbox', { name: 'Search memory', exact: true })
   const sourceKind = dialog.getByRole('combobox', { name: 'Source kind', exact: true })
   const source = dialog.getByRole('combobox', { name: 'Source', exact: true })
@@ -393,11 +404,11 @@ async function inspectV020Memory(dialog, dshHome, state, names = ['Alice', 'Bob'
   const derived = Object.values(workspace.tasks).find(task => task.title === V020_CHILD)
   const child = Object.values(workspace.childRuns).find(child => child.taskId === derived.id)
   const cases = [
-    { kind: 'Room', source: `Release room (${room.id})`, provenance: 'Room membership', type: 'room/message', text: 'MEMORY_SEED no wake', event: workspace.events.find(event => event.type === 'room/message' && event.text === 'MEMORY_SEED no wake') },
-    { kind: 'Room', source: `Release room (${room.id})`, provenance: 'History sync', type: 'room/message', text: 'HISTORY_BEFORE_JOIN', event: workspace.events.find(event => event.type === 'room/message' && event.text === 'HISTORY_BEFORE_JOIN') },
-    { kind: 'Task', source: `${V020_ROOT} (${root.id})`, provenance: 'Task', type: 'task/result', text: 'V020_ROOT_RESULT', event: workspace.events.find(event => event.type === 'task/result' && event.taskId === root.id) },
-    { kind: 'Task', source: `${V020_CHILD} (${derived.id})`, provenance: 'Task', type: 'task/result', text: 'V020_CHILD_RESULT', event: workspace.events.find(event => event.type === 'task/result' && event.taskId === derived.id) },
-    { kind: 'Child agent', source: `${child.id} (${child.id})`, provenance: 'Child result', type: 'child/run-finished', text: 'V020_CHILD_RESULT', event: workspace.events.find(event => event.type === 'child/run-finished' && event.subjectId === child.id) },
+    { kind: 'Room', source: room.id, provenance: 'Room membership', type: 'room/message', label: 'Chat message', text: 'MEMORY_SEED no wake', event: workspace.events.find(event => event.type === 'room/message' && event.text === 'MEMORY_SEED no wake') },
+    { kind: 'Room', source: room.id, provenance: 'History sync', type: 'room/message', label: 'Chat message', text: 'HISTORY_BEFORE_JOIN', event: workspace.events.find(event => event.type === 'room/message' && event.text === 'HISTORY_BEFORE_JOIN') },
+    { kind: 'Task', source: root.id, provenance: 'Task', type: 'task/result', label: 'Work result', text: 'V020_ROOT_RESULT', event: workspace.events.find(event => event.type === 'task/result' && event.taskId === root.id) },
+    { kind: 'Task', source: derived.id, provenance: 'Task', type: 'task/result', label: 'Work result', text: 'V020_CHILD_RESULT', event: workspace.events.find(event => event.type === 'task/result' && event.taskId === derived.id) },
+    { kind: 'Child agent', source: child.id, provenance: 'Child result', type: 'child/run-finished', label: 'Child agent result', text: 'V020_CHILD_RESULT', event: workspace.events.find(event => event.type === 'child/run-finished' && event.subjectId === child.id) },
   ]
   for (const name of names) {
     await agent.selectOption({ label: `${name} — ${status}` })
@@ -407,24 +418,30 @@ async function inspectV020Memory(dialog, dshHome, state, names = ['Alice', 'Bob'
     for (const entry of cases) {
       if (!entry.event) throw new Error('expected cross-source memory event is missing')
       await sourceKind.selectOption({ label: entry.kind })
-      await source.selectOption({ label: entry.source })
+      await source.selectOption(entry.source)
       await provenance.selectOption({ label: entry.provenance })
-      await dialog.getByRole('checkbox', { name: `Event type ${entry.type}`, exact: true }).check()
+      await dialog.getByRole('checkbox', { name: `Event type ${entry.label}`, exact: true }).check()
       await search.fill(entry.text)
-      const expectedOwner = entry.text === 'MEMORY_SEED no wake' || (entry.text === 'HISTORY_BEFORE_JOIN' ? name === 'Bob'
-        : entry.text === 'V020_ROOT_RESULT' ? name === 'Alice' : name === 'Bob')
+      const expectedOwner = entry.text === 'MEMORY_SEED no wake' || entry.text === 'HISTORY_BEFORE_JOIN'
+        || (entry.text === 'V020_ROOT_RESULT' ? name === 'Alice' : name === 'Bob')
       if (ownedIds.has(entry.event.id) !== expectedOwner) throw new Error(`${name} has incorrect ${entry.kind} memory ownership`)
       const expectedIds = expectedOwner ? [entry.event.id] : []
       if (expectedIds.length) {
-        const row = dialog.getByRole('article', { name: `Event ${entry.event.sequence}: ${entry.type}`, exact: true })
-        await row.locator('p').getByText(entry.text, { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+        const row = dialog.getByRole('article', { name: `Event ${entry.event.sequence}: ${entry.label}`, exact: true })
+        await row.locator('.dsh-agent-group-memory-excerpt').getByText(entry.text, { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+        await row.locator('[data-memory-event-details] > summary').click()
         await row.getByText(entry.provenance, { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
         await dialog.getByText('End of memory', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
       } else await dialog.getByText('No memory events match these filters.', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
-      const labels = await dialog.getByRole('main').getByRole('article').evaluateAll(rows => rows.map(row => row.getAttribute('aria-label')))
+      const visibleIds = await dialog.getByRole('main').getByRole('article').evaluateAll(rows => rows.map(row => row.getAttribute('data-memory-event')))
+      const labels = visibleIds.map(id => {
+        const event = workspace.events.find(candidate => candidate.id === id)
+        if (event === undefined) throw new Error(`visible memory event ${id} is absent from the durable history`)
+        return `Event ${event.sequence}: ${event.type}`
+      })
       assertMemoryRows(workspace, agentId, labels, expectedIds)
-      await capture(state, `memory-${name}-${status}-${entry.kind}-${entry.type}-${entry.text}`, dialog, ['Unified personal memory', 'Source kind', 'First provenance'])
-      await dialog.getByRole('checkbox', { name: `Event type ${entry.type}`, exact: true }).uncheck()
+      await capture(state, `memory-${name}-${status}-${entry.kind}-${entry.type}-${entry.text}`, dialog, ['Colleague memory', 'Source kind', 'First provenance'])
+      await dialog.getByRole('checkbox', { name: `Event type ${entry.label}`, exact: true }).uncheck()
     }
   }
 }
@@ -458,7 +475,29 @@ async function reviseV020Definition(dialog, dshHome, state) {
 }
 
 async function selectReleaseDefinition(dialog) {
-  await dialog.getByRole('button', { name: /^Release engineer/u }).click()
+  const management = dialog.locator('[data-role-management]')
+  if (await management.getAttribute('open') === null) await management.locator(':scope > summary').click()
+  await management.getByRole('button', { name: /^Release engineer/u }).click()
+  const history = management.locator('[data-revision-history]')
+  if (await history.getAttribute('open') === null) await history.locator(':scope > summary').click()
+}
+
+async function selectColleague(dialog, name) {
+  await dialog.locator('[data-colleague-list] button').filter({ has: dialog.getByText(name, { exact: true }) }).click()
+  const profile = dialog.locator('[data-colleague-id]').filter({ has: dialog.getByRole('heading', { name, exact: true }) })
+  await profile.waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS })
+  return profile
+}
+
+async function openOrganizationManagement(dialog) {
+  const management = dialog.locator('.dsh-agent-group-organization-management')
+  if (await management.getAttribute('open') === null) await management.locator(':scope > summary').click()
+}
+
+async function openWorkflowSettings(dialog) {
+  await dialog.getByRole('button', { name: /^(?:Tasks|任务)$/u }).click()
+  const settings = dialog.locator('.dsh-agent-group-work-settings')
+  if (await settings.getAttribute('open') === null) await settings.locator(':scope > summary').click()
 }
 
 async function createGroupAndJoin(dialog, dshHome) {
@@ -466,7 +505,6 @@ async function createGroupAndJoin(dialog, dshHome) {
   await dialog.getByRole('button', { name: 'New group', exact: true }).click()
   await dialog.getByPlaceholder('Group name', { exact: true }).fill('Release room')
   await dialog.getByRole('button', { name: 'Create', exact: true }).click()
-  await dialog.getByText('Release room', { exact: true }).first().waitFor({ timeout: STEP_TIMEOUT_MS })
   await dialog.getByRole('button', { name: /^Release room \d+$/u }).click()
 
   await send(dialog, 'HISTORY_BEFORE_JOIN')
@@ -478,20 +516,18 @@ async function createGroupAndJoin(dialog, dshHome) {
   if (beforeJoin.rooms[history[0].subjectId]?.name !== 'Release room') {
     throw new Error('group setup posted history in a different room')
   }
-  const historySequence = String(history[0].sequence)
-
-  const candidate = dialog.getByRole('combobox', { name: 'Add agent', exact: true })
-  const memoryStart = dialog.getByRole('combobox', { name: 'Memory start', exact: true })
+  const members = dialog.getByRole('complementary', { name: 'Group members', exact: true })
+  await dialog.getByRole('button', { name: 'Show group members', exact: true }).click()
+  await members.waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS })
   for (const name of ['Alice', 'Bob', 'Charlie']) {
-    await candidate.selectOption({ label: name })
-    if (name === 'Alice' || name === 'Charlie') {
-      await memoryStart.selectOption({ label: 'New events only' })
-    } else {
-      await memoryStart.selectOption({ label: 'Historical event range' })
-      await dialog.getByRole('spinbutton', { name: 'Start event sequence', exact: true }).fill(historySequence)
-      await dialog.getByRole('spinbutton', { name: 'End event sequence', exact: true }).fill(historySequence)
-    }
-    await dialog.getByRole('button', { name: 'Join group', exact: true }).click()
+    const colleague = Object.values(beforeJoin.agents).find(agent => agent.name === name)
+    if (colleague === undefined) throw new Error(`missing group colleague ${name}`)
+    await members.getByRole('button', { name: 'Add colleague', exact: true }).click()
+    const picker = dialog.locator('[role="dialog"][data-add-colleague]')
+    await picker.getByRole('searchbox', { name: 'Search colleague name or role', exact: true }).fill(name)
+    await picker.locator(`input[type="checkbox"][name="group-colleague"][value="${colleague.id}"]`).check()
+    await picker.locator('button[data-confirm-join]').click()
+    await picker.waitFor({ state: 'hidden', timeout: STEP_TIMEOUT_MS })
     await dialog.getByRole('button', { name: `@${name}`, exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   }
 }
@@ -593,17 +629,22 @@ async function runAfterRestart(page, args, state) {
   const organizationsBaseline = JSON.parse(await readFile(join(args.evidence, 'workflow-organizations-final.json'), 'utf8'))
   const restartSessions = assertWorkflowRestartQuiescence(sessionsBaseline, await durableSessions(args['dsh-home']), args.workspace, organizationsBaseline, await readDurableOrganizations(args['dsh-home']))
   await writeFile(join(state.evidence, 'workflow-restart-quiescence.json'), `${JSON.stringify(restartSessions, null, 2)}\n`, 'utf8')
-  await dialog.getByRole('button', { name: '任务', exact: true }).click()
+  await openWorkflowSettings(dialog)
   await dialog.getByLabel('任务中心', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   const workflow = dialog.getByRole('region', { name: '工作流', exact: true })
   await workflow.getByRole('combobox', { name: '草案选择', exact: true }).getByRole('option', { name: /^WF_EMPLOYEE_PROPOSAL/u }).waitFor({ state: 'attached', timeout: STEP_TIMEOUT_MS })
   await capture(state, 'restart-workflow-zh-CN', workflow, ['WF_EMPLOYEE_PROPOSAL', 'WF_DISCARD'])
-  await dialog.getByText(V020_ROOT, { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
-  await capture(state, 'restart-tasks-zh-CN', dialog, ['根任务', V020_ROOT, V020_CHILD])
+  await dialog.getByRole('combobox', { name: '查看同事', exact: true }).selectOption({ label: 'Alice' })
+  await dialog.getByRole('heading', { name: V020_ROOT, exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  await capture(state, 'restart-root-task-zh-CN', dialog, [V020_ROOT])
+  await dialog.getByRole('combobox', { name: '查看同事', exact: true }).selectOption({ label: 'Bob' })
+  await dialog.getByRole('heading', { name: V020_CHILD, exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  await capture(state, 'restart-child-task-zh-CN', dialog, [V020_CHILD])
   await dialog.getByRole('button', { name: '记忆', exact: true }).click()
-  await dialog.getByText('统一个人记忆', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
-  await dialog.getByRole('combobox', { name: '智能体', exact: true }).selectOption({ label: 'Alice — 在职' })
-  await capture(state, 'restart-memory-zh-CN', dialog, ['统一个人记忆', 'Alice — 在职', '来源类型'])
+  await dialog.getByText('同事记忆', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  await dialog.getByRole('combobox', { name: '同事', exact: true }).selectOption({ label: 'Alice — 在职' })
+  await dialog.locator('[data-memory-source-filters] > summary').click()
+  await capture(state, 'restart-memory-zh-CN', dialog, ['同事记忆', 'Alice — 在职', '来源类型'])
   await dialog.getByRole('button', { name: '同事', exact: true }).click()
   await selectReleaseDefinition(dialog)
   await dialog.getByText('不可变修订历史', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
@@ -631,40 +672,47 @@ async function runAfterRestart(page, args, state) {
 
 async function recoverOrganization(dialog, args, state) {
   const chooser = dialog.getByRole('combobox', { name: 'Organization', exact: true })
+  await openOrganizationManagement(dialog)
   const label = dialog.getByRole('textbox', { name: 'Organization label', exact: true })
   await label.fill('Empty organization')
   await dialog.getByRole('button', { name: 'Create organization', exact: true }).click()
   await chooser.getByRole('option', { name: 'Empty organization', exact: true }).waitFor({ state: 'attached', timeout: STEP_TIMEOUT_MS })
+  await dialog.page().waitForFunction(element => element.selectedOptions[0]?.textContent === 'Empty organization', await chooser.elementHandle(), { timeout: STEP_TIMEOUT_MS })
   const emptyId = await chooser.inputValue()
   if (emptyId === 'local') throw new Error('creating an organization did not select its new identity')
+  await openOrganizationManagement(dialog)
   await label.fill('Empty renamed')
   await dialog.getByRole('button', { name: 'Rename organization', exact: true }).click()
   await chooser.getByRole('option', { name: 'Empty renamed', exact: true }).waitFor({ state: 'attached', timeout: STEP_TIMEOUT_MS })
   await chooser.selectOption('local')
+  await openOrganizationManagement(dialog)
   await dialog.getByRole('combobox', { name: 'Archive running work', exact: true }).selectOption('wait')
   await dialog.getByRole('button', { name: 'Archive organization', exact: true }).click()
   await dialog.getByText('Archived organization — read-only', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   const before = await readDurableWorkspace(args['dsh-home'])
   const beforeRecord = await readDurableRecord(args['dsh-home'])
-  await dialog.getByRole('button', { name: 'Tasks', exact: true }).click()
+  await openWorkflowSettings(dialog)
   const archivedWorkflow = dialog.getByRole('region', { name: 'Workflow', exact: true })
   await archivedWorkflow.getByRole('combobox', { name: 'Draft selection', exact: true }).getByRole('option', { name: /^WF_EMPLOYEE_PROPOSAL/u }).waitFor({ state: 'attached', timeout: STEP_TIMEOUT_MS })
-  if (await archivedWorkflow.getByRole('button', { name: 'Create draft', exact: true }).isEnabled()) throw new Error('archived workflow allows mutation')
+  await archivedWorkflow.getByRole('combobox', { name: 'Draft selection', exact: true }).selectOption(Object.values(beforeRecord.workflow.drafts).find(draft => draft.brief.title === 'WF_EMPLOYEE_PROPOSAL').id)
+  if (await archivedWorkflow.getByRole('button', { name: 'Confirm in chat', exact: true }).isEnabled()) throw new Error('archived workflow allows mutation')
   await capture(state, 'workflow-archived-readonly', archivedWorkflow, ['WF_EMPLOYEE_PROPOSAL', 'WF_DISCARD'])
+  await openOrganizationManagement(dialog)
   await dialog.getByRole('button', { name: 'Export organization', exact: true }).click()
   await dialog.getByText('The export contains messages, instructions and memory and may include sensitive information. Confirm to download the JSON file.', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   const download = dialog.page().waitForEvent('download', { timeout: STEP_TIMEOUT_MS })
   await dialog.getByRole('button', { name: 'Confirm export and download', exact: true }).click()
-  const backupPath = join(state.evidence, 'organization-backup-v3.json')
+  const backupPath = join(state.evidence, 'organization-backup-v4.json')
   await (await download).saveAs(backupPath)
   const backupJson = await readFile(backupPath, 'utf8')
   const portable = JSON.parse(backupJson)
-  if (portable.formatVersion !== 3 || portable.workspace.descriptor.lifecycle !== 'archived'
+  if (portable.formatVersion !== 4 || portable.workspace.descriptor.lifecycle !== 'archived'
     || 'sessionBindings' in portable.workspace.aggregate || 'creation' in portable.workspace.descriptor) {
     throw new Error('Browser export did not produce an archived portable organization without local bindings')
   }
-  if (!isDeepStrictEqual(portable.workspace.workflow, beforeRecord.workflow)) throw new Error('V3 export omitted workflow metadata')
+  if (!isDeepStrictEqual(portable.workspace.workflow, beforeRecord.workflow)) throw new Error('V4 export omitted workflow metadata')
   const sessionsBeforeImport = (await durableSessions(args['dsh-home'])).sort((left, right) => left.header.id.localeCompare(right.header.id))
+  await openOrganizationManagement(dialog)
   await dialog.getByLabel('Import organization', { exact: true }).setInputFiles(backupPath)
   await dialog.getByText('Session bindings are excluded. Confirming creates an independent organization without replacing the current organization.', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   await dialog.getByRole('textbox', { name: 'Imported organization label', exact: true }).fill('Recovered organization')
@@ -685,21 +733,21 @@ async function recoverOrganization(dialog, args, state) {
   const restoredRecord = await readDurableRecord(args['dsh-home'], restoredId)
   assertWorkflowImport(beforeRecord, restoredRecord, { json: backupJson, label: 'Recovered organization' })
   if (!isDeepStrictEqual((await durableSessions(args['dsh-home'])).sort((left, right) => left.header.id.localeCompare(right.header.id)), sessionsBeforeImport)) throw new Error('import materialized or resumed an employee Session')
-  await dialog.getByRole('button', { name: 'Tasks', exact: true }).click()
+  await openWorkflowSettings(dialog)
   await dialog.getByRole('region', { name: 'Workflow', exact: true }).getByRole('combobox', { name: 'Draft selection', exact: true }).getByRole('option', { name: /^WF_EMPLOYEE_PROPOSAL/u }).waitFor({ state: 'attached', timeout: STEP_TIMEOUT_MS })
   await chooser.selectOption(emptyId)
-  await dialog.getByRole('button', { name: 'Tasks', exact: true }).click()
+  await openWorkflowSettings(dialog)
   const emptyWorkflow = dialog.getByRole('region', { name: 'Workflow', exact: true })
   await emptyWorkflow.getByRole('combobox', { name: 'Draft selection', exact: true }).getByRole('option', { name: 'New draft', exact: true }).waitFor({ state: 'attached', timeout: STEP_TIMEOUT_MS })
   if (await emptyWorkflow.getByRole('combobox', { name: 'Draft selection', exact: true }).getByRole('option', { name: /^WF_/u }).count() !== 0) throw new Error('workflow leaked across organization switch')
   await chooser.selectOption(restoredId)
-  await dialog.getByRole('button', { name: 'Tasks', exact: true }).click()
+  await openWorkflowSettings(dialog)
   await dialog.getByRole('region', { name: 'Workflow', exact: true }).getByRole('combobox', { name: 'Draft selection', exact: true }).getByRole('option', { name: /^WF_EMPLOYEE_PROPOSAL/u }).waitFor({ state: 'attached', timeout: STEP_TIMEOUT_MS })
+  await openOrganizationManagement(dialog)
   await dialog.getByRole('button', { name: 'Reopen organization', exact: true }).click()
   await dialog.getByText('Archived organization — read-only', { exact: true }).waitFor({ state: 'hidden', timeout: STEP_TIMEOUT_MS })
   await dialog.getByRole('button', { name: 'Colleagues', exact: true }).click()
-  await selectReleaseDefinition(dialog)
-  await agentRow(dialog, 'Alice').getByRole('button', { name: 'Direct', exact: true }).click()
+  await (await selectColleague(dialog, 'Alice')).getByRole('button', { name: 'Direct', exact: true }).click()
   const priorReplies = restored.events.filter(event => event.type === 'room/message' && event.text === 'MEMORY_OK Alice').length
   const visibleReplies = dialog.getByRole('main').getByText('MEMORY_OK Alice', { exact: true })
   await visibleReplies.last().waitFor({ timeout: STEP_TIMEOUT_MS })
@@ -725,9 +773,8 @@ async function continueRecoveredOrganization(dialog, args, state) {
   if (!isDeepStrictEqual(await readDurableRecord(args['dsh-home'], recovery.restoredId), recovery.afterRecord)) throw new Error('restart changed recovered workflow or resumed work automatically')
   await dialog.getByRole('combobox', { name: '组织', exact: true }).selectOption(recovery.restoredId)
   await dialog.getByRole('button', { name: '同事', exact: true }).click()
-  await selectReleaseDefinition(dialog)
-  await agentRow(dialog, 'Alice').getByRole('button', { name: '私聊', exact: true }).click()
-  const composer = dialog.getByPlaceholder('输入私聊消息，Ctrl/⌘ + Enter 发送')
+  await (await selectColleague(dialog, 'Alice')).getByRole('button', { name: '私聊', exact: true }).click()
+  const composer = dialog.getByRole('textbox', { name: '发送消息', exact: true })
   const priorReplies = before.events.filter(event => event.type === 'room/message' && event.text === 'MEMORY_OK Alice').length
   const visibleReplies = dialog.getByRole('main').getByText('MEMORY_OK Alice', { exact: true })
   await visibleReplies.last().waitFor({ timeout: STEP_TIMEOUT_MS })
@@ -754,6 +801,8 @@ async function runInstalledScenario(page, args, state) {
   let dialog = page.getByRole('dialog', { name: 'Agent Organization', exact: true })
   await waitForOrganizationReady(dialog, STEP_TIMEOUT_MS)
   await capture(state, '00-empty', dialog, ['Agent Organization', 'Conversations'])
+  const runtime = dialog.getByRole('dialog', { name: 'Runtime activity', exact: true })
+  if (await runtime.isVisible()) await runtime.getByRole('button', { name: 'Close runtime activity', exact: true }).click()
 
   await createDefinitionAndAgents(dialog)
   await capture(state, '01-agents', dialog, ['Release engineer', 'Alice', 'Bob'])
@@ -777,16 +826,17 @@ async function runInstalledScenario(page, args, state) {
   await waitForIdle(dialog)
 
   const membersPanel = dialog.getByRole('complementary', { name: 'Group members', exact: true })
+  await dialog.getByRole('button', { name: 'Show group members', exact: true }).click()
+  await membersPanel.waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS })
   await agentRow(membersPanel, 'Alice').getByRole('button', { name: 'Direct', exact: true }).click()
-  await dialog.getByPlaceholder('Write a direct message, Ctrl/⌘ + Enter to send', { exact: true })
+  await dialog.getByRole('textbox', { name: 'Send message', exact: true })
     .waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS })
   await send(dialog, 'DIRECT_WAKE')
   await dialog.getByText('DIRECT_REPLY Alice', { exact: true }).last().waitFor({ timeout: STEP_TIMEOUT_MS })
   await waitForDurableMessage(args['dsh-home'], 'DIRECT_REPLY Alice')
 
   await dialog.getByRole('button', { name: 'Colleagues', exact: true }).click()
-  await selectReleaseDefinition(dialog)
-  await agentRow(dialog, 'Alice').getByRole('button', { name: 'Direct', exact: true }).click()
+  await (await selectColleague(dialog, 'Alice')).getByRole('button', { name: 'Direct', exact: true }).click()
   const reopenedDirect = await readDurableWorkspace(args['dsh-home'])
   if (Object.values(reopenedDirect.rooms).filter(room => room.kind === 'direct').length !== 1) {
     throw new Error('opening direct chat did not reuse its room')
@@ -819,16 +869,14 @@ async function runInstalledScenario(page, args, state) {
   if (sessionBeforeDeparture === undefined) throw new Error('Alice had no durable session binding before departure')
 
   await dialog.getByRole('button', { name: 'Colleagues', exact: true }).click()
-  await selectReleaseDefinition(dialog)
-  let alice = agentRow(dialog, 'Alice')
+  let alice = await selectColleague(dialog, 'Alice')
+  await alice.getByRole('button', { name: 'Depart', exact: true }).click()
   await alice.getByRole('button', { name: 'Depart', exact: true }).click()
   await alice.getByText('Departed', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   await inspectV020Memory(dialog, args['dsh-home'], state, ['Alice'], 'Departed')
   await dialog.getByRole('button', { name: 'Colleagues', exact: true }).click()
-  await selectReleaseDefinition(dialog)
-  alice = agentRow(dialog, 'Alice')
+  alice = await selectColleague(dialog, 'Alice')
   await alice.getByRole('button', { name: 'Re-employ', exact: true }).click()
-  alice = agentRow(dialog, 'Alice')
   await alice.getByText('Employed', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   await alice.getByRole('button', { name: 'Direct', exact: true }).click()
   await send(dialog, 'CHECK_MEMORY')
@@ -881,8 +929,7 @@ async function runInstalledScenario(page, args, state) {
     capture: (label, locator, required) => capture(state, label, locator, required),
   })
   await dialog.getByRole('button', { name: 'Colleagues', exact: true }).click()
-  await selectReleaseDefinition(dialog)
-  await agentRow(dialog, 'Bob').getByRole('button', { name: 'Direct', exact: true }).click()
+  await (await selectColleague(dialog, 'Bob')).getByRole('button', { name: 'Direct', exact: true }).click()
   const proposalBefore = await readDurableRecord(args['dsh-home'])
   await send(dialog, 'WF_PROPOSE_REQUEST')
   await dialog.getByText('WF_PROPOSAL_READY', { exact: true }).last().waitFor({ timeout: STEP_TIMEOUT_MS })

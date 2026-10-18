@@ -1,7 +1,8 @@
 import { expect, test } from 'vitest'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
-import { AgentId, HumanId, RoomId, WorkspaceEventId, WorkspaceId } from '../packages/host/src/ids.ts'
+import { AgentId, HumanId, RoomId, TaskDeliveryAttemptId, WorkspaceEventId, WorkspaceId } from '../packages/host/src/ids.ts'
+import { startTaskDelivery } from '../packages/host/src/task-delivery.ts'
 import { appendMemoryEntries, createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import { assignHumanTask, grantTaskDelegation, recordChildRunFinished, recordChildRunStarted } from '../packages/host/src/tasks.ts'
 import type { CommunicationInputId, CommunicationState, ContextResetId, FileBlobId, FileCheckpointId } from '../packages/host/src/communication-contract.ts'
@@ -19,7 +20,7 @@ const artifactId = 'artifact-1' as TaskArtifactId
 const blobId = 'blob-1' as FileBlobId
 
 function emptyCommunication(): CommunicationState {
-  return { revision: 0, nextCheckpointOrder: 1, messages: {}, taskSources: {}, draftSources: {}, inputs: {}, contexts: {}, resets: {}, fileCheckpoints: {} }
+  return { revision: 0, nextCheckpointOrder: 1, messages: {}, taskSources: {}, draftSources: {}, inputs: {}, contexts: {}, resets: {}, fileCheckpoints: {}, operations: {} }
 }
 
 function fixture() {
@@ -72,7 +73,7 @@ function fixture() {
 }
 
 test('upgrades historical records with no invented sources or reset operations', () => {
-  expect(communication.createInitialCommunicationState()).toEqual({ revision: 0, nextCheckpointOrder: 1, messages: {}, taskSources: {}, draftSources: {}, inputs: {}, contexts: {}, resets: {}, fileCheckpoints: {} })
+  expect(communication.createInitialCommunicationState()).toEqual({ revision: 0, nextCheckpointOrder: 1, messages: {}, taskSources: {}, draftSources: {}, inputs: {}, contexts: {}, resets: {}, fileCheckpoints: {}, operations: {} })
   const f = fixture()
   expect(communication.effectiveWorkspaceState(f.raw, emptyCommunication())).toEqual(f.raw)
 })
@@ -191,6 +192,27 @@ test('round-trips pending resets and complete raw byte checkpoint metadata', () 
   }
   expect(schemas.communicationStateSchema.safeParse(JSON.parse(JSON.stringify(metadata))).data).toEqual(metadata)
   expect(() => communication.assertCommunicationRelationships(f.raw, metadata)).not.toThrow()
+})
+
+test('new task-input identity validates exact attempt and one owner while older inputs remain readable', () => {
+  const f = fixture()
+  const started = startTaskDelivery(f.raw, { taskId: f.safeTaskId })
+  const input = { id: inputId, target: { kind: 'task' as const, taskId: f.safeTaskId }, agentId: f.aliceId,
+    deliveryMessageId: started.message.id, taskDeliveryAttemptId: started.attemptId,
+    contextGeneration: 0, recordedAtSequence: started.state.nextSequence - 1,
+    directEventIds: [f.independentId], recalledEventIds: [], sessionEventIds: [] }
+  const valid: CommunicationState = { ...f.metadata, inputs: { [inputId]: input } }
+  expect(schemas.communicationStateSchema.safeParse(JSON.parse(JSON.stringify(valid))).success).toBe(true)
+  expect(() => communication.assertCommunicationRelationships(started.state, valid)).not.toThrow()
+  const legacy: CommunicationState = { ...f.metadata, inputs: { [inputId]: { id: inputId, target: input.target, agentId: input.agentId,
+    contextGeneration: input.contextGeneration, recordedAtSequence: input.recordedAtSequence,
+    directEventIds: input.directEventIds, recalledEventIds: [], sessionEventIds: [] } } }
+  expect(() => communication.assertCommunicationRelationships(started.state, legacy)).not.toThrow()
+  expect(() => communication.assertCommunicationRelationships(started.state, { ...valid,
+    inputs: { [inputId]: { ...input, taskDeliveryAttemptId: TaskDeliveryAttemptId('wrong') } } })).toThrow('differs from its delivery attempt')
+  const secondId = 'input-2' as CommunicationInputId
+  expect(() => communication.assertCommunicationRelationships(started.state, { ...valid,
+    inputs: { [inputId]: input, [secondId]: { ...input, id: secondId } } })).toThrow('multiple input owners')
 })
 
 test.each([

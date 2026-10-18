@@ -110,6 +110,15 @@ export class WorkspaceApi {
     return result.value
   }
 
+  /** @param endpoint Human chat work command or metadata read. @param payload Actor-free request. @param signal Cancellation. @returns Raw scoped value decoded by the communication API. */
+  async callCommunication(endpoint: 'communication/snapshot' | 'communication/assign' | 'communication/confirm' | 'communication/recall-preview' | 'communication/recall' | 'communication/recall-files', payload: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<unknown> {
+    if (this.workspaceId === undefined) throw new Error('Agent Workspace requires a selected organization')
+    if (Object.keys(payload).some(key => ['workspaceId', 'actor', 'actorAgentId', 'humanId', 'occurredAt', 'source'].includes(key))) throw new Error('Agent Workspace communication payload contains Host-owned fields')
+    const result = await this.connection.rpc.call(CHANNEL, endpoint, { ...payload, workspaceId: this.workspaceId }, signal)
+    if (!result.ok) throw new WorkflowApiError(assertWorkflowRpcError(result.error))
+    return result.value
+  }
+
   runtimeStatus(signal?: AbortSignal): Promise<WorkspaceRuntimeStatus> {
     return this.invoke('runtime/status', {}, signal).then(assertWorkspaceRuntimeStatus)
   }
@@ -197,6 +206,11 @@ export class WorkspaceApi {
 
   leaveRoom(membershipId: MembershipId, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
     return this.mutate('room/leave', { membershipId }, expectedRevision, signal).then(result => result.value)
+  }
+
+  /** @param membershipId Group membership. @param operationId Stable retry identity. @param expectedRevision Displayed revision. @param signal Precommit cancellation. @returns Snapshot after personal memory and native context reset. */
+  leaveRoomAndForget(membershipId: MembershipId, operationId: string, expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return this.mutate('room/leave-and-forget', { membershipId, operationId }, expectedRevision, signal).then(result => result.value)
   }
 
   postMessage(roomId: RoomId, text: string, mentions: readonly AgentId[], expectedRevision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot> {
@@ -312,6 +326,7 @@ function assertMutationValue(endpoint: WorkspaceMutationEndpoint, value: unknown
     case 'room/rename':
     case 'room/join':
     case 'room/leave':
+    case 'room/leave-and-forget':
     case 'room/post':
     case 'task/revoke':
     case 'task/cancel':
@@ -568,7 +583,7 @@ function assertMemoryPage(value: unknown): MemoryPage {
 }
 
 function isMemoryItem(value: unknown): boolean {
-  return isRecord(value) && hasRequiredAndOnlyKeys(value, ['eventId', 'sequence', 'type', 'provenance', 'definitionRevision'], ['source', 'actor', 'subject', 'text', 'childStatus'])
+  return isRecord(value) && hasRequiredAndOnlyKeys(value, ['eventId', 'sequence', 'type', 'provenance', 'definitionRevision'], ['source', 'actor', 'subject', 'text', 'childStatus', 'processing'])
     && isNonEmptyString(value['eventId']) && isPositiveInteger(value['sequence']) && isOneOf(value['type'], WORKSPACE_EVENT_TYPES)
     && isOneOf(value['provenance'], ['room-membership', 'history-sync', 'task', 'child-result'])
     && (value['source'] === undefined || isMemorySource(value['source']))
@@ -576,6 +591,53 @@ function isMemoryItem(value: unknown): boolean {
     && (value['subject'] === undefined || isLabelledId(value['subject'])) && isOptionalString(value['text'])
     && (value['childStatus'] === undefined || isOneOf(value['childStatus'], ['completed', 'failed', 'cancelled']))
     && isMemoryDefinitionRevision(value['definitionRevision'])
+    && (value['processing'] === undefined || isMemoryProcessing(value['processing']))
+}
+
+function isMemoryProcessing(value: unknown): boolean {
+  return isRecord(value) && hasExactKeys(value, ['status', 'available', 'ranges', 'facts'])
+    && isOneOf(value['status'], ['unprocessed', 'pending', 'partial', 'complete', 'failed', 'not-applicable'])
+    && typeof value['available'] === 'boolean'
+    && Array.isArray(value['ranges']) && value['ranges'].every(range => isRecord(range) && hasExactKeys(range, ['start', 'end'])
+      && isNonNegativeInteger(range['start']) && isNonNegativeInteger(range['end']) && range['end'] >= range['start'])
+    && Array.isArray(value['facts']) && value['facts'].every(isMemoryProcessingFact)
+}
+
+function isMemoryProcessingFact(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  const common = ['id', 'kind', 'category', 'subject', 'key', 'value', 'scope', 'application', 'temporal', 'operation',
+    'sourceEventIds', 'sourceQuote', 'assertionKind', 'validFromSequence', 'status', 'supersedesFactIds']
+  const optional = ['validThroughSequence']
+  const variant = value['kind'] === 'controlled'
+    ? hasRequiredAndOnlyKeys(value, [...common, 'property'], [...optional, 'qualifier'])
+      && isOneOf(value['property'], ['person.address', 'communication.language']) && value['key'] === value['property']
+      && value['category'] === (value['property'] === 'person.address' ? 'address' : 'communication')
+      && (value['qualifier'] === undefined || isRecord(value['qualifier']) && hasExactKeys(value['qualifier'], ['kind', 'tag', 'sourceQuote'])
+        && value['qualifier']['kind'] === 'use-language' && isNonEmptyString(value['qualifier']['tag']) && isNonEmptyString(value['qualifier']['sourceQuote']))
+    : value['kind'] === 'anchored'
+      ? hasRequiredAndOnlyKeys(value, [...common, 'anchoredKind', 'conditions', 'alignment'], [...optional, 'topic', 'facet'])
+        && isOneOf(value['anchoredKind'], ['preference', 'standing-agreement'])
+        && value['category'] === (value['anchoredKind'] === 'preference' ? 'preference' : 'agreement')
+        && isOptionalNonEmptyString(value['topic']) && isOptionalNonEmptyString(value['facet'])
+        && Array.isArray(value['conditions']) && value['conditions'].every(isNonEmptyString)
+        && isOneOf(value['alignment'], ['exact', 'unresolved'])
+      : value['kind'] === 'context' && hasRequiredAndOnlyKeys(value, common, optional)
+        && value['category'] === 'other' && value['key'] === 'context'
+  return variant
+    && isNonEmptyString(value['id']) && isOneOf(value['category'], ['address', 'communication', 'preference', 'agreement', 'task', 'other'])
+    && isNonEmptyString(value['subject']) && isNonEmptyString(value['key']) && typeof value['value'] === 'string'
+    && isRecord(value['scope']) && hasRequiredAndOnlyKeys(value['scope'], ['organizationId'], ['roomId', 'taskId'])
+    && isNonEmptyString(value['scope']['organizationId']) && isOptionalNonEmptyString(value['scope']['roomId']) && isOptionalNonEmptyString(value['scope']['taskId'])
+    && isOneOf(value['application'], ['organization', 'source-room', 'source-task', 'unresolved'])
+    && isOneOf(value['temporal'], ['current', 'historical', 'unresolved'])
+    && isOneOf(value['operation'], ['set', 'remove', 'clear'])
+    && (value['operation'] === 'clear' ? value['value'] === '' : value['value'].length > 0)
+    && Array.isArray(value['sourceEventIds']) && value['sourceEventIds'].every(isNonEmptyString)
+    && isNonEmptyString(value['sourceQuote']) && isOneOf(value['assertionKind'], ['human-explicit', 'inferred'])
+    && isNonNegativeInteger(value['validFromSequence'])
+    && (value['validThroughSequence'] === undefined || isNonNegativeInteger(value['validThroughSequence']))
+    && isOneOf(value['status'], ['candidate', 'current', 'default', 'conditional', 'historical', 'removed', 'unresolved'])
+    && Array.isArray(value['supersedesFactIds']) && value['supersedesFactIds'].every(isNonEmptyString)
 }
 
 function isMemorySource(value: unknown): boolean {

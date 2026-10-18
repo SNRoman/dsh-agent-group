@@ -20,6 +20,7 @@ import {
   assertLegacyWorkspacePreserved,
   assertUninstalledProfile,
   manifestFileTree,
+  isCompletePackedSmoke,
   removeTaskToolsProfileSeed,
   registryProfileCommands,
   uninstallProfileCommand,
@@ -669,7 +670,7 @@ async function main() {
     await writeFile(join(artifactsRoot, 'smoke-failure.txt'), `${detail}\n`, 'utf8').catch(() => {})
     throw new AggregateError(failures, `release smoke failed; evidence: ${artifactsRoot}`)
   }
-  if (options.mode === 'packed' && !options.installationOnly) {
+  if (isCompletePackedSmoke(options)) {
     const receipt = writeReleaseSmokeReceipt(REPO_ROOT, COMPATIBILITY.candidatePluginVersion, COMPATIBILITY.verifiedSource)
     await writeFile(join(artifactsRoot, 'release-smoke-receipt.json'), `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
   }

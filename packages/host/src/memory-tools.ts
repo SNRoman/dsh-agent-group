@@ -4,11 +4,16 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { AgentId } from './ids.ts'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { recallAgentEvents } from './memory.ts'
 import type { WorkspaceTaskToolHost, WorkspaceToolRegistry } from './task-tools.ts'
 import type { WorkspaceState } from './types.ts'
 
-type MemoryToolHost = Pick<WorkspaceTaskToolHost, 'agentIdFor' | 'snapshot'>
+type MemoryToolHost = Pick<WorkspaceTaskToolHost, 'agentIdFor' | 'snapshot'> & {
+  readonly effectiveSnapshot?: (() => WorkspaceState) | undefined
+  readonly recordMemoryToolRead?: ((agent: Agent, eventIds: readonly WorkspaceEventId[], rendered: string) => Promise<UserMessage | void>) | undefined
+}
+import type { WorkspaceEventId } from './ids.ts'
 type MemoryToolHosts = MemoryToolHost | ((agent: Agent) => MemoryToolHost | undefined)
 type MemoryToolLimits = { characterBudget: number; resultLimit: number }
 
@@ -79,15 +84,22 @@ function memoryTools(host: MemoryToolHosts, limits: MemoryToolLimits): readonly 
       assertExactArguments('workspace_search_memory', args, ['query'])
       const query = args.query.trim()
       if (query === '') throw new Error('workspace_search_memory query must not be empty')
-      const { agentId, state } = resolveActor(host, exec)
+      const { agentId, state, owner } = resolveActor(host, exec)
       const recalled = recallAgentEvents(state, {
         agentId, query, characterBudget: limits.characterBudget,
         matchingOnly: true, resultLimit: limits.resultLimit,
       })
-      return {
+      const value = {
         events: recalled.entries.map(entry => ({ eventId: entry.eventId, excerpt: entry.rendered })),
         hasMore: recalled.hasMore === true,
       }
+      const ids = value.events.map(event => event.eventId)
+      if (ids.length > 0 && exec.agent !== undefined) {
+        const context = await owner.recordMemoryToolRead?.(exec.agent, ids, JSON.stringify(value))
+        if (context !== undefined) exec.deferContext(context)
+      }
+      assertReturnedSources(host, exec, ids)
+      return value
     },
   })
 
@@ -118,32 +130,45 @@ function memoryTools(host: MemoryToolHosts, limits: MemoryToolLimits): readonly 
       assertExactArguments('workspace_read_memory', args, ['eventId', 'offset'])
       const offset = args.offset ?? 0
       if (offset < 0) throw new Error('workspace_read_memory offset must not be negative')
-      const { agentId, state } = resolveActor(host, exec)
+      const { agentId, state, owner } = resolveActor(host, exec)
       const entry = state.memoryEntries.find(candidate => candidate.agentId === agentId && candidate.eventId === args.eventId)
       const event = entry === undefined ? undefined : state.events.find(candidate => candidate.id === entry.eventId)
       if (entry === undefined || event === undefined) throw new WorkspaceMemoryToolError('WORKSPACE_MEMORY_UNAVAILABLE')
       const text = event.text ?? ''
       const end = Math.min(text.length, offset + limits.characterBudget)
-      return {
+      const value = {
         eventId: event.id, sequence: event.sequence, type: event.type, acquiredBy: entry.acquiredBy,
         text: text.slice(offset, end), offset, totalCharacters: text.length,
         ...(end < text.length ? { nextOffset: end } : {}),
       }
+      if (exec.agent !== undefined) {
+        const context = await owner.recordMemoryToolRead?.(exec.agent, [event.id], JSON.stringify(value))
+        if (context !== undefined) exec.deferContext(context)
+      }
+      assertReturnedSources(host, exec, [event.id])
+      return value
     },
   })
 
   return [search, read]
 }
 
-function resolveActor(hosts: MemoryToolHosts, exec: ToolRunContext): { agentId: AgentId; state: WorkspaceState } {
+function resolveActor(hosts: MemoryToolHosts, exec: ToolRunContext): { agentId: AgentId; state: WorkspaceState; owner: MemoryToolHost } {
   if (exec.agent === undefined) throw new WorkspaceMemoryToolError('WORKSPACE_MEMORY_CALLER_UNAVAILABLE')
   const host = typeof hosts === 'function' ? hosts(exec.agent) : hosts
   if (host === undefined) throw new WorkspaceMemoryToolError('WORKSPACE_MEMORY_CALLER_UNAVAILABLE')
   const agentId = host.agentIdFor(exec.agent)
   if (agentId === undefined) throw new WorkspaceMemoryToolError('WORKSPACE_MEMORY_CALLER_UNAVAILABLE')
-  const state = host.snapshot()
+  const state = host.effectiveSnapshot?.() ?? host.snapshot()
   if (state.agents[agentId]?.employmentStatus !== 'employed') throw new WorkspaceMemoryToolError('WORKSPACE_MEMORY_CALLER_UNAVAILABLE')
-  return { agentId, state }
+  return { agentId, state, owner: host }
+}
+
+function assertReturnedSources(hosts: MemoryToolHosts, exec: ToolRunContext, eventIds: readonly WorkspaceEventId[]): void {
+  const { agentId, state } = resolveActor(hosts, exec)
+  const owned = new Set(state.memoryEntries.filter(entry => entry.agentId === agentId).map(entry => entry.eventId))
+  const present = new Set(state.events.map(event => event.id))
+  if (eventIds.some(id => !owned.has(id) || !present.has(id))) throw new WorkspaceMemoryToolError('WORKSPACE_MEMORY_UNAVAILABLE')
 }
 
 function disposeDefinitions(disposers: readonly (() => void)[]): void {

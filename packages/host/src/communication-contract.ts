@@ -1,13 +1,31 @@
 /** Successor communication records; released workspace and workflow records remain unchanged. */
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import type { ToolCallId } from '@deepseek-ai/dsh-llm'
-import type { AgentId, ChildRunId, HumanId, RoomId, TaskId, WorkspaceEventId } from './ids.ts'
+import type { MessageId, ToolCallId } from '@deepseek-ai/dsh-llm'
+import type { AgentId, ChildRunId, HumanId, MembershipId, RoomId, TaskDeliveryAttemptId, TaskId, WorkspaceEventId, WorkspaceId } from './ids.ts'
+import type { MemoryCoverage } from './scene-memory-contract.ts'
 import type { TaskArtifactId, TaskDraftId, TaskTemplateRevisionId } from './workflow-contract.ts'
+import type { WorkflowOperationId } from './workflow-contract.ts'
+import type { ChatWorkOperation } from './chat-work-contract.ts'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    /** Persisted attribution for the exact direct, recalled and cumulative inputs of a managed turn. */
+    'agent-workspace-context': CommunicationInput & { readonly kind: 'agent-workspace-context'; readonly memoryReceipt?: MemorySourceReceipt }
+  }
+}
 
 /** Identifies one recorded model input and the content generated from it. */
 export type CommunicationInputId = Branded<'AgentWorkspaceCommunicationInputId'>
-/** Identifies one retryable withdrawal and organization context rebuild. */
+/** Versioned coverage carried only by a logged model input Source. */
+export interface MemorySourceReceipt {
+  readonly version: 1
+  readonly workspaceId: WorkspaceId
+  readonly agentId: AgentId
+  readonly contextGeneration: number
+  readonly coverage: readonly MemoryCoverage[]
+}
+/** Identifies one retryable withdrawal or personal-memory context rebuild. */
 export type ContextResetId = Branded<'AgentWorkspaceContextResetId'>
 /** Identifies one managed file mutation checkpoint. */
 export type FileCheckpointId = Branded<'AgentWorkspaceFileCheckpointId'>
@@ -26,8 +44,9 @@ export interface CommunicationMessage {
   readonly withdrawnBy?: ContextResetId | undefined
 }
 
-/** Stored content whose sources must remain usable before any work application or delivery. */
+/** Room input identifies an admitted source; event identifies generated content owned by its author. Other targets identify work whose sources must remain usable. */
 export type CommunicationInputTarget =
+  | { readonly kind: 'room-input'; readonly eventId: WorkspaceEventId }
   | { readonly kind: 'event'; readonly eventId: WorkspaceEventId }
   | { readonly kind: 'task'; readonly taskId: TaskId }
   | { readonly kind: 'draft'; readonly draftId: TaskDraftId }
@@ -38,6 +57,10 @@ export type CommunicationInputTarget =
 export interface CommunicationInput {
   readonly id: CommunicationInputId
   readonly target: CommunicationInputTarget
+  /** Exact managed inbox message; absent from records written before delivery attribution. */
+  readonly deliveryMessageId?: MessageId | undefined
+  /** Exact task attempt for an attributed task input; legacy inputs can omit it. */
+  readonly taskDeliveryAttemptId?: TaskDeliveryAttemptId | undefined
   readonly agentId: AgentId
   readonly contextGeneration: number
   readonly recordedAtSequence: number
@@ -74,10 +97,25 @@ interface ContextResetBase {
   readonly fileRestoreRequested: boolean
 }
 
+type ContextResetStatus =
+  | { readonly status: 'pending' | 'completed'; readonly error?: never | undefined }
+  | { readonly status: 'failed'; readonly error: string }
+
+/** Legacy withdrawals have no kind and invalidate shared sources across the organization. */
+export type MessageRecallOperation = ContextResetBase & ContextResetStatus & { readonly kind?: undefined }
+
+/** Personal acquisitions are removed while the preserved room history remains available to its other members. */
+export type RoomMemoryForgetOperation = ContextResetBase & ContextResetStatus & {
+  readonly kind: 'room-memory-forget'
+  /** Ended membership whose room/member-left event is recorded in source. */
+  readonly membershipId: MembershipId
+  /** Removed room sources and personally generated room replies with recorded dependencies on them; later explicit history synchronization may acquire them again. */
+  readonly forgottenEventIds: readonly WorkspaceEventId[]
+  readonly fileRestoreRequested: false
+}
+
 /** Failed or incomplete rebuilds never authorize reuse of the old context. */
-export type ContextResetOperation =
-  | (ContextResetBase & { readonly status: 'pending' | 'completed'; readonly error?: never | undefined })
-  | (ContextResetBase & { readonly status: 'failed'; readonly error: string })
+export type ContextResetOperation = MessageRecallOperation | RoomMemoryForgetOperation
 
 /** Exact raw bytes, including absence, captured by the managed file journal. */
 export type FileByteSnapshot =
@@ -118,6 +156,7 @@ export interface CommunicationState {
   readonly contexts: Readonly<Record<AgentId, CommunicationContext>>
   readonly resets: Readonly<Record<ContextResetId, ContextResetOperation>>
   readonly fileCheckpoints: Readonly<Record<FileCheckpointId, FileCheckpointMetadata>>
+  readonly operations: Readonly<Record<WorkflowOperationId, ChatWorkOperation>>
 }
 
 /** Minimal workflow references accepted by communication validation without runtime dependencies. */

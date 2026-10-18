@@ -4,19 +4,28 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { WorkspaceApiError } from './api.ts'
 import type { WorkspaceApiClient } from './api.ts'
-import type { AgentId, WorkspaceActivitySnapshot, WorkspaceSnapshot } from './contracts.ts'
+import type { AgentId, RoomId, WorkspaceEventId, WorkspaceActivitySnapshot, WorkspaceSnapshot } from './contracts.ts'
+import { WorkspaceCommunicationApi } from './communication-api.ts'
+import type { CommunicationState, ChatSource } from './communication-api.ts'
+import { roomLabel, roomMessageMentionSpans } from './view-model.ts'
 import { projectTaskRoots } from './task-view-model.ts'
 import { WorkspaceRuntimeBadge } from './WorkspaceActivityDrawer.tsx'
 import type { TaskProjection, TaskRootProjection } from './task-view-model.ts'
 import { workspaceRuntimeErrorText } from './runtime-copy.ts'
 import { WorkspaceWorkflow } from './WorkspaceWorkflow.tsx'
+import { WorkspacePendingWork } from './WorkspacePendingWork.tsx'
+import type { BringWorkToChat } from './WorkspacePendingWork.tsx'
 
-interface WorkspaceTasksProps {
+export interface WorkspaceTasksProps {
   readonly snapshot: WorkspaceSnapshot
   readonly activity: WorkspaceActivitySnapshot
   readonly api: WorkspaceApiClient
   readonly onSnapshot: (snapshot: WorkspaceSnapshot) => void
   readonly onActivity: (activity: WorkspaceActivitySnapshot) => void
+  readonly selectedAgentId?: AgentId | undefined
+  readonly onSelectAgent?: ((id: AgentId) => void) | undefined
+  readonly onOpenSource?: ((roomId: RoomId, eventId: WorkspaceEventId) => void) | undefined
+  readonly onBringToChat?: BringWorkToChat | undefined
   readonly t: TranslateNS<'agentWorkspace'>
 }
 
@@ -31,10 +40,31 @@ interface RefreshLegs { readonly snapshot: Promise<WorkspaceSnapshot | undefined
 /** Render canonical task trees and exact Host-owned task controls. */
 export function WorkspaceTasks(props: WorkspaceTasksProps) {
   const { api } = props
-  const roots = useMemo(() => projectTaskRoots(props.snapshot, props.activity), [props.snapshot, props.activity])
-  const employed = useMemo(() => Object.values(props.snapshot.agents).filter(agent => agent.employmentStatus === 'employed'), [props.snapshot])
-  const [title, setTitle] = useState('')
-  const [assigneeId, setAssigneeId] = useState<AgentId | ''>('')
+  const allRoots = useMemo(() => projectTaskRoots(props.snapshot, props.activity), [props.snapshot, props.activity])
+  const [status, setStatus] = useState('all')
+  const personalRoots = props.selectedAgentId === undefined ? allRoots : allRoots.flatMap(root => {
+    const related = root.derivedTasks.filter(task => task.assignment?.assignee.id === props.selectedAgentId || task.children.some(child => child.parent.id === props.selectedAgentId))
+    if (root.assignment?.assignee.id === props.selectedAgentId || root.children.some(child => child.parent.id === props.selectedAgentId)) return [{ ...root, derivedTasks: related }]
+    return related.map(task => ({ ...task, grants: [], derivedTasks: [] }))
+  })
+  const roots = personalRoots.filter(root => status === 'all' || root.status === status || (status === 'attention' && (root.delivery.phase === 'failed' || root.delivery.phase === 'interrupted')))
+  const [communication, setCommunication] = useState<CommunicationState>()
+  const invalidatedTaskIds = new Set(Object.values(communication?.resets ?? {}).flatMap(reset => reset.invalidatedTaskIds))
+  const [sourceLoadState, setSourceState] = useState<'loading' | 'ready' | 'error'>(typeof api.callCommunication === 'function' ? 'loading' : 'ready')
+  const [sourceRevision, setSourceRevision] = useState<number>()
+  const sourceState = sourceLoadState === 'ready' && typeof api.callCommunication === 'function' && (sourceRevision === undefined || sourceRevision < props.snapshot.revision) ? 'loading' : sourceLoadState
+  const [sourceRetry, setSourceRetry] = useState(0)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  useEffect(() => {
+    if (typeof api.callCommunication !== 'function') return
+    const controller = new AbortController()
+    setSourceState('loading')
+    void new WorkspaceCommunicationApi(api).snapshot(controller.signal).then(value => {
+      if (controller.signal.aborted) return
+      setCommunication(value.communication); setSourceRevision(value.aggregateRevision); setSourceState('ready')
+    }).catch(() => { if (!controller.signal.aborted) setSourceState('error') })
+    return () => controller.abort()
+  }, [api, props.snapshot.revision, sourceRetry])
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set())
   const [error, setError] = useState<string | undefined>()
   const [refreshFailed, setRefreshFailed] = useState(false)
@@ -136,38 +166,47 @@ export function WorkspaceTasks(props: WorkspaceTasksProps) {
     void execute(retry.key, retry.label, retry.run, retry.clear, retry.convergence)
   }
 
+  const renderSource = (taskId: string) => <WorkSource source={communication?.taskSources[taskId]} withdrawn={invalidatedTaskIds.has(taskId) || communication?.messages[communication?.taskSources[taskId]?.eventId ?? '']?.withdrawnBy !== undefined} state={sourceState} snapshot={props.snapshot} onOpen={props.onOpenSource} t={props.t} />
   return <div className="dsh-agent-group-body dsh-agent-group-tasks" data-mode="tasks" aria-label={props.t('task.center')}>
-    <aside className="dsh-agent-group-panel">
-      <div className="dsh-agent-group-section-head"><span className="dsh-agent-group-section-title">{props.t('task.assignRoot')}</span></div>
+    <aside className="dsh-agent-group-panel dsh-agent-group-filter-panel">
+      <div className="dsh-agent-group-section-head"><span className="dsh-agent-group-section-title">{props.t('work.people')}</span></div>
       <div className="dsh-agent-group-scroll">
         <div className="dsh-agent-group-form">
-          <label className="dsh-agent-group-field"><span>{props.t('task.title')}</span><input className="dsh-agent-group-input" value={title} onChange={event => setTitle(event.target.value)} placeholder={props.t('task.titlePlaceholder')} /></label>
-          <label className="dsh-agent-group-field"><span>{props.t('task.assignee')}</span><select className="dsh-agent-group-select" value={assigneeId} onChange={event => setAssigneeId(event.target.value as AgentId)}><option value="">{props.t('task.selectAssignee')}</option>{employed.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
-          <button type="button" className="dsh-agent-group-button" disabled={api.readOnly || pending.has('assign') || title.trim() === '' || assigneeId === ''} onClick={() => {
-            const trimmed = title.trim()
-            const selected = assigneeId
-            if (trimmed === '' || selected === '') return
-            void execute('assign', props.t('task.assign'), revision => props.api.assignTask(selected, trimmed, revision), () => { setTitle(''); setAssigneeId('') })
-          }}>{props.t('task.assign')}</button>
+          <label className="dsh-agent-group-field"><span>{props.t('work.owner')}</span><select className="dsh-agent-group-select" aria-label={props.t('work.owner')} value={props.selectedAgentId ?? ''} onChange={event => props.onSelectAgent?.(event.target.value)}>{props.selectedAgentId === undefined ? <option value="">{props.t('people.all')}</option> : null}{Object.values(props.snapshot.agents).map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
+          <label className="dsh-agent-group-field"><span>{props.t('work.status')}</span><select className="dsh-agent-group-select" aria-label={props.t('work.status')} value={status} onChange={event => setStatus(event.target.value)}><option value="all">{props.t('memory.any')}</option>{(['open', 'completed', 'cancelled'] as const).map(value => <option key={value} value={value}>{props.t(`task.status.${value}`)}</option>)}<option value="attention">{props.t('work.attention')}</option></select></label>
         </div>
       </div>
     </aside>
     <main className="dsh-agent-group-panel">
-      {api.workspaceId === props.snapshot.workspaceId ? <WorkspaceWorkflow api={api} snapshot={props.snapshot} onSnapshot={props.onSnapshot} t={props.t} /> : null}
-      <div className="dsh-agent-group-section-head"><span className="dsh-agent-group-section-title">{props.t('task.roots')}</span><span className="dsh-agent-group-muted">{props.t('task.rootCount', { count: roots.length })}</span></div>
+      <header className="dsh-agent-group-page-heading"><div><h2 className="dsh-agent-group-page-title">{props.selectedAgentId === undefined ? props.t('work.people') : props.t('work.ownerTitle', { name: props.snapshot.agents[props.selectedAgentId]?.name ?? '' })}</h2><p className="dsh-agent-group-page-subtitle">{props.t('work.chatHint')}</p></div><span className="dsh-agent-group-count">{props.t('work.count', { count: roots.length })}</span></header>
       {error !== undefined ? <div className="dsh-agent-group-error" role="alert">{error}</div> : null}
       {refreshFailed ? <div className="dsh-agent-group-retry" role="status">{props.t('task.refreshFailed')}</div> : null}
       {[...retries.values()].sort((left, right) => left.key.localeCompare(right.key)).map(retry => <div className="dsh-agent-group-retry" role="status" key={retry.key}><span>{props.t('workspace.staleRetry')}</span><button type="button" className="dsh-agent-group-button" aria-label={props.t('task.retryAction', { action: retry.label })} disabled={api.readOnly || pending.has(retry.key)} onClick={() => retryMutation(retry)}>{props.t('workspace.retry')}</button></div>)}
       {notice ? <div className="dsh-agent-group-retry" role="status">{props.t(notice === 'stopping' ? 'task.stopRequested' : 'task.alreadyStopping')}</div> : null}
+      {sourceState === 'error' ? <div role="alert" className="dsh-agent-group-error">{props.t('work.sourceFailed')}<button type="button" className="dsh-agent-group-button" onClick={() => setSourceRetry(value => value + 1)}>{props.t('workspace.retry')}</button></div> : null}
       <div className="dsh-agent-group-scroll dsh-agent-group-task-list">
-        {roots.length === 0 ? <div className="dsh-agent-group-empty">{props.t('task.empty')}</div> : roots.map(root => <TaskRoot key={root.id} root={root} pending={pending} convergences={convergences} execute={execute} api={props.api} t={props.t} />)}
+        <WorkspacePendingWork api={api} snapshot={props.snapshot} communication={communication} sourceState={sourceState} selectedAgentId={props.selectedAgentId} onSnapshot={props.onSnapshot} onOpenSource={props.onOpenSource} onBringToChat={props.onBringToChat} t={props.t} />
+        {roots.length === 0 ? <div className="dsh-agent-group-empty dsh-agent-group-empty-state">{props.t('work.empty')}</div> : roots.map(root => <div key={root.id} className="dsh-agent-group-work-card">{sourceState === 'ready' ? <TaskRoot root={root} renderSource={renderSource} invalidatedTaskIds={invalidatedTaskIds} pending={pending} convergences={convergences} execute={execute} api={props.api} t={props.t} /> : renderSource(root.id)}</div>)}
+        {api.workspaceId === props.snapshot.workspaceId ? <details className="dsh-agent-group-filter-section dsh-agent-group-work-settings" onToggle={event => setAdvancedOpen(event.currentTarget.open)}><summary>{props.t('work.advanced')}</summary>{advancedOpen ? <WorkspaceWorkflow api={api} snapshot={props.snapshot} onSnapshot={props.onSnapshot} onBringToChat={props.onBringToChat} t={props.t} /> : null}</details> : null}
       </div>
     </main>
   </div>
 }
 
-function TaskRoot({ root, pending, convergences, execute, api, t }: {
+function WorkSource({ source, withdrawn, state, snapshot, onOpen, t }: { readonly source: ChatSource | undefined; readonly withdrawn: boolean; readonly state: 'loading' | 'ready' | 'error'; readonly snapshot: WorkspaceSnapshot; readonly onOpen: WorkspaceTasksProps['onOpenSource']; readonly t: TranslateNS<'agentWorkspace'> }) {
+  if (state !== 'ready') return <p className="dsh-agent-group-muted dsh-agent-group-work-source-unavailable">{t(state === 'loading' ? 'work.sourceLoading' : 'work.sourceFailed')}</p>
+  if (source === undefined) return <p className="dsh-agent-group-muted dsh-agent-group-work-source-unavailable">{t('work.sourceMissing')}</p>
+  const event = snapshot.events.find(item => item.id === source.eventId && item.type === 'room/message' && item.subjectId === source.roomId)
+  if (event === undefined) return <p className="dsh-agent-group-muted dsh-agent-group-work-source-unavailable">{t('work.sourceMissing')}</p>
+  let text = event.text ?? ''
+  for (const span of roomMessageMentionSpans(snapshot, text, event.mentions ?? []).reverse()) text = `${text.slice(0, span.start)}${span.label}${text.slice(span.end)}`
+  return <div className="dsh-agent-group-work-source"><button type="button" className="dsh-agent-group-identity" disabled={onOpen === undefined} onClick={() => onOpen?.(source.roomId, source.eventId)}>{t('work.source', { room: roomLabel(snapshot, source.roomId, t) })}</button><p className="dsh-agent-group-work-source-text">{withdrawn ? t('recall.workInvalid') : text}</p></div>
+}
+
+function TaskRoot({ root, renderSource, invalidatedTaskIds, pending, convergences, execute, api, t }: {
   readonly root: TaskRootProjection
+  readonly renderSource: (taskId: string) => React.ReactNode
+  readonly invalidatedTaskIds: ReadonlySet<string>
   readonly pending: ReadonlySet<string>
   readonly convergences: ReadonlyMap<string, ConvergenceMarker>
   readonly execute: (key: string, label: string, run: RevisionedAction, clear?: () => void, convergence?: ConvergenceMarker) => Promise<void>
@@ -178,11 +217,13 @@ function TaskRoot({ root, pending, convergences, execute, api, t }: {
   const cancelLabel = t('task.cancelNamed', { task: root.title, id: root.id })
   const retryLabel = t('task.retryDeliveryNamed', { task: root.title, id: root.id })
   return <article className="dsh-agent-group-card dsh-agent-group-task-root" data-task-id={root.id}>
+    {invalidatedTaskIds.has(root.id) ? <><InvalidatedTaskFacts task={root} t={t} />{renderSource(root.id)}</> : <>
     <TaskHeader task={root} t={t} />
     <TaskFacts task={root} t={t} />
+    {renderSource(root.id)}
     <div className="dsh-agent-group-inline dsh-agent-group-task-actions">
       {root.status === 'open' ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" aria-label={cancelLabel} disabled={api.readOnly || pending.has(`cancel:${root.id}`)} onClick={() => void execute(`cancel:${root.id}`, cancelLabel, revision => api.cancelTask(root.id, revision))}>{t('task.cancel')}</button> : null}
-      {root.status === 'open' && root.assignment !== undefined && activeGrant === undefined ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" aria-label={t('task.grantNamed', { task: root.title, grantee: root.assignment.assignee.label, id: root.id })} disabled={api.readOnly || pending.has(`grant:${root.id}:${root.assignment.assignee.id}`)} onClick={() => void execute(`grant:${root.id}:${root.assignment!.assignee.id}`, t('task.grantNamed', { task: root.title, grantee: root.assignment!.assignee.label, id: root.id }), revision => api.grantTask(root.assignment!.assignee.id as AgentId, root.id, revision))}>{t('task.grant')}</button> : null}
+      {root.id === root.rootTaskId && root.status === 'open' && root.assignment !== undefined && activeGrant === undefined ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" aria-label={t('task.grantNamed', { task: root.title, grantee: root.assignment.assignee.label, id: root.id })} disabled={api.readOnly || pending.has(`grant:${root.id}:${root.assignment.assignee.id}`)} onClick={() => void execute(`grant:${root.id}:${root.assignment!.assignee.id}`, t('task.grantNamed', { task: root.title, grantee: root.assignment!.assignee.label, id: root.id }), revision => api.grantTask(root.assignment!.assignee.id as AgentId, root.id, revision))}>{t('task.grant')}</button> : null}
       {root.delivery.retryable ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" aria-label={retryLabel} disabled={api.readOnly || pending.has(`retry:${root.id}`) || convergences.has(`retry:${root.id}`)} onClick={() => void execute(`retry:${root.id}`, retryLabel, revision => api.retryTaskDelivery(root.id, revision), undefined, { kind: 'delivery', key: `retry:${root.id}`, taskId: root.id })}>{t('task.retryDelivery')}</button> : null}
     </div>
     {root.grants.length > 0 ? <section aria-label={t('task.grants')}><h4>{t('task.grants')}</h4>{root.grants.map(grant => {
@@ -190,15 +231,21 @@ function TaskRoot({ root, pending, convergences, execute, api, t }: {
       return <div className="dsh-agent-group-task-row" key={grant.id}><span>{grant.grantee.label}</span><span>{t('task.grantedBy', { actor: grant.grantedBy.label })}</span><TaskBadge value={t(grant.status === 'active' ? 'task.grantActive' : grant.expirationReason === 'revoked' ? 'task.grantRevoked' : grant.expirationReason === 'root-terminal' ? 'task.grantTerminalExpiry' : 'task.grantExpiryUnavailable')} />{grant.status === 'active' ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" aria-label={revokeLabel} disabled={api.readOnly || pending.has(`revoke:${grant.id}`)} onClick={() => void execute(`revoke:${grant.id}`, revokeLabel, revision => api.revokeTask(grant.id, revision))}>{t('task.revoke')}</button> : null}<EventTrace sequences={grant.eventSequences} t={t} /></div>
     })}</section> : null}
     <TaskRuntime task={root} pending={pending} convergences={convergences} execute={execute} api={api} t={t} />
+    </>}
     {root.derivedTasks.length > 0 ? <section aria-label={t('task.derived')}><h4>{t('task.derived')}</h4>{root.derivedTasks.map(task => {
+      if (invalidatedTaskIds.has(task.id) || invalidatedTaskIds.has(root.id)) return <article className="dsh-agent-group-card" key={task.id} data-task-id={task.id}>{renderSource(task.id)}<InvalidatedTaskFacts task={task} t={t} /></article>
       const derivedCancelLabel = t('task.cancelNamed', { task: task.title, id: task.id })
-      return <article className="dsh-agent-group-card" key={task.id} data-task-id={task.id}><TaskHeader task={task} t={t} /><TaskFacts task={task} t={t} />{task.status === 'open' ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" aria-label={derivedCancelLabel} disabled={api.readOnly || pending.has(`cancel:${task.id}`)} onClick={() => void execute(`cancel:${task.id}`, derivedCancelLabel, revision => api.cancelTask(task.id, revision))}>{t('task.cancel')}</button> : null}<TaskRuntime task={task} pending={pending} convergences={convergences} execute={execute} api={api} t={t} /></article>
+      return <article className="dsh-agent-group-card" key={task.id} data-task-id={task.id}><TaskHeader task={task} t={t} /><TaskFacts task={task} t={t} />{renderSource(task.id)}{task.status === 'open' ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" aria-label={derivedCancelLabel} disabled={api.readOnly || pending.has(`cancel:${task.id}`)} onClick={() => void execute(`cancel:${task.id}`, derivedCancelLabel, revision => api.cancelTask(task.id, revision))}>{t('task.cancel')}</button> : null}<TaskRuntime task={task} pending={pending} convergences={convergences} execute={execute} api={api} t={t} /></article>
     })}</section> : null}
   </article>
 }
 
+function InvalidatedTaskFacts({ task, t }: { readonly task: TaskProjection; readonly t: TranslateNS<'agentWorkspace'> }) {
+  return <><p role="status" className="dsh-agent-group-muted">{t('recall.workInvalid')}</p>{task.assignment ? <p>{task.assignment.assignee.label}</p> : null}<details data-work-details><summary>{t('pending.details')}</summary><p>{task.id}</p><EventTrace sequences={task.eventSequences} t={t} /></details></>
+}
+
 function TaskHeader({ task, t }: { readonly task: TaskProjection; readonly t: TranslateNS<'agentWorkspace'> }) {
-  return <div className="dsh-agent-group-card-head"><strong>{task.title}</strong><TaskBadge value={t(`task.status.${task.status}`)} /><span className="dsh-agent-group-muted">{task.id}</span></div>
+  return <div className="dsh-agent-group-card-head dsh-agent-group-task-heading"><h3 className="dsh-agent-group-task-title">{task.title}</h3><TaskBadge value={t(`task.status.${task.status}`)} /></div>
 }
 
 function TaskFacts({ task, t }: { readonly task: TaskProjection; readonly t: TranslateNS<'agentWorkspace'> }) {
@@ -207,8 +254,8 @@ function TaskFacts({ task, t }: { readonly task: TaskProjection; readonly t: Tra
     {task.cancellation ? <span>{t(cancellationLocaleKey(task.cancellation.scope), { sequence: task.cancellation.eventSequence })}</span> : null}
     <span>{t(`task.delivery.${task.delivery.phase}`)}</span>
     {task.delivery.failure ? <span>{workspaceRuntimeErrorText(task.delivery.failure, t)}</span> : null}
-    {task.delivery.result ? <details><summary aria-label={t('task.resultNamed', { task: task.title, id: task.id })}>{t('task.result')}</summary><p>{task.delivery.result}</p></details> : null}
-    <EventTrace sequences={task.eventSequences} t={t} />
+    {task.delivery.result ? <details className="dsh-agent-group-task-result"><summary aria-label={t('task.resultNamed', { task: task.title, id: task.id })}>{t('task.result')}</summary><p>{task.delivery.result}</p></details> : null}
+    <details data-work-details><summary>{t('pending.details')}</summary><p>{task.id}</p><EventTrace sequences={task.eventSequences} t={t} /></details>
   </div>
 }
 

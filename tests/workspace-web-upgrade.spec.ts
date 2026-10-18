@@ -361,6 +361,30 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
     await expect(api.queryMemory({ agentId: 'agent-1', limit: 10, snapshotRevision: 1 })).rejects.toThrow('invalid memory page')
   })
 
+  it('accepts a saved processing state with separate current model availability', async () => {
+    const item = { eventId: 'event-1', sequence: 1, type: 'room/message', provenance: 'task', definitionRevision: { status: 'unresolved' },
+      processing: { status: 'complete', available: false, ranges: [{ start: 0, end: 8 }], facts: [] } }
+    const { api } = apiFixture({ 'memory/query': { snapshotRevision: 1, items: [item] } })
+    await expect(api.queryMemory({ agentId: 'agent-1', limit: 10, snapshotRevision: 1 })).resolves.toMatchObject({ items: [item] })
+  })
+
+  it('accepts v2 memory candidates and rejects a legacy free-key fact on the wire', async () => {
+    const fact = { id: 'fact-1', kind: 'controlled', property: 'person.address', category: 'address', key: 'person.address',
+      subject: 'human:owner', value: '林老师', scope: { organizationId: 'local' }, application: 'organization',
+      temporal: 'current', operation: 'set', sourceEventIds: ['event-1'], sourceQuote: '公司都叫我林老师',
+      assertionKind: 'human-explicit', validFromSequence: 1, status: 'candidate', supersedesFactIds: [] }
+    const item = { eventId: 'event-1', sequence: 1, type: 'room/message', provenance: 'room-membership',
+      definitionRevision: { status: 'unresolved' }, processing: { status: 'complete', available: true, ranges: [], facts: [fact] } }
+    const query = { agentId: 'agent-1', limit: 10, snapshotRevision: 1 }
+    const accepted = apiFixture({ 'memory/query': { snapshotRevision: 1, items: [item] } })
+    await expect(accepted.api.queryMemory(query)).resolves.toMatchObject({ items: [item] })
+    const legacy = { ...fact, kind: undefined, property: undefined, application: undefined, temporal: undefined,
+      operation: undefined, key: 'preferred-address', status: 'active' }
+    const rejected = apiFixture({ 'memory/query': { snapshotRevision: 1, items: [{ ...item,
+      processing: { ...item.processing, facts: [legacy] } }] } })
+    await expect(rejected.api.queryMemory(query)).rejects.toThrow('invalid memory page')
+  })
+
   it.each([
     ['business details', { kind: 'business', code: 'agent-missing', message: 'missing', details: {} }],
     ['bad request details', { kind: 'bad-request', code: 'bad-request', message: 'bad', details: { issues: 'not-an-array' } }],
@@ -483,6 +507,7 @@ describe('WorkspaceApiClient upgraded conversation contract', () => {
     ['room/direct/open', { agentId: 'agent-1' }, { revision: 2, value: { state: workspaceSnapshot(2), roomId: 'room-1' } }, (api: WorkspaceApiClient) => api.openDirect('agent-1', 1)],
     ['room/join', { roomId: 'room-1', agentId: 'agent-1', memoryStart: { type: 'new-events' } }, { revision: 2, value: workspaceSnapshot(2) }, (api: WorkspaceApiClient) => api.joinRoom('room-1', 'agent-1', { type: 'new-events' }, 1)],
     ['room/leave', { membershipId: 'membership-1' }, { revision: 2, value: workspaceSnapshot(2) }, (api: WorkspaceApiClient) => api.leaveRoom('membership-1', 1)],
+    ['room/leave-and-forget', { membershipId: 'membership-1', operationId: 'forget-1' }, { revision: 2, value: workspaceSnapshot(2) }, (api: WorkspaceApiClient) => api.leaveRoomAndForget('membership-1', 'forget-1', 1)],
     ['room/post', { roomId: 'room-1', text: 'hello', mentions: ['agent-1'] }, { revision: 2, value: workspaceSnapshot(2) }, (api: WorkspaceApiClient) => api.postMessage('room-1', 'hello', ['agent-1'], 1)],
     ['task/assign', { assigneeAgentId: 'agent-1', title: 'Review' }, { revision: 2, value: { state: workspaceSnapshot(2), taskId: 'task-1', taskAssignmentId: 'assignment-1' } }, (api: WorkspaceApiClient) => api.assignTask('agent-1', 'Review', 1)],
     ['task/grant', { granteeAgentId: 'agent-1', rootTaskId: 'task-1' }, { revision: 2, value: { state: workspaceSnapshot(2), delegationGrantId: 'grant-1' } }, (api: WorkspaceApiClient) => api.grantTask('agent-1', 'task-1', 1)],

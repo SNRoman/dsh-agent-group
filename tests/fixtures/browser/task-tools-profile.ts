@@ -6,7 +6,8 @@ import { basename, dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { WorkspaceRuntime } from '../../../packages/host/src/workspace-runtime.ts'
 import { HumanId, WorkspaceId } from '../../../packages/host/src/ids.ts'
-import { assignHumanTask } from '../../../packages/host/src/tasks.ts'
+import { applyChatWork } from '../../../packages/host/src/chat-work.ts'
+import { applyWorkflowCommand } from '../../../packages/host/src/workflow.ts'
 
 const TASK_TOOLS_REQUEST = 'PROFILE_TASK_TOOLS_REQUEST 请核对 UTF-8 导出需求并完成任务。'
 const MEMORY_REQUIREMENT = '导出要求：CSV 使用 UTF-8 编码，保留中文标题，不添加 BOM。'
@@ -47,14 +48,13 @@ export async function apply(ctx: Context): Promise<void> {
   if (remembered.sessionBindings[alice.id] !== undefined || remembered.sessionBindings[bob.id] !== undefined) {
     throw new Error('profile task-tools passive requirement materialized an employee')
   }
-  const assigned = assignHumanTask(remembered, {
-    humanId: HumanId('profile-task-human'),
-    assigneeAgentId: alice.id,
-    title: TASK_TOOLS_REQUEST,
-  })
-  await service.apply(() => assigned.state)
+  const assigned = (await service.directory.updateRecord(service.workspaceId, record => applyChatWork(record, {
+    type: 'communication/assign', roomId: room.id, assigneeAgentId: alice.id, allowDelegation: false,
+    brief: { title: TASK_TOOLS_REQUEST, instructions: TASK_TOOLS_REQUEST, expectedArtifacts: [], acceptanceCriteria: [] },
+  }, { humanId: HumanId('profile-task-human'), occurredAt: new Date().toISOString() }))).value
   await writeFile(fixturePath, `${JSON.stringify({
     taskId: assigned.taskId,
+    roomId: room.id,
     deniedAssigneeAgentId: bob.id,
     aliceAgentId: alice.id,
     memoryEventId: requirement.id,
@@ -62,6 +62,17 @@ export async function apply(ctx: Context): Promise<void> {
   })}\n`, 'utf8')
   const result = await service.runAssignedTask(alice.id, assigned.taskId)
   if (result !== 'PROFILE_TASK_TOOL_RESULT') throw new Error('profile task tool completion did not settle the assigned task')
+  const passive = service.snapshot()
+  for (const brief of [
+    { title: 'WF_REPORT', instructions: 'WF_BEFORE_EDIT', expectedArtifacts: ['WF_EXPECTED_A', 'WF_EXPECTED_B'], acceptanceCriteria: ['WF_CRITERION_A', 'WF_CRITERION_B'] },
+    { title: 'WF_DISCARD', instructions: 'WF_DISPOSABLE_INSTRUCTIONS', expectedArtifacts: [], acceptanceCriteria: [] },
+  ]) {
+    await service.directory.updateRecord(service.workspaceId, record => {
+      const changed = applyWorkflowCommand(record, { type: 'workflow/draft/create', brief }, { humanId: HumanId('profile-task-human'), occurredAt: new Date().toISOString() })
+      return { record: { ...record, aggregate: changed.aggregate, workflow: changed.workflow }, value: changed.value }
+    })
+  }
+  if (JSON.stringify(service.snapshot()) !== JSON.stringify(passive)) throw new Error('profile passive workflow setup changed business records or Sessions')
 }
 
 function requireTaskToolsFixturePath(): string {

@@ -7,6 +7,7 @@ import { createWorkflowRpcHandler } from './workflow-rpc.ts'
 import type { WorkspaceWorkflowRpcResult } from './workflow-rpc.ts'
 import { WorkspaceOperationId, workspaceIdentitySchema } from './workspace-record.ts'
 import type { WorkspaceDirectoryEntry, WorkspaceRecordV3 } from './workspace-record.ts'
+import { createCommunicationRpcHandler } from './communication-rpc.ts'
 
 /** Read-only import facts shown before human confirmation; no candidate is persisted. */
 export interface OrganizationImportPreview {
@@ -90,6 +91,7 @@ export function createOrganizationRpcHandler(service: OrganizationRpcService) {
           if (!parsed.success) return invalid()
           const { workspaceId: selected, ...body } = parsed.data
           if (endpoint.startsWith('workflow/')) return await createWorkflowRpcHandler(service.forWorkspace(selected))(endpoint, body, signal)
+          if (endpoint.startsWith('communication/')) return await createCommunicationRpcHandler(service.forWorkspace(selected))(endpoint, body, signal)
           return await createWorkspaceRpcHandler(service.forWorkspace(selected))(endpoint, body, signal)
         }
       }

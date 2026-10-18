@@ -26,6 +26,7 @@ const V020_CHILD_EXECUTION = 'V020_CHILD_EXECUTION'
 const GATE_TIMEOUT_MS = 120_000
 
 interface TaskToolsFixture {
+  readonly roomId: string
   readonly taskId: string
   readonly deniedAssigneeAgentId: string
   readonly aliceAgentId: string
@@ -36,6 +37,7 @@ interface TaskToolsFixture {
 interface WorkspaceFixture {
   readonly tasks: Readonly<Record<string, { readonly id: string; readonly title: string; readonly rootTaskId: string }>>
   readonly agents: Readonly<Record<string, { readonly id: string; readonly name: string }>>
+  readonly rooms: Readonly<Record<string, { readonly id: string; readonly name?: string }>>
   readonly delegationGrants: Readonly<Record<string, { readonly rootTaskId: string; readonly granteeAgentId: string; readonly status: string }>>
 }
 
@@ -106,7 +108,7 @@ function workspaceFixture(): WorkspaceFixture {
     const document = JSON.parse(readFileSync(path, 'utf8')) as { readonly tables?: { readonly workspaces?: { readonly local?: StoredFixture } }; readonly value?: StoredFixture }
     const stored = (document.tables?.workspaces?.local ?? document.value ?? document) as StoredFixture
     const state = 'aggregate' in stored ? stored.aggregate : stored
-    if (state.tasks !== undefined && state.agents !== undefined && state.delegationGrants !== undefined) return state
+    if (state.tasks !== undefined && state.agents !== undefined && state.rooms !== undefined && state.delegationGrants !== undefined) return state
   }
   throw new Error('the v0.2 Browser task fixture could not read a durable workspace')
 }
@@ -267,7 +269,7 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
       }
       return
     }
-    if (request.startsWith('WF_REPORT\n')) {
+    if (request.startsWith('WF_REPORT\n') || request.startsWith('WF_PINNED_OLD\n')) {
       const identity = taskIdentity(options)
       if (!options.tools?.some(tool => tool.name === 'workspace_complete_task')) throw new Error('workflow completion tool is missing')
       const tool = { id: ToolCallId(`wf-complete-${identity.attemptId}`), name: 'workspace_complete_task', arguments: JSON.stringify({ taskId: identity.taskId, result: `WF_RESULT ${identity.taskId} ${identity.attemptId}` }) }
@@ -285,13 +287,15 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
       yield* this.browserTaskResponse(options)
       return
     }
-    if (request === V020_HOLD) {
+    if (request === V020_HOLD || request.startsWith(`${V020_HOLD}\n`)) {
       if (!options.tools?.some(tool => tool.name === 'workspace_delegate_task')) throw new Error('held turn requires workspace_delegate_task')
       const identity = taskIdentity(options)
       const step = protocolStep(options, ['v020-hold-tool', 'v020-hold-unreachable'])
       if (step === 0) {
-        const bob = requiredWorkspaceItem(workspaceFixture().agents, 'Bob')
-        const tool = { id: ToolCallId('v020-hold-tool'), name: 'workspace_delegate_task', arguments: JSON.stringify({ rootTaskId: identity.taskId, assigneeAgentId: bob.id, title: 'V020_HOLD_SAFE_FAILURE' }) }
+        const state = workspaceFixture()
+        const bob = requiredWorkspaceItem(state.agents, 'Bob')
+        const room = requiredWorkspaceItem(state.rooms, 'Release room')
+        const tool = { id: ToolCallId('v020-hold-tool'), name: 'workspace_delegate_task', arguments: JSON.stringify({ roomId: room.id, rootTaskId: identity.taskId, assigneeAgentId: bob.id, title: 'V020_HOLD_SAFE_FAILURE' }) }
         yield { type: 'block-start', index: 0, blockType: 'tool-call' }
         yield { type: 'tool-call-delta', index: 0, id: tool.id, name: tool.name, argumentsDelta: tool.arguments }
         yield { type: 'block-end', index: 0, block: { type: 'tool-call', ...tool } }
@@ -337,11 +341,12 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
     const state = workspaceFixture()
     const identity = taskIdentity(options)
     const task = state.tasks[identity.taskId]
-    if (task === undefined || task.title !== currentText(options)) throw new Error('scripted task identity does not match its durable task')
+    if (task === undefined || task.title !== currentText(options).split('\n')[0]) throw new Error('scripted task identity does not match its durable task')
     const root = state.tasks[task.rootTaskId]
     if (root === undefined || !root.title.includes(V020_DELEGATE)) throw new Error('scripted task is missing its root task')
     const alice = requiredWorkspaceItem(state.agents, 'Alice')
     const bob = requiredWorkspaceItem(state.agents, 'Bob')
+    const room = requiredWorkspaceItem(state.rooms, 'Release room')
     const isChild = task.title === V020_CHILD
     if (isChild && task.id === root.id) throw new Error('scripted child task cannot use the root identity')
     const calls = isChild ? ['v020-child-run', 'v020-child-complete'] : ['v020-safe-failure', 'v020-delegate', 'v020-root-complete']
@@ -356,9 +361,9 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
         ? { id: ToolCallId('v020-child-run'), name: 'workspace_run_child', arguments: JSON.stringify({ taskId: task.id, prompt: V020_CHILD_EXECUTION }) }
         : { id: ToolCallId('v020-child-complete'), name: 'workspace_complete_task', arguments: JSON.stringify({ taskId: task.id, result: 'V020_CHILD_RESULT' }) }
       : step === 0
-        ? { id: ToolCallId('v020-safe-failure'), name: 'workspace_delegate_task', arguments: JSON.stringify({ rootTaskId: root.id, assigneeAgentId: bob.id, title: V020_SAFE_FAILURE }) }
+        ? { id: ToolCallId('v020-safe-failure'), name: 'workspace_delegate_task', arguments: JSON.stringify({ roomId: room.id, rootTaskId: root.id, assigneeAgentId: bob.id, title: V020_SAFE_FAILURE }) }
         : step === 1
-          ? await this.grantedDelegation(root.id, alice.id, bob.id, options.signal)
+          ? await this.grantedDelegation(root.id, alice.id, bob.id, room.id, options.signal)
           : { id: ToolCallId('v020-root-complete'), name: 'workspace_complete_task', arguments: JSON.stringify({ taskId: root.id, result: 'V020_ROOT_RESULT' }) }
     yield { type: 'block-start', index: 0, blockType: 'tool-call' }
     yield { type: 'tool-call-delta', index: 0, id: tool.id, name: tool.name, argumentsDelta: tool.arguments }
@@ -367,7 +372,7 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
     yield { type: 'finish', reason: { kind: 'tool-calls' } }
   }
 
-  private async grantedDelegation(rootTaskId: string, aliceId: string, bobId: string, signal: AbortSignal | undefined) {
+  private async grantedDelegation(rootTaskId: string, aliceId: string, bobId: string, roomId: string, signal: AbortSignal | undefined) {
     const gate = process.env['DSH_AGENT_GROUP_SMOKE_GATE']
     if (gate === undefined) throw new Error('DSH_AGENT_GROUP_SMOKE_GATE is required for denial observation')
     writeFileSync(`${gate}.denial-result-ready`, JSON.stringify({ rootTaskId, aliceId, bobId }), { encoding: 'utf8', flag: 'wx' })
@@ -376,7 +381,7 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
       grant.rootTaskId === rootTaskId && grant.granteeAgentId === aliceId && grant.status === 'active'
     )), signal)
     if (requiredWorkspaceItem(state.agents, 'Bob').id !== bobId) throw new Error('the v0.2 Browser task fixture resolved an unstable peer identity')
-    return { id: ToolCallId('v020-delegate'), name: 'workspace_delegate_task', arguments: JSON.stringify({ rootTaskId, assigneeAgentId: bobId, title: V020_CHILD }) }
+    return { id: ToolCallId('v020-delegate'), name: 'workspace_delegate_task', arguments: JSON.stringify({ roomId, rootTaskId, assigneeAgentId: bobId, title: V020_CHILD }) }
   }
 
   private async * taskToolResponse(options: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -390,7 +395,7 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
     }
     const identity = taskIdentity(options)
     if (identity.taskId !== fixture.taskId) throw new Error('profile task identity does not match its fixture')
-    const recalled = options.messages.filter(message => message.role === 'user' && message.source?.kind === 'agent-workspace-recall')
+    const recalled = options.messages.filter(message => message.role === 'user' && message.source?.kind === 'agent-workspace-context')
       .flatMap(message => message.content.flatMap(block => block.type === 'text' ? [block.text] : [])).join('\n')
     if (!recalled.includes(`[event:${fixture.memoryEventId} `) || !recalled.includes(MEMORY_REQUIREMENT)) {
       throw new Error('profile formal task omitted its acquired room requirement or original event id')
@@ -431,6 +436,7 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
               id: ToolCallId('profile-policy-denial'),
               name: 'workspace_delegate_task',
               arguments: JSON.stringify({
+                roomId: fixture.roomId,
                 rootTaskId: fixture.taskId,
                 assigneeAgentId: fixture.deniedAssigneeAgentId,
                 title: 'PROFILE_DENIED_DELEGATION',

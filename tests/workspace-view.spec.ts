@@ -6,7 +6,7 @@ import { WorkspaceApiClient, WorkspaceApiError } from '../packages/web/src/clien
 import { en, zh } from '../packages/web/src/client/locales.ts'
 import { WorkspaceOverlay } from '../packages/web/src/client/WorkspaceUi.tsx'
 import { WorkspaceLiveTurn } from '../packages/web/src/client/WorkspaceTurn.tsx'
-import type { WorkspaceTurnStreamSnapshot } from '../packages/web/src/client/contracts.ts'
+import type { WorkspaceSnapshot, WorkspaceTurnStreamSnapshot } from '../packages/web/src/client/contracts.ts'
 import {
   activeRoomMembers,
   appendDisplayMention,
@@ -94,6 +94,10 @@ interface TestElement {
 }
 
 type TestComponent = (props: Readonly<Record<string, unknown>>) => unknown
+interface TestEffect {
+  readonly run: () => void | (() => void)
+  readonly dependencies: readonly unknown[]
+}
 
 const componentHarnessRestorers: Array<() => void> = []
 
@@ -109,9 +113,9 @@ function componentHarness(initialTurnStream?: WorkspaceTurnStreamSnapshot) {
     }
   }
   const states = new Map<TestComponent, unknown[]>()
-  const effects = new Map<TestComponent, Array<() => void | (() => void)>>()
+  const effects = new Map<TestComponent, TestEffect[]>()
   let currentState: unknown[] = []
-  let currentEffects: Array<() => void | (() => void)> = []
+  let currentEffects: TestEffect[] = []
   let hookIndex = 0
   const dispatcher = react.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED.ReactCurrentDispatcher
   const previousDispatcher = dispatcher.current
@@ -135,9 +139,10 @@ function componentHarness(initialTurnStream?: WorkspaceTurnStreamSnapshot) {
       if (!(index in currentState)) currentState[index] = { current: initial }
       return currentState[index]
     },
-    useEffect(effect: () => void | (() => void)) { hookIndex += 1; currentEffects.push(effect) },
-    useLayoutEffect(effect: () => void | (() => void)) { hookIndex += 1; currentEffects.push(effect) },
+    useEffect(run: () => void | (() => void), dependencies: readonly unknown[] = []) { hookIndex += 1; currentEffects.push({ run, dependencies }) },
+    useLayoutEffect(run: () => void | (() => void), dependencies: readonly unknown[] = []) { hookIndex += 1; currentEffects.push({ run, dependencies }) },
     useMemo(factory: () => unknown) { hookIndex += 1; return factory() },
+    useCallback<T extends (...args: never[]) => unknown>(callback: T) { hookIndex += 1; return callback },
   }
 
   const render = (component: TestComponent, props: Readonly<Record<string, unknown>>): unknown => {
@@ -188,7 +193,47 @@ function componentHarness(initialTurnStream?: WorkspaceTurnStreamSnapshot) {
     return findRaw(root.props['children'], predicate)
   }
 
-  return { effectsFor: (component: TestComponent) => effects.get(component) ?? [], find, findAll, findRaw, render }
+  const effectFor = (component: TestComponent, predicate: (dependencies: readonly unknown[]) => boolean) => {
+    const matches = effects.get(component)?.filter(effect => predicate(effect.dependencies)) ?? []
+    if (matches.length > 1) throw new Error('ambiguous component effect dependencies')
+    return matches[0]?.run
+  }
+  return {
+    effectFor,
+    subscriptionEffect: (api: unknown) => effectFor(WorkspaceOverlay as unknown as TestComponent, dependencies => dependencies.includes(api)
+      && dependencies.some(value => typeof value === 'object' && value !== null && 'setSnapshot' in value && 'setBusy' in value)),
+    definitionDraftEffect: () => effectFor(WorkspaceOverlay as unknown as TestComponent, dependencies => dependencies.some(value =>
+      typeof value === 'object' && value !== null && 'currentRevisionId' in value && 'revisionIds' in value)),
+    find, findAll, findRaw, render,
+  }
+}
+
+function communicationApi(state: WorkspaceSnapshot) {
+  return {
+    workspaceId: state.workspaceId,
+    callCommunication: vi.fn(async (endpoint: string) => {
+      if (endpoint !== 'communication/snapshot') throw new Error(`unexpected communication endpoint: ${endpoint}`)
+      return {
+        workspaceId: state.workspaceId, aggregateRevision: state.revision, workflowRevision: 0,
+        communication: { revision: 0, nextCheckpointOrder: 1, messages: {}, taskSources: {}, draftSources: {}, inputs: {}, contexts: {}, resets: {}, fileCheckpoints: {}, operations: {} },
+      }
+    }),
+  }
+}
+
+async function loadCommunication(harness: ReturnType<typeof componentHarness>, tree: unknown, api: unknown, revision: number) {
+  const conversations = harness.findRaw(tree, element => typeof element.type === 'function' && 'liveTurns' in element.props && 'draft' in element.props)
+  if (conversations === undefined) throw new Error('expected conversations component')
+  const component = conversations.type as TestComponent
+  harness.render(component, conversations.props)
+  const effect = harness.effectFor(component, dependencies => dependencies.includes(api) && dependencies.includes(revision))
+  if (effect === undefined) throw new Error('expected communication metadata effect')
+  const cleanup = effect()
+  if (typeof cleanup === 'function') componentHarnessRestorers.push(cleanup)
+  await vi.waitFor(() => {
+    const refreshed = harness.render(component, conversations.props)
+    expect(harness.findAll(refreshed, element => String(element.props['className'] ?? '').split(' ').includes('dsh-agent-group-message')).length).toBeGreaterThan(0)
+  })
 }
 
 function isTestElement(value: unknown): value is TestElement {
@@ -314,7 +359,7 @@ describe('workspace UI view model', () => {
     expect(renderMode('colleagues').map(element => element.props['aria-label'])).toEqual(['Alice', 'Bob'])
   })
 
-  it('names the member panel and its candidate combobox for browser automation', () => {
+  it('names the member panel and its add-colleague button for browser automation', () => {
     const fixture = workspaceFixture()
     const definitionId = Object.keys(fixture.state.definitions)[0]
     expect(definitionId).toBeDefined()
@@ -340,172 +385,12 @@ describe('workspace UI view model', () => {
 
     const memberPanel = harness.findAll(tree, element => element.type === 'aside')
       .find(element => element.props['aria-label'] === 'room.groupMembers')
-    const candidate = harness.find(tree, element => element.type === 'select')
+    const addColleague = harness.find(memberPanel, element => element.type === 'button' && element.props['children'] === 'room.addAgent')
     expect(memberPanel).toBeDefined()
-    expect(candidate?.props['aria-label']).toBe('room.addAgent')
+    expect(addColleague?.props['aria-label']).toBe('room.addAgent')
   })
 
-  it('starts each membership join without a memory default', () => {
-    const fixture = workspaceFixture()
-    const definitionId = Object.keys(fixture.state.definitions)[0]
-    expect(definitionId).toBeDefined()
-    const withCandidate = mutateWorkspace(fixture.state, {
-      type: 'agent/create', definitionId: definitionId!, name: 'Carol',
-    }).state
-    const harness = componentHarness()
-    const tree = harness.render(WorkspaceOverlay as unknown as TestComponent, {
-      useStore: (selector: (state: unknown) => unknown) => selector({
-        open: true,
-        mode: 'conversations',
-        selectedRoomId: fixture.roomId,
-        selectedDefinitionId: undefined,
-        snapshot: withCandidate,
-        busy: false,
-      }),
-      actions: {
-        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
-      },
-      api: {},
-      t,
-    })
-
-    const memoryStart = harness.find(tree, element => element.type === 'select' && element.props['aria-label'] === 'room.memoryStart')
-    const join = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'room.join')
-    expect(memoryStart?.props['value']).toBe('')
-    expect(harness.findAll(memoryStart, element => element.type === 'option').map(option => [
-      option.props['value'], option.props['children'], option.props['disabled'],
-    ])).toEqual([
-      ['', 'room.selectMemoryStart', true],
-      ['new-events', 'room.memoryNewEvents', undefined],
-      ['event-range', 'room.memoryEventRange', undefined],
-    ])
-    expect(join?.props['disabled']).toBe(true)
-  })
-
-  it('requires a valid human-selected historical range before joining a group', async () => {
-    const fixture = workspaceFixture()
-    const definitionId = Object.keys(fixture.state.definitions)[0]
-    expect(definitionId).toBeDefined()
-    const withCandidate = mutateWorkspace(fixture.state, {
-      type: 'agent/create', definitionId: definitionId!, name: 'Carol',
-    }).state
-    const carolId = Object.keys(withCandidate.agents).find(id => withCandidate.agents[id]?.name === 'Carol')
-    expect(carolId).toBeDefined()
-    const ui: Record<string, unknown> = {
-      open: true,
-      mode: 'conversations',
-      selectedRoomId: fixture.roomId,
-      selectedDefinitionId: undefined,
-      snapshot: withCandidate,
-      busy: false,
-    }
-    const actions = {
-      close: vi.fn(),
-      setMode: vi.fn(),
-      selectRoom: vi.fn(),
-      selectDefinition: vi.fn(), selectAgent: vi.fn(),
-      setSnapshot: vi.fn((snapshot: unknown) => { ui['snapshot'] = snapshot }),
-      setBusy: vi.fn((busy: boolean) => { ui['busy'] = busy }),
-      setError: vi.fn(), setRetry: vi.fn(),
-    }
-    const api = { joinRoom: vi.fn(async () => withCandidate) }
-    const harness = componentHarness()
-    const render = (): unknown => harness.render(WorkspaceOverlay as unknown as TestComponent, {
-      useStore: (selector: (state: unknown) => unknown) => selector(ui),
-      actions,
-      api,
-      t,
-    })
-
-    let tree = render()
-    const candidate = harness.find(tree, element => element.type === 'select' && element.props['aria-label'] === 'room.addAgent')
-    const memoryStart = harness.find(tree, element => element.type === 'select' && element.props['aria-label'] === 'room.memoryStart')
-    expect(candidate).toBeDefined()
-    expect(memoryStart).toBeDefined()
-    expect(memoryStart?.props['value']).toBe('')
-    ;(candidate!.props['onChange'] as (event: unknown) => void)({ target: { value: carolId } })
-    ;(memoryStart!.props['onChange'] as (event: unknown) => void)({ target: { value: 'event-range' } })
-
-    tree = render()
-    const start = harness.find(tree, element => element.type === 'input' && element.props['aria-label'] === 'room.startSequence')
-    const end = harness.find(tree, element => element.type === 'input' && element.props['aria-label'] === 'room.endSequence')
-    expect(start).toBeDefined()
-    expect(end).toBeDefined()
-    expect(start?.props['type']).toBe('number')
-    expect(end?.props['type']).toBe('number')
-    ;(start!.props['onChange'] as (event: unknown) => void)({ target: { value: '4' } })
-    ;(end!.props['onChange'] as (event: unknown) => void)({ target: { value: '3' } })
-
-    tree = render()
-    let join = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'room.join')
-    expect(join?.props['disabled']).toBe(true)
-    let renderedEnd = harness.find(tree, element => element.type === 'input' && element.props['aria-label'] === 'room.endSequence')!
-    ;(renderedEnd.props['onChange'] as (event: unknown) => void)({ target: { value: '999' } })
-
-    tree = render()
-    join = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'room.join')
-    expect(join?.props['disabled']).toBe(true)
-    renderedEnd = harness.find(tree, element => element.type === 'input' && element.props['aria-label'] === 'room.endSequence')!
-    ;(renderedEnd.props['onChange'] as (event: unknown) => void)({ target: { value: '5' } })
-
-    tree = render()
-    join = harness.find(tree, element => element.type === 'button' && element.props['children'] === 'room.join')
-    expect(join?.props['disabled']).toBe(false)
-    ;(join!.props['onClick'] as () => void)()
-    await vi.waitFor(() => expect(api.joinRoom).toHaveBeenCalledWith(
-      fixture.roomId,
-      carolId,
-      { type: 'event-range', startSequence: 4, endSequence: 5 },
-      withCandidate.revision,
-    ))
-  })
-
-  it('clears the selected memory start when the candidate changes', () => {
-    const fixture = workspaceFixture()
-    const definitionId = Object.keys(fixture.state.definitions)[0]
-    expect(definitionId).toBeDefined()
-    const carol = mutateWorkspace(fixture.state, {
-      type: 'agent/create', definitionId: definitionId!, name: 'Carol',
-    })
-    const dave = mutateWorkspace(carol.state, {
-      type: 'agent/create', definitionId: definitionId!, name: 'Dave',
-    })
-    const harness = componentHarness()
-    const props = {
-      useStore: (selector: (state: unknown) => unknown) => selector({
-        open: true,
-        mode: 'conversations',
-        selectedRoomId: fixture.roomId,
-        selectedDefinitionId: undefined,
-        snapshot: dave.state,
-        busy: false,
-      }),
-      actions: {
-        close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn(),
-      },
-      api: {},
-      t,
-    }
-    const render = (): unknown => harness.render(WorkspaceOverlay as unknown as TestComponent, props)
-
-    let tree = render()
-    let candidate = harness.find(tree, element => element.type === 'select' && element.props['aria-label'] === 'room.addAgent')!
-    let memoryStart = harness.find(tree, element => element.type === 'select' && element.props['aria-label'] === 'room.memoryStart')!
-    ;(candidate.props['onChange'] as (event: unknown) => void)({ target: { value: carol.agentId } })
-    ;(memoryStart.props['onChange'] as (event: unknown) => void)({ target: { value: 'new-events' } })
-
-    tree = render()
-    expect(harness.find(tree, element => element.type === 'button' && element.props['children'] === 'room.join')?.props['disabled']).toBe(false)
-    candidate = harness.find(tree, element => element.type === 'select' && element.props['aria-label'] === 'room.addAgent')!
-    ;(candidate.props['onChange'] as (event: unknown) => void)({ target: { value: dave.agentId } })
-
-    tree = render()
-    memoryStart = harness.find(tree, element => element.type === 'select' && element.props['aria-label'] === 'room.memoryStart')!
-    expect(memoryStart.props['value']).toBe('')
-    expect(harness.find(tree, element => element.type === 'button' && element.props['children'] === 'room.join')?.props['disabled']).toBe(true)
-  })
-
-  it('renders one agent row across pre-commit, racing, and retired settlement snapshots', () => {
+  it('renders one agent row across pre-commit, racing, and retired settlement snapshots', async () => {
     const { fixture, beforeSettlement, afterSettlement, laggingStream, retiredStream } = settlementFixture()
     const ui = {
       open: true,
@@ -523,27 +408,33 @@ describe('workspace UI view model', () => {
       setBusy: vi.fn(),
       setError: vi.fn(), setRetry: vi.fn(),
     }
-    const props = { useStore: (selector: (state: unknown) => unknown) => selector(ui), actions, api: {}, t }
+    const api = communicationApi(afterSettlement)
+    const props = { useStore: (selector: (state: unknown) => unknown) => selector(ui), actions, api, t }
     const isMessageRow = (element: TestElement): boolean => element.props['className'] === 'dsh-agent-group-message'
       || element.props['className'] === 'dsh-agent-group-message dsh-agent-group-live-turn'
 
     const beforeHarness = componentHarness(laggingStream)
+    const beforeApi = communicationApi(beforeSettlement)
     const beforeTree = beforeHarness.render(WorkspaceOverlay as unknown as TestComponent, {
       ...props,
+      api: beforeApi,
       useStore: (selector: (state: unknown) => unknown) => selector({ ...ui, snapshot: beforeSettlement }),
     })
+    await loadCommunication(beforeHarness, beforeTree, beforeApi, beforeSettlement.revision)
     expect(beforeHarness.findAll(beforeTree, isMessageRow)).toHaveLength(2)
 
     const racingHarness = componentHarness(laggingStream)
     const racingTree = racingHarness.render(WorkspaceOverlay as unknown as TestComponent, props)
+    await loadCommunication(racingHarness, racingTree, api, afterSettlement.revision)
     expect(racingHarness.findAll(racingTree, isMessageRow)).toHaveLength(2)
 
     const retiredHarness = componentHarness(retiredStream)
     const retiredTree = retiredHarness.render(WorkspaceOverlay as unknown as TestComponent, props)
+    await loadCommunication(retiredHarness, retiredTree, api, afterSettlement.revision)
     expect(retiredHarness.findAll(retiredTree, isMessageRow)).toHaveLength(2)
   })
 
-  it('uses the durable activity id as the live row key', () => {
+  it('uses the durable activity id as the live row key', async () => {
     const fixture = workspaceFixture()
     const stream = {
       version: 1,
@@ -554,11 +445,13 @@ describe('workspace UI view model', () => {
       }],
     }
     const harness = componentHarness(stream)
+    const api = communicationApi(fixture.state)
     const tree = harness.render(WorkspaceOverlay as unknown as TestComponent, {
       useStore: (selector: (state: unknown) => unknown) => selector({ open: true, mode: 'conversations', selectedRoomId: fixture.roomId, snapshot: fixture.state, busy: false }),
       actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
-      api: {}, t,
+      api, t,
     })
+    await loadCommunication(harness, tree, api, fixture.state.revision)
     const live = harness.findRaw(tree, element => element.type === WorkspaceLiveTurn)
     expect(live?.key).toBe('activity-stable-1')
   })
@@ -607,7 +500,7 @@ describe('workspace UI view model', () => {
       api: reconnectApi,
       t,
     })
-    const subscription = reconnectHarness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[0]
+    const subscription = reconnectHarness.subscriptionEffect(reconnectApi)
     if (subscription === undefined) throw new Error('expected stream subscription effect')
     const cleanup = subscription()
     await waitStarted.promise
@@ -638,7 +531,7 @@ describe('workspace UI view model', () => {
       actions: { close: vi.fn(), setMode: vi.fn(), selectRoom: vi.fn(), selectDefinition: vi.fn(), selectAgent: vi.fn(), setSnapshot: vi.fn(), setBusy: vi.fn(), setError: vi.fn(), setRetry: vi.fn() },
       api, t,
     })
-    const subscription = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[0]
+    const subscription = harness.subscriptionEffect(api)
     if (subscription === undefined) throw new Error('expected stream subscription effect')
     const cleanup = subscription()
     await vi.waitFor(() => expect(api.waitForActivity).toHaveBeenCalled())
@@ -678,7 +571,7 @@ describe('workspace UI view model', () => {
       api,
       t: translate(zh),
     })
-    const subscription = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[0]
+    const subscription = harness.subscriptionEffect(api)
     if (subscription === undefined) throw new Error('expected stream subscription effect')
     const cleanup = subscription()
     await vi.waitFor(() => expect(api.waitForActivity).toHaveBeenCalledOnce())
@@ -711,7 +604,7 @@ describe('workspace UI view model', () => {
       api, t,
     }
     harness.render(WorkspaceOverlay as unknown as TestComponent, props)
-    const first = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[0]
+    const first = harness.subscriptionEffect(api)
     if (first === undefined) throw new Error('expected stream subscription effect')
     const cleanup = first()
     await vi.waitFor(() => expect(api.waitForActivity).toHaveBeenCalledOnce())
@@ -866,7 +759,7 @@ describe('workspace UI view model', () => {
     )
 
     let tree = render()
-    const initialize = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    const initialize = harness.definitionDraftEffect()
     if (initialize === undefined) throw new Error('expected definition draft effect')
     initialize()
     tree = render()
@@ -881,7 +774,7 @@ describe('workspace UI view model', () => {
     await vi.waitFor(() => expect(api.snapshot).toHaveBeenCalledOnce())
     expect(api.reviseDefinition).toHaveBeenCalledOnce()
     tree = render()
-    const afterRefresh = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    const afterRefresh = harness.definitionDraftEffect()
     if (afterRefresh === undefined) throw new Error('expected refreshed definition draft effect')
     afterRefresh()
     tree = render()
@@ -929,7 +822,7 @@ describe('workspace UI view model', () => {
     })
 
     let tree = render()
-    const initialize = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    const initialize = harness.definitionDraftEffect()
     if (initialize === undefined) throw new Error('expected definition draft effect')
     initialize()
     tree = render()
@@ -938,7 +831,7 @@ describe('workspace UI view model', () => {
     ;(inputs[1]!.props['onChange'] as (event: unknown) => void)({ target: { value: 'dirty instructions' } })
     ui['snapshot'] = background
     tree = render()
-    const refresh = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    const refresh = harness.definitionDraftEffect()
     if (refresh === undefined) throw new Error('expected definition draft refresh effect')
     refresh()
     tree = render()
@@ -965,7 +858,7 @@ describe('workspace UI view model', () => {
     })
 
     let tree = render()
-    const initialize = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    const initialize = harness.definitionDraftEffect()
     if (initialize === undefined) throw new Error('expected definition draft effect')
     initialize()
     tree = render()
@@ -1007,7 +900,7 @@ describe('workspace UI view model', () => {
     })
 
     let tree = render()
-    const initialize = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    const initialize = harness.definitionDraftEffect()
     if (initialize === undefined) throw new Error('expected definition draft effect')
     initialize()
     tree = render()
@@ -1056,7 +949,7 @@ describe('workspace UI view model', () => {
     })
 
     let tree = render()
-    const initialize = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    const initialize = harness.definitionDraftEffect()
     if (initialize === undefined) throw new Error('expected definition draft effect')
     initialize()
     tree = render()
@@ -1079,7 +972,7 @@ describe('workspace UI view model', () => {
       instructions: 'new authoritative instructions',
     }).state
     tree = render()
-    const refreshCleanDraft = harness.effectsFor(WorkspaceOverlay as unknown as TestComponent)[3]
+    const refreshCleanDraft = harness.definitionDraftEffect()
     if (refreshCleanDraft === undefined) throw new Error('expected definition draft refresh effect')
     refreshCleanDraft()
     tree = render()

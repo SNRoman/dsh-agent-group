@@ -13,6 +13,7 @@ import { TaskDeliveryCoordinator } from '../packages/host/src/task-delivery-coor
 import type { TaskDeliveryCoordinatorHost } from '../packages/host/src/task-delivery-coordinator.ts'
 import {
   assignHumanTask,
+  assignDelegatedTask,
   cancelTask,
   grantTaskDelegation,
   recordChildRunStarted,
@@ -100,6 +101,16 @@ function harness(initial: ReturnType<typeof createWorkspace>, stateOverride?: Wo
   const host: WorkspaceTaskToolHost = {
     agentIdFor: caller => identities.get(caller),
     snapshot: () => structuredClone(state),
+    delegateTask: async function(caller, request) {
+      let result!: ReturnType<typeof assignDelegatedTask>
+      await this.apply(current => {
+        const actorAgentId = identities.get(caller)
+        if (actorAgentId === undefined) throw new Error('caller unavailable')
+        result = assignDelegatedTask(current, { ...request, actorAgentId })
+        return result.state
+      })
+      return { taskId: result.taskId, taskAssignmentId: result.taskAssignmentId }
+    },
     apply: async mutation => {
       state = mutation(state)
       return structuredClone(state)
@@ -166,13 +177,14 @@ describe('agent-facing workspace task tools', () => {
       'workspace_complete_task',
     ])
     expect(Object.keys(registered.get('workspace_delegate_task').parameters.properties)).toEqual([
-      'rootTaskId', 'assigneeAgentId', 'title',
+      'roomId', 'rootTaskId', 'assigneeAgentId', 'title',
     ])
     expect(Object.keys(registered.get('workspace_run_child').parameters.properties)).toEqual(['taskId', 'prompt'])
     expect(Object.keys(registered.get('workspace_complete_task').parameters.properties)).toEqual(['taskId', 'result'])
     expect(JSON.stringify(registered.tools.map(tool => tool.parameters))).not.toMatch(/actorAgentId|humanId/)
 
     await expect(registered.get('workspace_delegate_task').execute({
+      roomId: 'room',
       rootTaskId: fixture.rootTaskId,
       assigneeAgentId: fixture.engineerId,
       title: 'Implement the API',
@@ -210,6 +222,7 @@ describe('agent-facing workspace task tools', () => {
     const built = harness(fixture)
     const delegate = registeredTools(built.host).get('workspace_delegate_task')
     const args = {
+      roomId: 'room',
       rootTaskId: fixture.rootTaskId,
       assigneeAgentId: fixture.engineerId,
       title: 'Implement the API',
@@ -251,6 +264,7 @@ describe('agent-facing workspace task tools', () => {
     const delegate = registeredTools(racedHost).get('workspace_delegate_task')
 
     const error = await delegate.execute({
+      roomId: 'room',
       rootTaskId: fixture.rootTaskId,
       assigneeAgentId: fixture.engineerId,
       title: 'Implement the API',
@@ -264,6 +278,7 @@ describe('agent-facing workspace task tools', () => {
     const built = harness(fixture)
     const delegate = registeredTools(built.host).get('workspace_delegate_task')
     const args = {
+      roomId: 'room',
       rootTaskId: fixture.rootTaskId,
       assigneeAgentId: fixture.engineerId,
       title: 'Implement the API',

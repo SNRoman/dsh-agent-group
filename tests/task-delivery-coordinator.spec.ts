@@ -1,7 +1,8 @@
 import { describe, expect, test, vi } from 'vitest'
-import type { Context } from '@deepseek-ai/cordis'
+import { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
-import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
+import type { MessageId, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, TurnEndReason } from '@deepseek-ai/dsh-session'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { AgentId, HumanId, TaskId, WorkspaceId } from '../packages/host/src/ids.ts'
@@ -34,11 +35,18 @@ function handle(): AgentHandle {
   return { agent: { id: 'session' } as never, dispose: async () => {} }
 }
 
-function recoveredHandle(nextTurn: readonly UserMessage[], events: readonly SessionEvent[]): AgentHandle {
+function recoveredHandle(nextTurn: readonly UserMessage[], events: readonly SessionEvent[], onDiscard?: () => void): AgentHandle {
+  const pending = [...nextTurn]
   return {
     agent: {
       id: SessionId('session'),
-      inbox: { nextTurn, nextStep: [] },
+      inbox: { nextTurn: pending, nextStep: [], remove: (messageId: MessageId) => {
+        const index = pending.findIndex(message => message.id === messageId)
+        if (index < 0) return false
+        pending.splice(index, 1)
+        onDiscard?.()
+        return true
+      } },
       session: { snapshotEvents: () => events },
     } as unknown as Agent,
     dispose: async () => {},
@@ -612,6 +620,48 @@ describe('TaskDeliveryCoordinator', () => {
     ])
   })
 
+  test.each(['during preparation', 'after preparation'] as const)('organization stop fences a recovered task %s before publication', async phase => {
+    const built = startedTask()
+    let state = built.state
+    const entered = deferred()
+    const release = deferred()
+    const prepared = deferred()
+    let published = 0
+    let discarded = 0
+    const coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => structuredClone(state),
+      apply: async mutation => { state = mutation(state); return structuredClone(state) },
+      ensureEmployee: async () => handle(),
+      deliver: async () => outcome('unused'),
+      prepareRecoveredDelivery: async () => {
+        entered.resolve()
+        if (phase === 'during preparation') await release.promise
+        prepared.resolve()
+        if (phase === 'after preparation') await release.promise
+        return undefined
+      },
+      discardRecoveredDelivery: () => { discarded++ },
+      recoverDelivery: async () => { published++; return outcome('obsolete answer') },
+    })
+    const recovery = coordinator.recoverAgent(built.agentId, recoveredHandle([built.message], []))
+    try {
+      await entered.promise
+      if (phase === 'after preparation') await prepared.promise
+      coordinator.cancelAllDeliveries()
+      release.resolve()
+      await Promise.allSettled([recovery])
+      await coordinator.drain()
+      expect(published).toBe(0)
+      expect(discarded).toBe(1)
+      expect(state.events.filter(event => event.type === 'task/result')).toHaveLength(0)
+      expect(inspectTaskDelivery(state, built.taskId).phase).toBe('retryable')
+    } finally {
+      release.resolve()
+      await Promise.allSettled([recovery])
+      await coordinator.drain()
+    }
+  })
+
   test.each(['started', 'accepted'] as const)('archive stop settles a recovered %s attempt before drain completes', async phase => {
     const built = phase === 'accepted' ? acceptedTask() : startedTask()
     let state = built.state
@@ -633,6 +683,64 @@ describe('TaskDeliveryCoordinator', () => {
     expect(state.tasks[built.taskId]?.status).toBe('open')
     expect(state.events.filter(event => event.type === 'task/delivery-failed')).toHaveLength(1)
     expect(state.events.filter(event => event.type === 'task/result')).toHaveLength(0)
+  })
+
+  test('stop discards a published recovered inbox message before it wakes and drains its flight', async () => {
+    const built = startedTask()
+    let state = built.state
+    const tracked = Promise.withResolvers<WorkspaceTurnOutcome>()
+    const restored = recoveredHandle([built.message], [], () => tracked.reject(new Error('delivery discarded')))
+    const coordinator = new TaskDeliveryCoordinator({
+      snapshot: () => structuredClone(state),
+      apply: async mutation => { state = mutation(state); return structuredClone(state) },
+      ensureEmployee: async () => handle(), deliver: async () => outcome('unused'),
+      recoverDelivery: async () => await tracked.promise,
+    })
+    await coordinator.recoverAgent(built.agentId, restored)
+    try {
+      coordinator.cancelAllDeliveries()
+      expect(restored.agent.inbox.nextTurn).toHaveLength(0)
+      await coordinator.drain()
+      expect(inspectTaskDelivery(state, built.taskId).phase).toBe('retryable')
+      expect(state.events.filter(event => event.type === 'task/result')).toHaveLength(0)
+    } finally {
+      tracked.reject(new Error('test cleanup'))
+      await coordinator.drain()
+    }
+  })
+
+  test('native restored inbox settles an unwoken recovered flight when stop discards it', async () => {
+    const built = startedTask()
+    let state = built.state
+    const session = Session.create(SessionId('stop-unwoken-pending'))
+    session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [built.message] })
+    const ctx = new Context()
+    let resident: AgentHandle | undefined
+    try {
+      await mountAgentLoopTestDependencies(ctx)
+      await ctx.plugin((await import('@deepseek-ai/dsh-agent-loop')).default, { agents: [] })
+      let tracker: WorkspaceTurnTracker | undefined
+      resident = await ctx.agents.create({ sessionId: session.id, seed: [...session.snapshotEvents()], agentOptions: { provider: 'mock', model: 'mock' },
+        setup: agentCtx => { tracker = new WorkspaceTurnTracker(); tracker.install(agentCtx) } })
+      const coordinator = new TaskDeliveryCoordinator({
+        snapshot: () => structuredClone(state),
+        apply: async mutation => { state = mutation(state); return structuredClone(state) },
+        ensureEmployee: async () => handle(), deliver: async () => outcome('unused'),
+        recoverDelivery: async (_agentId, live, delivery, source, hooks) => {
+          if (tracker === undefined) throw new Error('native tracker was not installed')
+          return await tracker.recover(live.agent, delivery, source, hooks)
+        },
+      })
+      await coordinator.recoverAgent(built.agentId, resident)
+      coordinator.cancelAllDeliveries()
+      expect(resident.agent.inbox.nextTurn).toHaveLength(0)
+      await coordinator.drain()
+      expect(inspectTaskDelivery(state, built.taskId).phase).toBe('retryable')
+      expect(state.events.filter(event => event.type === 'task/result')).toHaveLength(0)
+    } finally {
+      await resident?.dispose()
+      await ctx.fiber.dispose()
+    }
   })
 
   test('drain yields to a displaced employee admission after recovered settlement', async () => {
@@ -713,7 +821,7 @@ describe('TaskDeliveryCoordinator', () => {
     expect(state.tasks[built.taskId]?.status).toBe('open')
   })
 
-  test('a stopped recovered flight rejects a later inbox claim before durable acceptance', async () => {
+  test('a stopped recovered flight rejects a stale claim after reopen', async () => {
     const built = startedTask()
     let state = built.state
     let hooks: WorkspaceDeliveryHooks | undefined
@@ -730,13 +838,11 @@ describe('TaskDeliveryCoordinator', () => {
     await coordinator.recoverAgent(built.agentId, recoveredHandle([built.message], []))
     coordinator.cancelAllDeliveries()
     expect(hooks).toBeDefined()
-    try {
-      await expect(Promise.resolve().then(() => hooks?.onClaim?.())).rejects.toThrow(/cancel/)
-      expect(state.events.filter(event => event.type === 'task/delivery-accepted')).toHaveLength(0)
-    } finally {
-      tracked.resolve({ output: [], stopReason: { kind: 'aborted' }, interrupted: true })
-      await coordinator.drain()
-    }
+    tracked.resolve({ output: [], stopReason: { kind: 'aborted' }, interrupted: true })
+    await coordinator.drain()
+    coordinator.reopenDeliveries()
+    await expect(Promise.resolve().then(() => hooks?.onClaim?.())).rejects.toThrow(/cancel/)
+    expect(state.events.filter(event => event.type === 'task/delivery-accepted')).toHaveLength(0)
   })
 
   test('recovery restores an already accepted pending message without duplicating acceptance', async () => {

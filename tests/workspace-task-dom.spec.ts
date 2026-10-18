@@ -81,6 +81,7 @@ function createApi(overrides: Partial<WorkspaceApiClient> = {}): WorkspaceApiCli
   const stream = activity()
   const mutation = { revision: state.revision, value: { state, taskId: 'created', taskAssignmentId: 'created-assignment' } }
   return {
+    workspaceId: 'workspace',
     snapshot: vi.fn().mockResolvedValue(state), activitySnapshot: vi.fn().mockResolvedValue(stream),
     assignTask: vi.fn().mockResolvedValue(mutation),
     grantTask: vi.fn().mockResolvedValue({ revision: state.revision, value: { state, delegationGrantId: 'new-grant' } }),
@@ -98,6 +99,7 @@ async function mount(
   initialState: WorkspaceSnapshot = snapshot(),
   initialActivity: WorkspaceActivitySnapshot = activity(),
   strictMode = false,
+  options: Partial<Pick<import('../packages/web/src/client/WorkspaceTasks.tsx').WorkspaceTasksProps, 'selectedAgentId' | 'onSelectAgent' | 'onOpenSource' | 'onBringToChat'>> = {},
 ) {
   const container = document.createElement('div')
   document.body.append(container)
@@ -111,7 +113,7 @@ async function mount(
     return createElement(WorkspaceTasks, { snapshot: state, activity: stream, api, onSnapshot: (value: WorkspaceSnapshot) => {
       snapshots.push(value)
       setState(current => value.revision < current.revision ? current : value)
-    }, onActivity: (value: WorkspaceActivitySnapshot) => { activities.push(value); setStream(value) }, t: translate(dictionary) as never })
+    }, onActivity: (value: WorkspaceActivitySnapshot) => { activities.push(value); setStream(value) }, t: translate(dictionary) as never, ...options })
   }
   await act(async () => root.render(strictMode ? createElement(StrictMode, null, createElement(Harness)) : createElement(Harness)))
   return {
@@ -179,6 +181,83 @@ function stale(): WorkspaceApiError {
 }
 
 describe('task center real DOM interactions', () => {
+  it('places the task title before its historical source notice', async () => {
+    const { container } = await mount(createApi())
+    const task = container.querySelector<HTMLElement>('[data-task-id="root"]')!
+    expect(task.closest('.dsh-agent-group-work-card')?.textContent?.indexOf('Root work')).toBe(0)
+    expect(task.textContent).toContain(en['work.sourceMissing'])
+  })
+
+  it('withholds raw task content until matching withdrawal metadata is available', async () => {
+    const waiting = deferred<unknown>()
+    const api = createApi({ callCommunication: vi.fn().mockReturnValue(waiting.promise) })
+    const { container } = await mount(api)
+    try { expect(container.textContent).not.toContain('Root work') }
+    finally {
+      await act(async () => waiting.resolve({ workspaceId: 'workspace', aggregateRevision: 12, workflowRevision: 0, communication: { revision: 0, nextCheckpointOrder: 1, messages: {}, taskSources: {}, draftSources: {}, inputs: {}, contexts: {}, resets: {}, fileCheckpoints: {}, operations: {} } }))
+    }
+    expect(container.textContent).toContain('Root work')
+  })
+
+  it('keeps derived personal work from offering root delegation permissions', async () => {
+    const { container } = await mount(createApi(), en, snapshot(), activity(), false, { selectedAgentId: 'bob' })
+    const derived = container.querySelector<HTMLElement>('[data-task-id="derived"]')!
+    expect([...derived.querySelectorAll('button')].some(item => item.textContent === en['task.grant'])).toBe(false)
+  })
+
+  it('renders a real source with current mention labels and opens its exact message', async () => {
+    const state = snapshot()
+    const current: WorkspaceSnapshot = { ...state, rooms: { chat: { id: 'chat', kind: 'group', name: 'Planning' } }, events: [...state.events, { id: 'chat-source', sequence: 20, type: 'room/message', subjectId: 'chat', actor: { type: 'human', id: 'owner' }, text: 'Please <@alice> build the report', mentions: ['alice'] }] }
+    const api = createApi({ callCommunication: vi.fn().mockResolvedValue({ workspaceId: 'workspace', aggregateRevision: 12, workflowRevision: 0, communication: { revision: 0, nextCheckpointOrder: 1, messages: {}, taskSources: { root: { roomId: 'chat', eventId: 'chat-source' } }, draftSources: {}, inputs: {}, contexts: {}, resets: {}, fileCheckpoints: {}, operations: {} } }) })
+    const onOpenSource = vi.fn()
+    const { container } = await mount(api, en, current, activity(), false, { selectedAgentId: 'alice', onOpenSource })
+    const source = container.querySelector<HTMLElement>('.dsh-agent-group-work-source')!
+    expect(source.textContent).toContain('Please @Alice build the report')
+    expect(source.textContent).not.toContain('<@alice>')
+    await click(source.querySelector('button')!)
+    expect(onOpenSource).toHaveBeenCalledWith('chat', 'chat-source')
+    const details = container.querySelector<HTMLDetailsElement>('[data-task-id="root"] details[data-work-details]')
+    expect(details?.open).toBe(false)
+    expect(details?.textContent).toContain('root')
+  })
+
+  it('opens the derived task own chat source from the complete task tree', async () => {
+    const state = snapshot()
+    const current: WorkspaceSnapshot = { ...state, rooms: { chat: { id: 'chat', kind: 'group', name: 'Planning' } }, events: [...state.events, { id: 'child-source', sequence: 20, type: 'room/message', subjectId: 'chat', actor: { type: 'agent', id: 'alice' }, text: 'Please build the delegated part', mentions: ['bob'] }] }
+    const api = createApi({ callCommunication: vi.fn().mockResolvedValue({ workspaceId: 'workspace', aggregateRevision: 12, workflowRevision: 0, communication: { revision: 0, nextCheckpointOrder: 1, messages: {}, taskSources: { derived: { roomId: 'chat', eventId: 'child-source' } }, draftSources: {}, inputs: {}, contexts: {}, resets: {}, fileCheckpoints: {}, operations: {} } }) })
+    const onOpenSource = vi.fn()
+    const { container } = await mount(api, en, current, activity(), false, { onOpenSource })
+    const source = container.querySelector<HTMLElement>('[data-task-id="derived"] .dsh-agent-group-work-source')
+    expect(source?.textContent).toContain('Please build the delegated part')
+    await click(source!.querySelector('button')!)
+    expect(onOpenSource).toHaveBeenCalledWith('chat', 'child-source')
+  })
+
+  it('shows persisted pending proposals as personal work and brings confirmation to chat', async () => {
+    const current = { ...snapshot(), events: [...snapshot().events, { id: 'proposal-message', sequence: 20, type: 'room/message', subjectId: 'chat', actor: { type: 'agent' as const, id: 'alice' }, text: 'I propose a report', mentions: [] }], rooms: { chat: { id: 'chat', kind: 'group' as const, name: 'Planning' } } }
+    const brief = { title: 'Report proposal', instructions: 'Write the complete report', expectedArtifacts: ['report.md'], acceptanceCriteria: ['Reviewed'] }
+    const draft = { id: 'pending', revision: 2, status: 'draft', source: { type: 'employee', id: 'alice' }, brief, suggestedAssigneeAgentId: 'alice' }
+    const api = createApi({ callCommunication: vi.fn().mockResolvedValue({ workspaceId: 'workspace', aggregateRevision: 12, workflowRevision: 3, communication: { revision: 1, nextCheckpointOrder: 1, messages: {}, taskSources: {}, draftSources: { pending: { roomId: 'chat', eventId: 'proposal-message' } }, inputs: {}, contexts: {}, resets: {}, fileCheckpoints: {}, operations: {} } }), callWorkflow: vi.fn().mockResolvedValue({ workspaceId: 'workspace', aggregateRevision: 12, workflow: { revision: 3, nextId: 2, nextSequence: 2, drafts: { pending: draft }, taskTemplates: {}, taskTemplateRevisions: {}, companyTemplates: {}, companyTemplateRevisions: {}, taskBriefs: {}, artifacts: {}, reviews: {}, operations: {}, facts: [] } }) })
+    const onBringToChat = vi.fn()
+    const { container } = await mount(api, en, current, activity(), false, { selectedAgentId: 'alice', onBringToChat })
+    const card = container.querySelector<HTMLElement>('[data-pending-work="pending"]')
+    expect(card?.textContent).toContain('Report proposal')
+    expect(card?.textContent).toContain('Awaiting confirmation')
+    await click(button(card!, en['chat.confirmInChat']))
+    expect(onBringToChat).toHaveBeenCalledWith(brief, { id: 'pending', revision: 2 }, { roomId: 'chat', eventId: 'proposal-message' })
+    expect(api.assignTask).not.toHaveBeenCalled()
+  })
+
+  it('opens personal work without a separate task-creation form or other colleagues cards', async () => {
+    const { container } = await mount(createApi(), en, snapshot(), activity(), false, { selectedAgentId: 'alice' })
+    expect(container.querySelector('input[placeholder="Describe the work to complete"]')).toBeNull()
+    expect(container.textContent).toContain('Alice’s work')
+    expect(container.querySelector('[data-task-id="root"]')).not.toBeNull()
+    expect(container.querySelector('[data-task-id="other"]')).toBeNull()
+    expect(container.querySelector('[data-task-id="derived"]')).toBeNull()
+    expect(container.textContent).toContain('Historical task — chat source unavailable')
+  })
+
   it('localizes known Host delivery failures instead of rendering their English summary', async () => {
     const { container } = await mount(createApi(), zh)
     expect(container.textContent).toContain('任务投递在产生最终结果前中断。')
@@ -193,15 +272,10 @@ describe('task center real DOM interactions', () => {
     expect(selectNewerWorkspaceSnapshot(newer, { ...newer })).not.toBe(newer)
   })
 
-  it('dispatches all seven named actions through rendered accessible controls', async () => {
+  it('dispatches named state actions without independently creating tasks', async () => {
     const api = createApi()
     const { container } = await mount(api)
-    const title = field(container, 'Task title') as HTMLInputElement
-    const assignee = field(container, 'Assignee') as HTMLSelectElement
     const names = actionNames()
-    await change(title, 'New root')
-    await change(assignee, 'alice')
-    await click(button(container, 'Assign task'))
     await click(button(container, names.grantOther))
     await click(button(container, names.revokeAlice))
     await click(button(container, names.cancelDerived))
@@ -209,7 +283,7 @@ describe('task center real DOM interactions', () => {
     await click(button(container, names.stopTurn))
     await click(button(container, names.stopChild))
 
-    expect(api.assignTask).toHaveBeenCalledWith('alice', 'New root', 12)
+    expect(api.assignTask).not.toHaveBeenCalled()
     expect(api.grantTask).toHaveBeenCalledWith('bob', 'other', 12)
     expect(api.revokeTask).toHaveBeenCalledWith('grant-active', 12)
     expect(api.cancelTask).toHaveBeenCalledWith('derived', 12)
@@ -218,20 +292,19 @@ describe('task center real DOM interactions', () => {
     expect(api.stopChildRun).toHaveBeenCalledWith('child', 12)
   })
 
-  it.each(['snapshot', 'activity'] as const)('installs a committed assignment and clears its draft even when the independent %s refresh fails', async failedRead => {
-    const committed = { ...snapshot(), revision: 13 }
+  it.each(['snapshot', 'activity'] as const)('installs a committed task state even when the independent %s refresh fails', async failedRead => {
+    const initial = snapshot()
+    const committed: WorkspaceSnapshot = { ...initial, revision: 13, tasks: { ...initial.tasks, root: { ...initial.tasks.root!, status: 'cancelled' } } }
     const api = createApi({
-      assignTask: vi.fn().mockResolvedValue({ revision: 13, value: { state: committed, taskId: 'created', taskAssignmentId: 'created-assignment' } }),
+      cancelTask: vi.fn().mockResolvedValue(committed),
       snapshot: failedRead === 'snapshot' ? vi.fn().mockRejectedValue(new Error('snapshot unavailable')) : vi.fn().mockResolvedValue(committed),
       activitySnapshot: failedRead === 'activity' ? vi.fn().mockRejectedValue(new Error('stream unavailable')) : vi.fn().mockResolvedValue(activity()),
     })
     const { container, snapshots } = await mount(api)
-    await change(field(container, 'Task title'), 'Committed root')
-    await change(field(container, 'Assignee'), 'alice')
-    await click(button(container, 'Assign task'))
+    await click(button(container, actionNames().cancelRoot))
 
     expect(snapshots).toContain(committed)
-    expect((field(container, 'Task title') as HTMLInputElement).value).toBe('')
+    expect(container.querySelector('[data-task-id="root"]')?.textContent).toContain('Cancelled')
     expect(container.textContent).toContain('Refresh failed. Use Refresh to reconcile current task controls.')
     expect([...container.querySelectorAll('button')].some(item => item.textContent === 'Retry')).toBe(false)
   })
@@ -539,12 +612,11 @@ describe('task center real DOM interactions', () => {
     }
   })
 
-  it.each([[zh, ['任务标题', '负责人', '分配任务']], [en, ['Task title', 'Assignee', 'Assign task']]] as const)(
-    'exposes distinguishable bilingual accessible labels and authoritative provenance', async (dictionary, names) => {
+  it.each([zh, en])(
+    'exposes distinguishable bilingual work labels and authoritative sources (locale %#)', async dictionary => {
       const { container } = await mount(createApi(), dictionary)
-      expect(field(container, names[0])).toBeInstanceOf(HTMLInputElement)
-      expect(field(container, names[1])).toBeInstanceOf(HTMLSelectElement)
-      expect(button(container, names[2])).toBeInstanceOf(HTMLButtonElement)
+      expect(field(container, translate(dictionary)('work.owner'))).toBeInstanceOf(HTMLSelectElement)
+      expect(field(container, translate(dictionary)('work.status'))).toBeInstanceOf(HTMLSelectElement)
       for (const name of Object.values(actionNames(dictionary))) expect(button(container, name)).toBeInstanceOf(HTMLButtonElement)
       expect(container.textContent).toContain(translate(dictionary)('task.grantedBy', { actor: 'owner' }))
       expect(container.textContent).toContain(translate(dictionary)('task.childParent', { parent: 'Alice' }))

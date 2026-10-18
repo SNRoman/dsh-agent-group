@@ -21,13 +21,15 @@ function table(initial: [WorkspaceId, StoredWorkspace][] = []) {
   const rows = new Map(initial)
   let failure: Error | undefined
   let writes = 0
+  let attempts = 0
+  let failuresRemaining = 0
   const result: KvTable<WorkspaceId, StoredWorkspace> = {
     get: id => rows.get(id), entries: () => rows.entries(), keys: () => rows.keys(), get size() { return rows.size },
-    put: async (id, value) => { if (failure) { const error = failure; failure = undefined; throw error }; writes++; rows.set(id, structuredClone(value)) },
+    put: async (id, value) => { attempts++; if (failure) { const error = failure; if (--failuresRemaining === 0) failure = undefined; throw error }; writes++; rows.set(id, structuredClone(value)) },
     delete: async id => rows.delete(id),
     update: async (id, fn) => { const value = rows.get(id); if (!value) throw new Error('missing'); const next = fn(value); await result.put(id, next); return next },
   }
-  return { result, rows, fail: () => { failure = new Error('disk unavailable') }, writes: () => writes }
+  return { result, rows, fail: (error = new Error('disk unavailable'), count = 1) => { failure = error; failuresRemaining = count }, writes: () => writes, attempts: () => attempts }
 }
 
 async function fixture(version = 'v0.2.0'): Promise<WorkspaceState> {
@@ -40,6 +42,41 @@ function record(aggregate: WorkspaceState, label = '组织'): WorkspaceRecordV1 
 }
 
 describe('workspace directory', () => {
+  test.skipIf(process.platform !== 'win32')('retries unpublished Windows rename contention without duplicating the business mutation', async () => {
+    const storage = table()
+    const directory = new WorkspaceDirectory(storage.result, { count: 2, delayMs: 1 })
+    await directory.initialize()
+    storage.fail(Object.assign(new Error('locked rename'), { code: 'EPERM', syscall: 'rename' }), 2)
+    const next = await directory.updateAggregate(WorkspaceId('local'), state => mutateWorkspace(state, { type: 'definition/create', name: 'Worker', description: '', instructions: '' }).state)
+    expect(next.revision).toBe(1)
+    expect(next.events).toHaveLength(1)
+    expect(Object.keys(next.definitions)).toHaveLength(1)
+    expect(storage.writes()).toBe(2)
+    expect(storage.attempts()).toBe(4)
+  })
+
+  test.skipIf(process.platform !== 'win32')('bounds contention retries and keeps failed content out of the next write', async () => {
+    const storage = table()
+    const directory = new WorkspaceDirectory(storage.result, { count: 2, delayMs: 1 })
+    await directory.initialize()
+    const error = Object.assign(new Error('locked rename'), { code: 'EPERM', syscall: 'rename' })
+    storage.fail(error, 3)
+    await expect(directory.rename(WorkspaceId('local'), 'Failed')).rejects.toBe(error)
+    expect(directory.record(WorkspaceId('local')).descriptor.label).toBe('Local organization')
+    expect(storage.attempts()).toBe(4)
+    expect((await directory.rename(WorkspaceId('local'), 'Saved')).descriptor.label).toBe('Saved')
+  })
+
+  test.each([{ code: 'EIO', syscall: 'rename' }, { code: 'EPERM', syscall: 'open' }])('does not retry non-contention failures %s', async fields => {
+    const storage = table()
+    const directory = new WorkspaceDirectory(storage.result, { count: 2, delayMs: 1 })
+    await directory.initialize()
+    const error = Object.assign(new Error('permanent failure'), fields)
+    storage.fail(error)
+    await expect(directory.rename(WorkspaceId('local'), 'Failed')).rejects.toBe(error)
+    expect(storage.attempts()).toBe(2)
+  })
+
   test('upgrades v2 once and preserves successor communication through aggregate and descriptor writes', async () => {
     const id = WorkspaceId('org-old')
     const old = { ...record(createInitialState(id)), recordVersion: 2 as const, workflow: createInitialWorkflowState() }

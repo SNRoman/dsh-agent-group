@@ -65,11 +65,11 @@ describe('public release contract', () => {
     }
   })
 
-  it('aligns the v0.4.0 compatibility candidate and preserves the forward export surface', () => {
+  it('aligns the v0.5.0 compatibility candidate and preserves the forward export surface', () => {
     const manifests = packages.map(path => readJson(path))
     const compatibility = readJson('compatibility.json')
-    expect(manifests.map(manifest => manifest.version)).toEqual(['0.4.0', '0.4.0', '0.4.0'])
-    expect(compatibility.candidatePluginVersion).toBe('0.4.0')
+    expect(manifests.map(manifest => manifest.version)).toEqual(['0.5.0', '0.5.0', '0.5.0'])
+    expect(compatibility.candidatePluginVersion).toBe('0.5.0')
     expect(compatibility.peerRange).toBe('>=0.2.0-rc.2 <0.2.1-0')
     expect(compatibility.registryDevelopmentVersion).toBe('0.2.0-rc.2')
     expect(compatibility.verifiedSource).toEqual({
@@ -77,7 +77,7 @@ describe('public release contract', () => {
       commit: '639ed015397290b3745d163aafe02ffee4aa3f84',
     })
     expect(compatibility.forwardExport).toEqual({ format: 'dsh-agent-workspace', formatVersion: 1 })
-    expect(readText('packages/host/src/forward-export.ts')).toContain("AGENT_WORKSPACE_PLUGIN_VERSION = '0.4.0'")
+    expect(readText('packages/host/src/forward-export.ts')).toContain("AGENT_WORKSPACE_PLUGIN_VERSION = '0.5.0'")
 
     const root = readJson('package.json')
     expect(root.scripts['export:forward-v1']).toBe('node scripts/export-forward-v1.mjs')
@@ -85,13 +85,7 @@ describe('public release contract', () => {
     expect(existsSync(new URL('../tests/fixtures/v0.2.0/agent-workspace.json', import.meta.url))).toBe(true)
     expect(existsSync(new URL('../tests/fixtures/v0.2.0/portable-workspace-v1.json', import.meta.url))).toBe(true)
 
-    const publicSources = [
-      readText('packages/host/src/forward-export.ts'),
-      readText('packages/host/src/index.ts'),
-      readText('packages/web/src/client/api.ts'),
-    ].join('\n')
-    expect(publicSources).not.toMatch(/workspace\/import|importForwardWorkspace|importWorkspace/)
-    expect(readText('packages/web/src/client/WorkspaceUi.tsx')).not.toMatch(/backup|export workspace|import workspace/i)
+    expect(readText('packages/host/src/forward-export.ts')).not.toMatch(/workspace\/import|importForwardWorkspace|importWorkspace/)
 
     const bundlePatch = readText('packages/bundle/cordis.patch.yml')
     expect(bundlePatch).toContain("name: '@dsh-agent-group/host/web-rpc'")
@@ -100,7 +94,7 @@ describe('public release contract', () => {
     }
   })
 
-  it('documents both compatibility lines and keeps publication as a separate authorization', () => {
+  it('documents current installation commands and historical compatibility lines', () => {
     const readme = readText('README.md')
     const architecture = readText('docs/architecture.md')
     const releaseNotes = readText('docs/releases/v0.2.0.md')
@@ -109,28 +103,26 @@ describe('public release contract', () => {
     const bundleReadme = readText('packages/bundle/README.md')
     const compatibilityNotes = readText('docs/releases/v0.4.0.md')
 
-    for (const text of [readme, releaseNotes]) {
-      for (const value of ['Tasks', 'Memory', 'Runtime', 'definition revision', 'export:forward-v1']) expect(text).toContain(value)
-      expect(text).toContain('no import')
-    }
+    expect(releaseNotes).toContain('no import')
     expect(readme).toContain('[v0.2.0 release notes](docs/releases/v0.2.0.md)')
     expect(readme).toContain('[v0.3.0 release notes](docs/releases/v0.3.0.md)')
     expect(readme).toContain('[v0.4.0 release notes](docs/releases/v0.4.0.md)')
+    expect(readme).toContain('docs/releases/v0.5.0.md')
     expect(readme).toContain('| `0.2.x` | `>=0.1.1-rc.2 <0.1.2-0` |')
     expect(readme).toContain('| `0.3.x` | `>=0.1.7-alpha.2 <0.1.8-0` |')
     expect(readme).toContain('| `0.4.x` | `>=0.2.0-rc.2 <0.2.1-0` |')
-    expect(readme).toContain('dsh plugin --profile web add dsh-agent-group@0.4.0')
-    expect(readme).toContain('Do not update across plugin lines')
-    expect(readme).toContain('pnpm smoke:registry -- --version 0.4.0')
+    expect(readme).toContain('| `0.5.x` | `>=0.2.0-rc.2 <0.2.1-0` |')
+    expect(readme).toContain('dsh plugin --profile web add dsh-agent-group@0.5.0')
+    expect(readme).toContain('pnpm smoke:registry -- --version 0.5.0')
     expect(releaseNotes).toContain('does not publish packages, create tags, or create a GitHub Release')
     expect(compatibilityNotes).toContain('does not publish packages, create tags, or create a GitHub Release')
     expect(architecture).toContain('TaskDeliveryCoordinator')
     expect(architecture).toContain('WorkspaceActivityStream')
     expect(architecture).toContain('RFC 8785')
-    expect(hostReadme).toContain('Version `0.4.0`')
+    expect(hostReadme).toContain('Version `0.5.0`')
     expect(hostReadme).toContain('createForwardWorkspaceExportV1')
     expect(webReadme).toContain('four views')
-    expect(bundleReadme).toContain('Compatibility for v0.4.0')
+    expect(bundleReadme).toContain('Compatibility for v0.5.0')
   })
 
   it('binds packed and registry smoke to the installed public exporter and legacy fixture', () => {
@@ -194,6 +186,16 @@ describe('public release contract', () => {
     const fabricated = structuredClone(upgraded)
     fabricated.tables.workspaces.local.workflow.revision = 1
     expect(() => assertLegacyWorkspacePreserved(source, fabricated)).toThrow(/rewrote/i)
+    const communicationUpgrade = structuredClone(upgraded)
+    communicationUpgrade.tables.workspaces.local.recordVersion = 3
+    communicationUpgrade.tables.workspaces.local.communication = { revision: 0, nextCheckpointOrder: 1, messages: {}, taskSources: {}, draftSources: {}, inputs: {}, contexts: {}, resets: {}, fileCheckpoints: {}, operations: {} }
+    expect(() => assertLegacyWorkspacePreserved(source, communicationUpgrade)).not.toThrow()
+    const changedCommunication = structuredClone(communicationUpgrade)
+    changedCommunication.tables.workspaces.local.communication.revision = 1
+    expect(() => assertLegacyWorkspacePreserved(source, changedCommunication)).toThrow(/rewrote/i)
+    const changedSuccessorBinding = structuredClone(communicationUpgrade)
+    changedSuccessorBinding.tables.workspaces.local.aggregate.sessionBindings['agent-3'] = 'rewritten-session'
+    expect(() => assertLegacyWorkspacePreserved(source, changedSuccessorBinding)).toThrow(/rewrote.*session bindings/i)
     wrapped.tables.workspaces.local.aggregate.sessionBindings['agent-3'] = 'rewritten-session'
     expect(() => assertLegacyWorkspacePreserved(source, wrapped)).toThrow(/rewrote.*session bindings/i)
     const rewritten = structuredClone(source)
@@ -425,7 +427,7 @@ describe('public release contract', () => {
     const groupSetup = smoke.slice(smoke.indexOf('async function createGroupAndJoin('), smoke.indexOf('function agentRow('))
     expect(groupSetup).toContain("getByRole('button', { name: /^Release room \\d+$/u }).click()")
     expect(smoke).toContain("name: /^Alice Responding Direct$/u")
-    expect(smoke).toContain("row.locator('p').getByText(entry.text, { exact: true })")
+    expect(smoke).toContain("row.locator('.dsh-agent-group-memory-excerpt').getByText(entry.text, { exact: true })")
     expect(smoke).toContain("collectTaskToolEvidence(args['dsh-home'], args['task-tools-fixture'])")
     expect(smoke).toContain("getByRole('article', { name: '修订 1', exact: true }).waitFor")
     expect(smoke).toContain("getByRole('article', { name: '修订 2', exact: true }).waitFor")
@@ -491,7 +493,7 @@ describe('public release contract', () => {
       'V020_HOLD',
       'Grant delegation for',
       'Stop Alice current turn (',
-      'Unified personal memory',
+      'Colleague memory',
       'Save revision',
       'Synchronize revision',
       'zh-CN',

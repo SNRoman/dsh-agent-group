@@ -22,6 +22,9 @@ import { acceptTaskDelivery, startTaskDelivery } from '../packages/host/src/task
 import type { ChildControllerRegistry } from '../packages/host/src/child-controller.ts'
 import type { EmployeeAgentPool } from '../packages/host/src/runtime.ts'
 import type { WorkspaceState } from '../packages/host/src/types.ts'
+import { createInitialCommunicationState } from '../packages/host/src/communication.ts'
+import { createInitialWorkflowState } from '../packages/host/src/workflow.ts'
+import type { WorkspaceRecordV3 } from '../packages/host/src/workspace-record.ts'
 
 function activeFixture(): {
   readonly controller: WorkspaceActivityController
@@ -174,9 +177,11 @@ describe('AgentWorkspaceDomainService exact cancellation', () => {
     })
     state = unrelatedChild.state
 
+    const record = (): WorkspaceRecordV3 => ({ recordVersion: 3, descriptor: { id: LOCAL_WORKSPACE_ID, label: 'Test', lifecycle: 'active' }, aggregate: state, workflow: createInitialWorkflowState(), communication: createInitialCommunicationState() })
     const directory = {
-      record: () => ({ descriptor: { lifecycle: 'active' } }),
+      record,
       snapshot: () => structuredClone(state),
+      updateRecord: async <Value>(_id: typeof LOCAL_WORKSPACE_ID, mutation: (current: WorkspaceRecordV3) => { readonly record: WorkspaceRecordV3; readonly value: Value }) => { const next = mutation(record()); state = next.record.aggregate; return next },
       updateAggregate: async (_id: typeof LOCAL_WORKSPACE_ID, mutation: (current: WorkspaceState) => WorkspaceState) => {
         state = mutation(state)
         return state

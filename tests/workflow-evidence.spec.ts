@@ -9,7 +9,7 @@ import { workflowRuntime } from './workflow-test-support.ts'
 import { WorkspaceOperationId } from '../packages/host/src/workspace-record.ts'
 import { WorkflowOperationId } from '../packages/host/src/workflow.ts'
 import { HumanId, WorkspaceId } from '../packages/host/src/ids.ts'
-import { createWorkspaceExportV3, prepareWorkspaceImport } from '../packages/host/src/workspace-portable.ts'
+import { createWorkspaceExportV4, prepareWorkspaceImportV4 } from '../packages/host/src/workspace-portable.ts'
 import { mutateWorkspace } from '../packages/host/src/state.ts'
 import { startTaskDelivery, acceptTaskDelivery, terminalizeTask } from '../packages/host/src/task-delivery.ts'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -189,16 +189,16 @@ describe('packed workflow evidence', () => {
         return { ...completed.state, sessionBindings: { [agentId]: SessionId('source-session') } }
       })
       const before = host.directory.record(source.descriptor.id)
-      const exported = createWorkspaceExportV3(before, { exportedAt: '2026-10-11T00:00:00.000Z' })
+      const exported = createWorkspaceExportV4(before, { exportedAt: '2026-10-11T00:00:00.000Z' })
       expect(exported.document.workspace.descriptor).not.toHaveProperty('creation')
-      const prepared = prepareWorkspaceImport(exported.json, { workspaceId: WorkspaceId('candidate'), limits })
+      const prepared = prepareWorkspaceImportV4(exported.json, { workspaceId: WorkspaceId('candidate'), limits })
       expect(prepared.descriptor).not.toHaveProperty('creation')
       const request = { operationId: WorkspaceOperationId('import-operation'), label: 'Imported', json: exported.json, limits }
       const after = await host.directory.import(request)
       expect(() => assertWorkflowImport(before, after, request)).not.toThrow()
       expect(host.directory.record(source.descriptor.id)).toEqual(before)
       await expect(host.directory.import(request)).resolves.toEqual(after)
-      const secondExport = createWorkspaceExportV3(after, { exportedAt: '2026-10-11T00:00:00.000Z' })
+      const secondExport = createWorkspaceExportV4(after, { exportedAt: '2026-10-11T00:00:00.000Z' })
       const secondRequest = { ...request, operationId: WorkspaceOperationId('second-import-operation'), label: 'Second imported', json: secondExport.json }
       const second = await host.directory.import(secondRequest)
       expect(() => assertWorkflowImport(after, second, secondRequest)).not.toThrow()

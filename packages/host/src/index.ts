@@ -1,5 +1,7 @@
 /** Durable organization directory and DSH service composition. */
 import { randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -18,6 +20,9 @@ import type { WorkspaceToolRegistry } from './task-tools.ts'
 import { registerWorkspaceMemoryTools } from './memory-tools.ts'
 import { registerWorkspaceWorkflowTools } from './workflow-tools.ts'
 import { inspectTaskDelivery } from './task-delivery.ts'
+import { memoryAuditSpec, memoryProjectionSpec } from './memory-projection.ts'
+import type { MemoryAudit, MemoryProjection, MemoryTable } from './memory-projection.ts'
+import { openMemoryDomain } from './memory-storage.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context { agentWorkspace: AgentWorkspaceDomainService }
@@ -31,11 +36,33 @@ export interface Config {
   childProvider?: string
   memoryCharacterBudget?: number
   memorySearchResultLimit?: number
+  memorySceneCharacters?: number
+  memoryNewCharacters?: number
+  memoryCoreCharacters?: number
+  memoryItemCharacters?: number
+  memoryRecentConversationLimit?: number
+  memoryFactLimit?: number
+  memoryHistoryLimit?: number
+  memoryExtractionMode?: 'disabled' | 'same-model-on-use'
+  memoryExtractionCharacters?: number
+  memoryExtractionSourcesPerRequest?: number
+  memoryExtractionMaxPending?: number
+  memoryExtractionMaxTokens?: number
+  /** `auto` selects an advertised `off`; other values must match exact route effort IDs. */
+  memoryExtractionReasoningEffort?: string
+  memoryExtractionTimeoutMs?: number
+  memoryContextCharacters?: number
   importMaxBytes?: number
   importMaxEntities?: number
   importMaxEvents?: number
   importMaxStringBytes?: number
   importMaxDepth?: number
+  fileCheckpointDirectory?: string
+  fileCheckpointMaxFileBytes?: number
+  fileCheckpointMaxFiles?: number
+  fileCheckpointMaxTotalBytes?: number
+  storageWriteRetries?: number
+  storageWriteRetryDelayMs?: number
 }
 
 /** Deployment options after Cordis configuration validation. */
@@ -48,11 +75,32 @@ export class AgentWorkspaceDomainService extends Service implements Organization
     childProvider: z.string().default('spawn'),
     memoryCharacterBudget: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(4000),
     memorySearchResultLimit: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(10),
+    memorySceneCharacters: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(2048),
+    memoryNewCharacters: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(4000),
+    memoryCoreCharacters: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(4000),
+    memoryItemCharacters: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(1200),
+    memoryRecentConversationLimit: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(12),
+    memoryFactLimit: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(12),
+    memoryHistoryLimit: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(8),
+    memoryExtractionMode: z.union(['disabled', 'same-model-on-use']).default('same-model-on-use'),
+    memoryExtractionCharacters: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(1600),
+    memoryExtractionSourcesPerRequest: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(8),
+    memoryExtractionMaxPending: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(16),
+    memoryExtractionMaxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(2048),
+    memoryExtractionReasoningEffort: z.string().min(1).default('auto'),
+    memoryExtractionTimeoutMs: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(30000),
+    memoryContextCharacters: z.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(800),
     importMaxBytes: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(256 * 1024),
     importMaxEntities: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(50_000),
     importMaxEvents: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(20_000),
     importMaxStringBytes: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(128 * 1024),
     importMaxDepth: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(64),
+    fileCheckpointDirectory: z.string().default(join(homedir(), '.dsh', 'agent-workspace-checkpoints')),
+    fileCheckpointMaxFileBytes: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(2 * 1024 * 1024),
+    fileCheckpointMaxFiles: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(1000),
+    fileCheckpointMaxTotalBytes: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(64 * 1024 * 1024),
+    storageWriteRetries: z.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(5),
+    storageWriteRetryDelayMs: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(50),
   })
 
   private directory: WorkspaceDirectory | undefined
@@ -63,6 +111,7 @@ export class AgentWorkspaceDomainService extends Service implements Organization
   private closing = false
   private disposal: Promise<void> | undefined
   private closeDomain: (() => Promise<void>) | undefined
+  private memoryTables: { audit: MemoryTable<MemoryAudit>; projection: MemoryTable<MemoryProjection> } | undefined
 
   /** @param ctx DSH service context. @param config Validated deployment settings. */
   constructor(ctx: Context, config: Config) {
@@ -74,7 +123,12 @@ export class AgentWorkspaceDomainService extends Service implements Organization
     const domain = await this.ctx.storageDomain.open(agentWorkspaceSpec)
     this.closeDomain = () => domain.close()
     this.ctx.effect(() => () => this.shutdown(), 'agentWorkspace.teardown')
-    const directory = new WorkspaceDirectory(domain.table('workspaces'))
+    const audit = await openMemoryDomain(this.ctx.storageDomain, memoryAuditSpec)
+    this.closeDomain = async () => { await audit.close(); await domain.close() }
+    const projection = await openMemoryDomain(this.ctx.storageDomain, memoryProjectionSpec)
+    this.closeDomain = async () => { await projection.close(); await audit.close(); await domain.close() }
+    this.memoryTables = { audit: audit.table('requests'), projection: projection.table('fragments') }
+    const directory = new WorkspaceDirectory(domain.table('workspaces'), { count: this.config.storageWriteRetries, delayMs: this.config.storageWriteRetryDelayMs })
     await directory.initialize()
     this.directory = directory
     for (const entry of directory.list()) await this.materializeRuntime(entry.descriptor.id)
@@ -87,6 +141,10 @@ export class AgentWorkspaceDomainService extends Service implements Organization
       toolCtx.effect(() => registerWorkspaceMemoryTools(tools, resolve, {
         characterBudget: this.config.memoryCharacterBudget, resultLimit: this.config.memorySearchResultLimit,
       }), 'agentWorkspace.memoryTools')
+      toolCtx.on('tools/execute', async (exec, next) => {
+        const runtime = exec.agent === undefined ? undefined : resolve(exec.agent)
+        return runtime === undefined ? await next() : await runtime.observeFileTool(exec, next)
+      })
     })
   }
 
@@ -209,6 +267,7 @@ export class AgentWorkspaceDomainService extends Service implements Organization
   private async materializeRuntime(id: WorkspaceId): Promise<void> {
     if (this.runtimes.has(id)) return
     const runtime = new WorkspaceRuntime(this.ctx, this.config, this.requireDirectory(), id)
+    if (this.memoryTables !== undefined) runtime.configureMemoryProcessing(this.memoryTables)
     if (this.closing) runtime.closeAdmission()
     this.runtimes.set(id, runtime)
     try { await runtime.initialize() }

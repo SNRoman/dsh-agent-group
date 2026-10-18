@@ -81,7 +81,7 @@ jobs:
 
       - name: Pack and run the assembled Browser smoke
         working-directory: plugin/dsh-agent-group
-        run: pnpm test:e2e:browser -- --dsh "$GITHUB_WORKSPACE/deepseek-harness"
+        run: pnpm test:e2e:browser -- --dsh "$GITHUB_WORKSPACE/deepseek-harness" --scratch-root "$GITHUB_WORKSPACE/plugin/dsh-agent-group/.release-smoke"
 
       - name: Upload release-smoke evidence
         if: always()

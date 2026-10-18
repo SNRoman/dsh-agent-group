@@ -15,10 +15,13 @@ export function WorkspaceOrganizations({ api, useStore, actions, t, ...runtime }
   const [exportWarning, setExportWarning] = useState(false)
   const [importDraft, setImportDraft] = useState<{ readonly json: string; readonly preview: WorkspaceImportPreview }>()
   const [importLabel, setImportLabel] = useState('')
+  const managementRef = useRef<HTMLDetailsElement>(null)
   const controllerRef = useRef<AbortController>()
   const directoryGeneration = useRef(0)
   const creationRef = useRef<{ readonly label: string; readonly operationId: string }>()
-  const selected = loaded ? directory.find(entry => entry.descriptor.id === ui.selectedWorkspaceId)?.descriptor : undefined
+  const selectedEntry = loaded ? directory.find(entry => entry.descriptor.id === ui.selectedWorkspaceId) : undefined
+  const selected = selectedEntry?.descriptor
+  const selectedSnapshot = ui.snapshot?.workspaceId === selected?.id ? ui.snapshot : undefined
   const scopeKey = selected === undefined ? undefined : `${selected.id}:${selected.lifecycle}`
   const scopeOwner = useMemo(() => ({ key: scopeKey }), [scopeKey])
   const currentScope = useRef<typeof scopeOwner | undefined>(scopeOwner)
@@ -63,10 +66,34 @@ export function WorkspaceOrganizations({ api, useStore, actions, t, ...runtime }
 
   useEffect(() => { setLabel(selected?.label ?? '') }, [selected?.id, selected?.label])
 
+  useEffect(() => {
+    const management = managementRef.current
+    if (!ui.open || management === null) return
+    const surface = management.getRootNode()
+    const dismissOutside = (event: Event): void => {
+      if (management.open && !event.composedPath().includes(management)) management.open = false
+    }
+    const dismissEscape = (event: Event): void => {
+      if (!(event instanceof KeyboardEvent) || event.key !== 'Escape' || !management.open) return
+      if (management.closest('.dsh-agent-group-workbench')?.querySelector('.dsh-agent-group-activity-drawer')) return
+      event.preventDefault()
+      event.stopPropagation()
+      management.open = false
+      management.querySelector('summary')?.focus()
+    }
+    surface.addEventListener('pointerdown', dismissOutside)
+    surface.addEventListener('keydown', dismissEscape)
+    return () => {
+      surface.removeEventListener('pointerdown', dismissOutside)
+      surface.removeEventListener('keydown', dismissEscape)
+    }
+  }, [ui.open, scopeKey])
+
   if (!ui.open) return null
 
   const switchOrganization = (id: string): void => {
     cancelOperation()
+    managementRef.current?.removeAttribute('open')
     currentScope.current = undefined
     actions.selectWorkspace(id)
   }
@@ -104,35 +131,46 @@ export function WorkspaceOrganizations({ api, useStore, actions, t, ...runtime }
       const json = await file.text()
       if (!live()) return
       const preview = await api.previewImport(json, signal)
-      if (live()) { setImportDraft({ json, preview }); setImportLabel(preview.label) }
+      if (live()) { managementRef.current?.removeAttribute('open'); setImportDraft({ json, preview }); setImportLabel(preview.label) }
     })
   }
 
-  return <div className="dsh-agent-group-overlay-root dsh-agent-group-organizations" role="dialog" aria-modal="true" aria-label={t('workspace.title')}>
-    <section className="dsh-agent-group-organization-directory" aria-label={t('organization.directory')}>
-      <label className="dsh-agent-group-field"><span>{t('organization.select')}</span><select aria-label={t('organization.select')} value={selected?.id ?? ''} onChange={event => switchOrganization(event.target.value)} disabled={!loaded || directory.length === 0}>
+  const header = <section className="dsh-agent-group-organization-directory" aria-label={t('organization.directory')}>
+      <div className="dsh-agent-group-organization-heading">
+        <span className="dsh-agent-group-organization-name">{t('workspace.title')}</span>
+        {selectedEntry ? <span className="dsh-agent-group-organization-counts">{t('organization.counts', { agents: selectedSnapshot ? Object.keys(selectedSnapshot.agents).length : selectedEntry.agentCount, events: selectedSnapshot ? selectedSnapshot.events.length : selectedEntry.eventCount })}</span> : null}
+      </div>
+      <label className="dsh-agent-group-field dsh-agent-group-organization-switcher"><span>{t('organization.select')}</span><select className="dsh-agent-group-select" aria-label={t('organization.select')} value={selected?.id ?? ''} onChange={event => switchOrganization(event.target.value)} disabled={!loaded || directory.length === 0}>
         {directory.map(entry => <option key={entry.descriptor.id} value={entry.descriptor.id}>{entry.descriptor.label}</option>)}
       </select></label>
-      <label className="dsh-agent-group-field"><span>{t('organization.label')}</span><input aria-label={t('organization.label')} value={label} onChange={event => setLabel(event.target.value)} /></label>
-      <button type="button" className="dsh-agent-group-button" disabled={pending || label.trim() === ''} onClick={createOrganization}>{t('organization.create')}</button>
-      {selected !== undefined ? <>
-        <button type="button" className="dsh-agent-group-button" disabled={pending || label.trim() === '' || selected.lifecycle === 'archived'} onClick={() => void run(async (signal, live) => { await api.renameOrganization(selected.id, label.trim(), signal); if (live()) await refreshDirectory(signal, live) })}>{t('organization.rename')}</button>
-        {selected.lifecycle === 'active' ? <>
-          <label className="dsh-agent-group-field"><span>{t('organization.archiveMode')}</span><select aria-label={t('organization.archiveMode')} value={archiveMode} onChange={event => setArchiveMode(event.target.value === 'wait' ? 'wait' : 'stop')} disabled={pending}>
-            <option value="stop">{t('organization.stop')}</option><option value="wait">{t('organization.wait')}</option>
-          </select></label>
-          <button type="button" className="dsh-agent-group-button" disabled={pending} onClick={() => void run(async (signal, live) => { await api.archiveOrganization(selected.id, archiveMode, signal); if (live()) await refreshDirectory(signal, live) })}>{t('organization.archive')}</button>
-        </> : <button type="button" className="dsh-agent-group-button" disabled={pending} onClick={() => void run(async (signal, live) => { await api.reopenOrganization(selected.id, signal); if (live()) await refreshDirectory(signal, live) })}>{t('organization.reopen')}</button>}
-        <button type="button" className="dsh-agent-group-button" disabled={pending} onClick={() => setExportWarning(true)}>{t('organization.export')}</button>
-      </> : null}
-      <label className="dsh-agent-group-field"><span>{t('organization.import')}</span><input type="file" accept=".json,application/json" aria-label={t('organization.import')} disabled={pending} onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file !== undefined) readImportFile(file) }} /></label>
-      <button type="button" className="dsh-agent-group-icon-button" aria-label={t('workspace.close')} onClick={() => { cancelOperation(); actions.close() }}>{t('workspace.close')}</button>
+      <details ref={managementRef} className="dsh-agent-group-organization-management" open={loaded && directory.length === 0 ? true : undefined}>
+        <summary>{t('organization.manage')}</summary>
+        <div className="dsh-agent-group-form dsh-agent-group-management-form">
+          <label className="dsh-agent-group-field"><span>{t('organization.label')}</span><input className="dsh-agent-group-input" aria-label={t('organization.label')} value={label} onChange={event => setLabel(event.target.value)} /></label>
+          <div className="dsh-agent-group-inline">
+            <button type="button" className="dsh-agent-group-button" disabled={pending || label.trim() === ''} onClick={createOrganization}>{t('organization.create')}</button>
+            {selected !== undefined ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={pending || label.trim() === '' || selected.lifecycle === 'archived'} onClick={() => void run(async (signal, live) => { await api.renameOrganization(selected.id, label.trim(), signal); if (live()) await refreshDirectory(signal, live) })}>{t('organization.rename')}</button> : null}
+          </div>
+          {selected !== undefined ? <>
+            {selected.lifecycle === 'active' ? <>
+              <label className="dsh-agent-group-field"><span>{t('organization.archiveMode')}</span><select className="dsh-agent-group-select" aria-label={t('organization.archiveMode')} value={archiveMode} onChange={event => setArchiveMode(event.target.value === 'wait' ? 'wait' : 'stop')} disabled={pending}>
+                <option value="stop">{t('organization.stop')}</option><option value="wait">{t('organization.wait')}</option>
+              </select></label>
+              <button type="button" className="dsh-agent-group-button" data-variant="danger" disabled={pending} onClick={() => void run(async (signal, live) => { await api.archiveOrganization(selected.id, archiveMode, signal); if (live()) await refreshDirectory(signal, live) })}>{t('organization.archive')}</button>
+            </> : <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={pending} onClick={() => void run(async (signal, live) => { await api.reopenOrganization(selected.id, signal); if (live()) await refreshDirectory(signal, live) })}>{t('organization.reopen')}</button>}
+            <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={pending} onClick={() => { managementRef.current?.removeAttribute('open'); setExportWarning(true) }}>{t('organization.export')}</button>
+          </> : null}
+          <label className="dsh-agent-group-field"><span>{t('organization.import')}</span><input className="dsh-agent-group-input" type="file" accept=".json,application/json" aria-label={t('organization.import')} disabled={pending} onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file !== undefined) readImportFile(file) }} /></label>
+        </div>
+      </details>
+      {selected === undefined ? <button type="button" className="dsh-agent-group-button" data-variant="ghost" aria-label={t('workspace.close')} onClick={() => { cancelOperation(); actions.close() }}>{t('workspace.close')}</button> : null}
+    </section>
+  const notices = <>
       {failed ? <p className="dsh-agent-group-error" role="alert">{t('workspace.requestFailed')}</p> : null}
       {!loaded && !failed ? <p role="status">{t('workspace.loading')}</p> : null}
       {loaded && directory.length === 0 ? <p>{t('organization.empty')}</p> : null}
       {pending ? <p role="status">{t('workspace.processing')}</p> : null}
       {selected?.lifecycle === 'archived' ? <p role="status">{t('organization.readOnly')}</p> : null}
-    </section>
     {exportWarning && selected !== undefined ? <section className="dsh-agent-group-organization-confirm" aria-label={t('organization.export')}>
       <p>{t('organization.exportWarning')}</p>
       <button type="button" className="dsh-agent-group-button" disabled={pending} onClick={() => void run(async (signal, live) => {
@@ -143,22 +181,26 @@ export function WorkspaceOrganizations({ api, useStore, actions, t, ...runtime }
         finally { URL.revokeObjectURL(url) }
         setExportWarning(false)
       })}>{t('organization.exportConfirm')}</button>
-      <button type="button" className="dsh-agent-group-button" disabled={pending} onClick={() => setExportWarning(false)}>{t('room.cancel')}</button>
+      <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={pending} onClick={() => setExportWarning(false)}>{t('room.cancel')}</button>
     </section> : null}
     {importDraft !== undefined ? <section className="dsh-agent-group-organization-confirm" aria-label={t('organization.preview')}>
       <h2>{t('organization.preview')}</h2>
       <p>{t('organization.previewSource', { label: importDraft.preview.label, version: importDraft.preview.sourcePluginVersion })}</p>
       <p>{t('organization.previewCounts', { events: importDraft.preview.eventCount, agents: importDraft.preview.agentCount, tasks: importDraft.preview.taskCount })}</p>
       <p>{t('organization.bindingsExcluded')}</p>
-      <label className="dsh-agent-group-field"><span>{t('organization.importLabel')}</span><input aria-label={t('organization.importLabel')} value={importLabel} onChange={event => setImportLabel(event.target.value)} /></label>
+      <label className="dsh-agent-group-field"><span>{t('organization.importLabel')}</span><input className="dsh-agent-group-input" aria-label={t('organization.importLabel')} value={importLabel} onChange={event => setImportLabel(event.target.value)} /></label>
       <button type="button" className="dsh-agent-group-button" disabled={pending || importLabel.trim() === ''} onClick={() => void run(async (signal, live) => {
         await api.confirmImport(importDraft.preview.operationId, importDraft.json, importLabel.trim(), true, signal)
         if (!live()) return
         await refreshDirectory(signal, live)
         if (live()) setImportDraft(undefined)
       })}>{t('organization.importConfirm')}</button>
-      <button type="button" className="dsh-agent-group-button" disabled={pending} onClick={() => setImportDraft(undefined)}>{t('room.cancel')}</button>
+      <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={pending} onClick={() => setImportDraft(undefined)}>{t('room.cancel')}</button>
     </section> : null}
-    {scopedApi !== undefined && selected !== undefined ? <WorkspaceOverlay {...runtime} key={scopeKey} api={scopedApi} useStore={useStore} actions={scopedActions} t={t} embedded readOnly={selected.lifecycle === 'archived'} /> : null}
+    </>
+  return <div className="dsh-agent-group-overlay-root dsh-agent-group-organizations" role="dialog" aria-modal="true" aria-label={t('workspace.title')}>
+    {scopedApi !== undefined && selected !== undefined
+      ? <WorkspaceOverlay {...runtime} key={scopeKey} api={scopedApi} useStore={useStore} actions={scopedActions} t={t} embedded headerLeading={header} headerNotices={notices} readOnly={selected.lifecycle === 'archived'} />
+      : <section className="dsh-agent-group-workbench"><header className="dsh-agent-group-topbar">{header}</header>{notices}</section>}
   </div>
 }

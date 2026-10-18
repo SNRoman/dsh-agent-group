@@ -86,7 +86,7 @@ export function assertTaskToolEvidence(durable, fixture, expected, rows) {
   const deliveryIndex = rows.findIndex(row => row.type === 'user/message'
     && row.data?.source?.kind === 'agent-workspace-delivery' && row.data.source.source?.kind === 'task'
     && row.data.source.source.taskId === fixture.taskId)
-  const recallIndex = rows.findIndex(row => row.type === 'user/message' && row.data?.source?.kind === 'agent-workspace-recall'
+  const recallIndex = rows.findIndex(row => row.type === 'user/message' && row.data?.source?.kind === 'agent-workspace-context'
     && messageText(row.data).includes(`[event:${original.id} `) && messageText(row.data).includes(expected.memory.text))
   if (deliveryIndex < 0 || recallIndex <= deliveryIndex) throw new Error('recorded formal task omitted its admitted personal-memory recall')
   const search = recordedTool(rows, 'profile-memory-search', 'workspace_search_memory')

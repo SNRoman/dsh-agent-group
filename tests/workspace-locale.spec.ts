@@ -238,9 +238,9 @@ describe('Agent Workspace locale runtime', () => {
   })
 
   it.each([
-    ['zh', ['任务中心', '分配根任务', '任务标题', '负责人', '分配任务', '还没有任务。为一名在职智能体分配根任务即可开始。']],
-    ['en', ['Task center', 'Assign root task', 'Task title', 'Assignee', 'Assign task', 'No tasks yet. Assign a root task to an employed agent to begin.']],
-  ] as const)('renders task empty-state, form and accessibility copy in %s', (localeId, expected) => {
+    ['zh', ['任务中心', '个人工作', '查看同事', '工作状态', '在聊天中交办工作，这里按同事查看任务、来源和结果。', '这位同事还没有符合筛选的工作。在聊天中选择“交办工作”开始。']],
+    ['en', ['Task center', 'Personal work', 'Colleague', 'Work status', 'Assign work in chat; inspect each colleague’s tasks, sources and results here.', 'No matching work for this colleague. Use Assign work in chat to begin.']],
+  ] as const)('renders colleague work filters, chat guidance and accessibility copy in %s', (localeId, expected) => {
     const locale = new LocaleRuntime(new Context())
     locale.setLocale(localeId)
     const registered = registerPlugin(locale)
@@ -254,12 +254,13 @@ describe('Agent Workspace locale runtime', () => {
     const taskView = render(WorkspaceTasks as unknown as TestComponent, { snapshot, activity, api: {}, onSnapshot: vi.fn(), onActivity: vi.fn(), t })
     const rendered = strings(taskView)
     for (const value of expected) expect(rendered).toContain(value)
+    for (const key of ['task.assignRoot', 'task.title', 'task.assignee', 'task.assign']) expect(rendered).not.toContain(t(key))
     registered.dispose()
   })
 
   it.each([
-    ['zh', ['统一个人记忆', '智能体', '来源类型', '首次获得途径', '不可变修订历史', '正在读取修订历史…']],
-    ['en', ['Unified personal memory', 'Agent', 'Source kind', 'First provenance', 'Immutable revision history', 'Loading revision history…']],
+    ['zh', ['同事记忆', '同事', '来源类型', '首次获得途径', '不可变修订历史', '正在读取修订历史…']],
+    ['en', ['Colleague memory', 'Colleague', 'Source kind', 'First provenance', 'Immutable revision history', 'Loading revision history…']],
   ] as const)('renders memory and definition-history product copy in %s', (localeId, expected) => {
     const locale = new LocaleRuntime(new Context())
     locale.setLocale(localeId)

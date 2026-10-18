@@ -226,6 +226,15 @@ export class ChildControllerRegistry {
     }
   }
 
+  /**
+   * Wait for in-progress child controller publications without stopping live children.
+   * The caller must separately prevent new child starts when it needs a stable set.
+   * @returns Fulfillment after all current start reservations are released.
+   */
+  async drainStarts(): Promise<void> {
+    await this.waitForReservations()
+  }
+
   private async closeGeneration(): Promise<void> {
     await this.waitForReservations()
     const results = await Promise.allSettled([...this.records.values()].map(record => this.converge(record)))

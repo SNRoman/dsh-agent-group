@@ -268,4 +268,23 @@ describe('compatibility declaration', { timeout: PROCESS_TEST_TIMEOUT_MS }, () =
     expect(child).not.toBe('')
     expect(child.startsWith('..')).toBe(false)
   })
+
+  it.each(['output', '.worktrees', '.release-smoke'])('omits private %s data while preserving source and docs', async directory => {
+    const dsh = await createDshFixture()
+    const plugin = await createPluginFixture(declaration(dsh.commit))
+    const credentialPath = join(directory, 'run', 'dsh-home', '.credentials.yaml')
+    await writeJson(join(plugin, credentialPath), { fixtureCredential: 'dummy-only' })
+    await mkdir(join(plugin, 'packages', 'host', 'src'), { recursive: true })
+    await writeFile(join(plugin, 'packages', 'host', 'src', 'index.ts'), 'export const fixture = true\n', 'utf8')
+    await mkdir(join(plugin, 'docs'), { recursive: true })
+    await writeFile(join(plugin, 'docs', 'guide.md'), 'Fixture guide\n', 'utf8')
+
+    const prepared = await prepareSourceCompatibility({ pluginDirectory: plugin, dshDirectory: dsh.root })
+    temporaryDirectories.push(prepared.temporaryDirectory)
+
+    await expect(readFile(join(prepared.pluginDirectory, credentialPath), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(prepared.pluginDirectory, 'packages', 'host', 'src', 'index.ts'), 'utf8'))
+      .resolves.toBe('export const fixture = true\n')
+    await expect(readFile(join(prepared.pluginDirectory, 'docs', 'guide.md'), 'utf8')).resolves.toBe('Fixture guide\n')
+  })
 })

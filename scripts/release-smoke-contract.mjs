@@ -5,6 +5,15 @@ import { readFile, readdir } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import canonicalize from 'canonicalize'
 
+/**
+ * Identify packed runs eligible to certify release artifacts for publishing.
+ * @param options Selected smoke mode and scope.
+ * @returns Whether the complete packed Browser scenario ran.
+ */
+export function isCompletePackedSmoke(options) {
+  return options.mode === 'packed' && !options.installationOnly && !options.taskToolsOnly
+}
+
 /** Remove exactly one setup row when staging seed-free restart and uninstall profiles. */
 export function removeTaskToolsProfileSeed(source) {
   const normalized = source.replaceAll('\r\n', '\n')
@@ -396,12 +405,13 @@ export function assertLegacyWorkspacePreserved(before, after) {
     throw new Error('legacy source does not contain exactly one local workspace')
   }
   const local = after?.tables?.workspaces?.local
-  const expected = [1, 2].includes(local?.recordVersion) ? {
+  const expected = [1, 2, 3].includes(local?.recordVersion) ? {
     ...before, tables: { workspaces: { local: {
       recordVersion: local.recordVersion,
       descriptor: { id: 'local', label: 'Local organization', lifecycle: 'active' },
       aggregate: before.tables.workspaces.local,
-      ...(local.recordVersion === 2 ? { workflow: { revision: 0, nextId: 1, nextSequence: 1, drafts: {}, taskTemplates: {}, taskTemplateRevisions: {}, companyTemplates: {}, companyTemplateRevisions: {}, taskBriefs: {}, artifacts: {}, reviews: {}, operations: {}, facts: [] } } : {}),
+      ...(local.recordVersion >= 2 ? { workflow: { revision: 0, nextId: 1, nextSequence: 1, drafts: {}, taskTemplates: {}, taskTemplateRevisions: {}, companyTemplates: {}, companyTemplateRevisions: {}, taskBriefs: {}, artifacts: {}, reviews: {}, operations: {}, facts: [] } } : {}),
+      ...(local.recordVersion === 3 ? { communication: { revision: 0, nextCheckpointOrder: 1, messages: {}, taskSources: {}, draftSources: {}, inputs: {}, contexts: {}, resets: {}, fileCheckpoints: {}, operations: {} } } : {}),
     } } },
   } : before
   if (canonicalize(after) !== canonicalize(expected)) {
@@ -522,6 +532,7 @@ export function assertExactStopEvidence({ protocol, identity, terminalActivityId
 
 /** Verify the Browser's root/grant/derived/child chain against immutable events and Session logs. */
 export function assertTaskCausality(workspace, sessions) {
+  const room = exactlyOne(Object.values(workspace.rooms).filter(room => room.name === 'Release room'), 'delegation conversation')
   const alice = exactlyOne(Object.values(workspace.agents).filter(agent => agent.name === 'Alice'), 'Alice')
   const bob = exactlyOne(Object.values(workspace.agents).filter(agent => agent.name === 'Bob'), 'Bob')
   const root = exactlyOne(Object.values(workspace.tasks).filter(task => task.title === 'V020_ROOT V020_DELEGATE'), 'root task')
@@ -550,7 +561,7 @@ export function assertTaskCausality(workspace, sessions) {
     const delivery = exactlyOne(session.rows.filter(row => row.type === 'user/message' && row.data?.id === started.messageId), 'Session delivery')
     if (delivery.data.source.source?.taskId !== task.id || delivery.data.source.taskDeliveryAttemptId !== started.taskDeliveryAttemptId) throw new Error('Session delivery association changed')
     const expectedCalls = task === root
-      ? [['v020-delegate', 'workspace_delegate_task', { rootTaskId: root.id, assigneeAgentId: bob.id, title: derived.title }], ['v020-root-complete', 'workspace_complete_task', { taskId: root.id, result: marker }]]
+      ? [['v020-delegate', 'workspace_delegate_task', { roomId: room.id, rootTaskId: root.id, assigneeAgentId: bob.id, title: derived.title }], ['v020-root-complete', 'workspace_complete_task', { taskId: root.id, result: marker }]]
       : [['v020-child-run', 'workspace_run_child', { taskId: derived.id, prompt: 'V020_CHILD_EXECUTION' }], ['v020-child-complete', 'workspace_complete_task', { taskId: derived.id, result: marker }]]
     for (const [callId, name, args] of expectedCalls) {
       const call = exactlyOne(session.rows.filter(row => row.type === 'assistant/message').flatMap(row => row.data?.message?.content ?? []).filter(block => block.type === 'tool-call' && block.id === callId), 'tool call')

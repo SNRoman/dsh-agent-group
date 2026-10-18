@@ -17,8 +17,8 @@ interface MarkdownNode {
   readonly children?: readonly MarkdownNode[] | undefined
 }
 
-/** @param state Current display identities. @param text Original authored Markdown. @param mentionedIds Persisted recipient identities. @returns Nonoverlapping source spans safe for interactive identity labels. */
-export function roomMessageMentionSpans(state: WorkspaceSnapshot, text: string, mentionedIds: readonly AgentId[]): RoomMessageMentionSpan[] {
+/** @param state Current display identities. @param text Original authored Markdown. @param mentionedIds Persisted recipient identities. @param resolveDisplayNames Resolve current aliases only while composing a new message. @returns Nonoverlapping source spans; historical aliases without positional identity remain plain text. */
+export function roomMessageMentionSpans(state: WorkspaceSnapshot, text: string, mentionedIds: readonly AgentId[], resolveDisplayNames = false): RoomMessageMentionSpan[] {
   const vocabulary = new Map<string, Set<AgentId>>()
   const add = (token: string, id: AgentId): void => {
     const owners = vocabulary.get(token) ?? new Set<AgentId>()
@@ -29,9 +29,9 @@ export function roomMessageMentionSpans(state: WorkspaceSnapshot, text: string, 
     const agent = state.agents[id]
     if (agent === undefined) continue
     add(`<@${id}>`, id)
-    add(`@${agent.name}`, id)
+    if (resolveDisplayNames) add(`@${agent.name}`, id)
     const role = state.definitions[agent.definitionId]?.name
-    if (role !== undefined) add(`@${role}`, id)
+    if (resolveDisplayNames && role !== undefined) add(`@${role}`, id)
   }
   const spans: RoomMessageMentionSpan[] = []
   for (const { start, end } of markdownTextRanges(text)) {
@@ -59,16 +59,16 @@ export function roomMessageMentionSpans(state: WorkspaceSnapshot, text: string, 
 /** @param state Current identities. @param text Composer text. @param mentionedIds Resolved recipients. @returns Authored text with stable identity markers only for recognized mentions. */
 export function canonicalRoomMessageText(state: WorkspaceSnapshot, text: string, mentionedIds: readonly AgentId[]): string {
   let canonical = text
-  for (const span of roomMessageMentionSpans(state, text, mentionedIds).reverse()) canonical = `${canonical.slice(0, span.start)}<@${span.agentId}>${canonical.slice(span.end)}`
+  for (const span of roomMessageMentionSpans(state, text, mentionedIds, true).reverse()) canonical = `${canonical.slice(0, span.start)}<@${span.agentId}>${canonical.slice(span.end)}`
   return canonical
 }
 
-/** @param state Current identities. @param text Original Markdown. @param mentionedIds Persisted recipients. @returns Markdown whose admitted text mentions use local profile links, leaving code and authored links unchanged. */
+/** @param state Current identities. @param text Original Markdown. @param mentionedIds Persisted recipients. @returns Markdown with allowlisted reserved profile targets, intercepted by its message owner without network navigation. */
 export function linkRoomMessageMentions(state: WorkspaceSnapshot, text: string, mentionedIds: readonly AgentId[]): string {
   let linked = text
   for (const span of roomMessageMentionSpans(state, text, mentionedIds).reverse()) {
     const label = span.label.replace(/[\\`*_{}[\]()!<>]/g, '\\$&')
-    linked = `${linked.slice(0, span.start)}[${label}](#dsh-agent-group-person/${encodeURIComponent(span.agentId)})${linked.slice(span.end)}`
+    linked = `${linked.slice(0, span.start)}[${label}](https://dsh-agent-group.invalid/people/${encodeURIComponent(span.agentId)})${linked.slice(span.end)}`
   }
   return linked
 }
@@ -132,7 +132,7 @@ export function parseRoomMentionIds(state: WorkspaceSnapshot, roomId: RoomId, te
     return members.map(member => member.id)
   }
 
-  return [...new Set(roomMessageMentionSpans(state, text, members.map(member => member.id)).map(span => span.agentId))]
+  return [...new Set(roomMessageMentionSpans(state, text, members.map(member => member.id), true).map(span => span.agentId))]
 }
 
 /** Append the visible `@name` token used by the composer without leaking ids. */

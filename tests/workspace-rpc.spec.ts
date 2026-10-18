@@ -34,6 +34,10 @@ function serviceFixture() {
         state = { ...state, revision: state.revision + 1 }
         return { revision: state.revision, value: structuredClone(state) }
       },
+      leaveRoomAndForget: async (...args: readonly unknown[]) => {
+        operations.push({ name: 'leaveRoomAndForget', arguments: args })
+        return { revision: state.revision, value: structuredClone(state) }
+      },
       openDirectRoom: async (expectedRevision: number, agentId: AgentId) => {
         revisions.push(expectedRevision)
         directOpens.push(agentId)
@@ -74,6 +78,18 @@ function serviceFixture() {
 }
 
 describe('workspace rpc handler', () => {
+  it('routes optional group-memory removal separately from ordinary leave with a stable retry identity', async () => {
+    const fixture = serviceFixture()
+    const handler = createWorkspaceRpcHandler(fixture.service)
+    const signal = new AbortController().signal
+    const payload = { expectedRevision: 0, membershipId: 'membership-1', operationId: 'forget-1' }
+    expect((await handler('room/leave-and-forget', payload, signal)).ok).toBe(true)
+    expect(fixture.operations).toEqual([{ name: 'leaveRoomAndForget', arguments: [payload, signal] }])
+    expect(fixture.commands).toEqual([])
+    expect(await handler('room/leave-and-forget', { ...payload, operationId: '' }, signal)).toMatchObject({ ok: false, error: { kind: 'bad-request' } })
+    expect(await handler('room/leave-and-forget', { ...payload, agentId: 'another-person' }, signal)).toMatchObject({ ok: false, error: { kind: 'bad-request' } })
+    expect(fixture.operations).toHaveLength(1)
+  })
   it('returns a detached workspace snapshot without mutating it', async () => {
     const { service } = serviceFixture()
     const handler = createWorkspaceRpcHandler(service)
@@ -354,7 +370,6 @@ describe('workspace rpc handler', () => {
   })
 
   it.each([
-    ['task/assign', { expectedRevision: 3, assigneeAgentId: 'agent-1', title: 'Ship it' }, 'assignTask', [3, 'web-user', 'agent-1', 'Ship it']],
     ['task/grant', { expectedRevision: 4, granteeAgentId: 'agent-2', rootTaskId: 'task-1' }, 'grantTaskDelegation', [4, 'web-user', 'agent-2', 'task-1']],
     ['task/revoke', { expectedRevision: 5, delegationGrantId: 'grant-1' }, 'revokeTaskDelegation', [5, 'web-user', 'grant-1']],
     ['task/cancel', { expectedRevision: 6, taskId: 'task-1' }, 'cancelTask', [6, 'web-user', 'task-1']],
@@ -386,6 +401,11 @@ describe('workspace rpc handler', () => {
     expect(fixture.operations[0]?.name).toBe(name)
     expect(fixture.operations[0]?.arguments.slice(0, -1)).toEqual(expectedArguments)
     expect(fixture.operations[0]?.arguments.at(-1)).toBeInstanceOf(AbortSignal)
+  })
+  it('refuses source-free legacy assignment without calling the Host mutation', async () => {
+    const fixture = serviceFixture()
+    expect(await createWorkspaceRpcHandler(fixture.service)('task/assign', { expectedRevision: 3, assigneeAgentId: 'agent-1', title: 'Ship it' }, new AbortController().signal)).toMatchObject({ ok: false, error: { kind: 'bad-request' } })
+    expect(fixture.operations).toEqual([])
   })
 
   it.each([

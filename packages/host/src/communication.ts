@@ -9,7 +9,7 @@ import type { ChatSource, CommunicationInputId, CommunicationInputTarget, Commun
  * @returns Empty successor metadata.
  */
 export function createInitialCommunicationState(): CommunicationState {
-  return { revision: 0, nextCheckpointOrder: 1, messages: {}, taskSources: {}, draftSources: {}, inputs: {}, contexts: {}, resets: {}, fileCheckpoints: {} }
+  return { revision: 0, nextCheckpointOrder: 1, messages: {}, taskSources: {}, draftSources: {}, inputs: {}, contexts: {}, resets: {}, fileCheckpoints: {}, operations: {} }
 }
 
 /**
@@ -36,6 +36,12 @@ export function assertCommunicationRelationships(raw: WorkspaceState, communicat
   }
   const requireTarget = (target: CommunicationInputTarget): void => {
     switch (target.kind) {
+      case 'room-input': {
+        const event = requireEvent(target.eventId)
+        if (event.type !== 'room/message' || event.subjectId === undefined) throw new Error('communication room input is not a real room message')
+        requireSource({ roomId: requireOwn(raw.rooms, event.subjectId, 'room').id, eventId: event.id })
+        return
+      }
       case 'event': requireEvent(target.eventId); return
       case 'task': requireOwn(raw.tasks, target.taskId, 'task'); return
       case 'draft': requireWorkflow('drafts', target.draftId); return
@@ -54,21 +60,47 @@ export function assertCommunicationRelationships(raw: WorkspaceState, communicat
     if (message.contextGeneration !== undefined && (event.actor.type !== 'agent' || message.contextGeneration > (own(communication.contexts, event.actor.id)?.generation ?? 0))) throw new Error('communication message generation is invalid')
     if (message.withdrawnBy !== undefined) {
       const reset = requireOwn(communication.resets, message.withdrawnBy, 'reset')
-      if (reset.source.eventId !== event.id || event.actor.type !== 'human' || event.actor.id !== reset.requestedByHumanId) throw new Error('communication withdrawal author or source differs')
+      if (reset.kind !== undefined || reset.source.eventId !== event.id || event.actor.type !== 'human' || event.actor.id !== reset.requestedByHumanId) throw new Error('communication withdrawal author or source differs')
     }
   }
   const unfinishedByAgent = new Map<AgentId, string>()
   for (const [key, reset] of Object.entries(communication.resets)) {
     if (key !== reset.id) throw new Error('communication reset key differs from id')
-    const source = requireSource(reset.source)
-    if (source.actor?.type !== 'human' || source.actor.id !== reset.requestedByHumanId || own(communication.messages, source.id)?.withdrawnBy !== reset.id) throw new Error('communication reset does not own its human withdrawal')
+    const source = requireEvent(reset.source.eventId)
+    let expectedAgents: AgentId[]
+    if (reset.kind === 'room-memory-forget') {
+      const membership = requireOwn(raw.memberships, reset.membershipId, 'membership')
+      const room = requireOwn(raw.rooms, reset.source.roomId, 'room')
+      if (room.kind !== 'group' || membership.roomId !== room.id || membership.leftEventId !== source.id
+        || source.type !== 'room/member-left' || source.subjectId !== membership.id) throw new Error('communication room-memory reset does not own its ended membership')
+      expectedAgents = [membership.agentId]
+      if (reset.fileRestoreRequested || reset.invalidatedEventIds.length !== 0 || reset.invalidatedTaskIds.length !== 0
+        || reset.invalidatedDraftIds.length !== 0 || reset.invalidatedTemplateRevisionIds.length !== 0 || reset.invalidatedArtifactIds.length !== 0) throw new Error('communication personal memory reset cannot invalidate shared work or restore files')
+      assertUnique(reset.forgottenEventIds, 'forgotten events')
+      for (const id of reset.forgottenEventIds) {
+        const event = requireEvent(id)
+        if (event.sequence > reset.throughSequence || (event.subjectId !== room.id
+          && (event.type !== 'room/message' || event.actor?.type !== 'agent' || event.actor.id !== membership.agentId))) throw new Error('communication forgotten event is not a personal room source or reply')
+        const retained = raw.memoryEntries.filter(entry => entry.agentId === membership.agentId && entry.eventId === id
+          && (entry.acquiredBy === 'room-membership' || entry.acquiredBy === 'history-sync'))
+        if (retained.length === 0) continue
+        // A later membership grants its selected historical range again; acquisitions have no timestamp of their own.
+        const synchronized = Object.values(raw.memberships).some(candidate => candidate.agentId === membership.agentId
+          && candidate.roomId === event.subjectId && requireEvent(candidate.joinedEventId).sequence > reset.throughSequence
+          && candidate.memoryStart.type === 'event-range' && candidate.memoryStart.startSequence <= event.sequence && event.sequence <= candidate.memoryStart.endSequence)
+        if (!synchronized || retained.some(entry => entry.acquiredBy !== 'history-sync')) throw new Error('communication forgotten acquisition requires a later explicit history sync')
+      }
+    } else {
+      requireSource(reset.source)
+      if (source.actor?.type !== 'human' || source.actor.id !== reset.requestedByHumanId || own(communication.messages, source.id)?.withdrawnBy !== reset.id) throw new Error('communication reset does not own its human withdrawal')
+      expectedAgents = Object.values(raw.agents).filter(agent => {
+        const started = requireEvent(agent.employmentPeriods[0]!.startedEventId)
+        return started.sequence <= reset.throughSequence
+      }).map(agent => agent.id)
+    }
     if (reset.fromSequence !== source.sequence || reset.throughSequence < reset.fromSequence || reset.throughSequence >= raw.nextSequence) throw new Error('communication reset window is invalid')
     assertUnique(reset.affectedAgentIds, 'reset agents')
-    const expectedAgents = Object.values(raw.agents).filter(agent => {
-      const started = requireEvent(agent.employmentPeriods[0]!.startedEventId)
-      return started.sequence <= reset.throughSequence
-    }).map(agent => agent.id)
-    if (reset.affectedAgentIds.length !== expectedAgents.length || expectedAgents.some(agentId => !reset.affectedAgentIds.includes(agentId))) throw new Error('communication reset does not cover its organization')
+    if (reset.affectedAgentIds.length !== expectedAgents.length || expectedAgents.some(agentId => !reset.affectedAgentIds.includes(agentId))) throw new Error('communication reset does not cover its owned colleagues')
     if (Object.keys(reset.previousGenerations).length !== reset.affectedAgentIds.length) throw new Error('communication reset generation ownership differs')
     for (const agentId of reset.affectedAgentIds) {
       requireOwn(raw.agents, agentId, 'agent')
@@ -105,18 +137,33 @@ export function assertCommunicationRelationships(raw: WorkspaceState, communicat
     if (context.sessionId !== undefined && own(raw.sessionBindings, agentId) !== context.sessionId) throw new Error('communication context session differs from local binding')
   }
   const inputGenerations = new Map<WorkspaceEventId, number>()
+  const attributedDeliveries = new Set<string>()
   for (const [key, input] of Object.entries(communication.inputs)) {
     if (key !== input.id) throw new Error('communication input key differs from id')
     requireOwn(raw.agents, input.agentId, 'agent')
     requireTarget(input.target)
+    if (input.deliveryMessageId !== undefined) {
+      if (attributedDeliveries.has(input.deliveryMessageId)) throw new Error('communication delivery has multiple input owners')
+      attributedDeliveries.add(input.deliveryMessageId)
+    }
+    const inputTarget = input.target
+    if (inputTarget.kind === 'task' && input.deliveryMessageId !== undefined) {
+      if (input.taskDeliveryAttemptId === undefined || !raw.events.some(event => event.type === 'task/delivery-started'
+        && event.taskId === inputTarget.taskId && event.taskDeliveryAttemptId === input.taskDeliveryAttemptId
+        && event.messageId === input.deliveryMessageId)) throw new Error('communication task input differs from its delivery attempt')
+    } else if (input.taskDeliveryAttemptId !== undefined) throw new Error('communication task attempt requires an attributed task input')
     if (input.contextGeneration > (own(communication.contexts, input.agentId)?.generation ?? 0) || input.recordedAtSequence >= raw.nextSequence) throw new Error('communication input generation or sequence is invalid')
     for (const ids of [input.directEventIds, input.recalledEventIds, input.sessionEventIds]) {
       assertUnique(ids, 'input events')
       for (const id of ids) if (requireEvent(id).sequence > input.recordedAtSequence) throw new Error('communication input precedes its source')
     }
-    if (input.target.kind === 'event') {
+    if (input.target.kind === 'event' || input.target.kind === 'room-input') {
       const target = requireEvent(input.target.eventId)
       if (target.sequence > input.recordedAtSequence) throw new Error('communication input precedes its target')
+      if (input.target.kind === 'room-input') {
+        if (!input.directEventIds.includes(target.id)) throw new Error('communication room input omits its direct source')
+        continue
+      }
       const author = generatedBy(raw, target)
       if (author !== undefined) {
         const messageGeneration = own(communication.messages, target.id)?.contextGeneration
@@ -150,7 +197,7 @@ export function getCommunicationInvalidation(raw: WorkspaceState, communication:
   const templateRevisionIds = new Set<TaskTemplateRevisionId>()
   const artifactIds = new Set<TaskArtifactId>()
   const childRunIds = new Set<ChildRunId>()
-  const resets = Object.values(communication.resets)
+  const resets = Object.values(communication.resets).filter(reset => reset.kind === undefined)
   const events = new Map(raw.events.map(event => [event.id, event]))
   const eventGenerations = new Map<WorkspaceEventId, number>()
   for (const message of Object.values(communication.messages)) if (message.contextGeneration !== undefined) eventGenerations.set(message.eventId, message.contextGeneration)
@@ -186,6 +233,7 @@ export function getCommunicationInvalidation(raw: WorkspaceState, communication:
       if (dependsOnInvalidEvent || oldGeneration) {
         inputIds.add(input.id)
         switch (input.target.kind) {
+          case 'room-input': break
           case 'event': {
             const event = events.get(input.target.eventId)
             if (event?.actor?.type !== 'human') eventIds.add(input.target.eventId)

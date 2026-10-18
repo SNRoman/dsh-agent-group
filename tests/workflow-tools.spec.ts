@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import { registerWorkspaceWorkflowTools } from '../packages/host/src/workflow-tools.ts'
-import { workflowRuntime, publishEmployee, brief } from './workflow-test-support.ts'
+import { workflowRuntime, publishEmployee, brief, joinWorkflowChat } from './workflow-test-support.ts'
 import type { WorkspaceToolRegistry } from '../packages/host/src/task-tools.ts'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { mutateWorkspace } from '../packages/host/src/state.ts'
@@ -24,21 +24,22 @@ test('proposal registration exposes no confirmation or grant tools and disposes 
 test('real registered proposal authenticates live objects and rejects forged, absent, revoked and departed callers', async () => {
   const fixture = await workflowRuntime(); const { runtime } = fixture
   const employee = await publishEmployee(runtime, fixture.agentId)
+  const roomId = await joinWorkflowChat(runtime, fixture.agentId)
   let registered!: Parameters<WorkspaceToolRegistry['register']>[0]
   const remove = registerWorkspaceWorkflowTools({ register: tool => { registered = tool; return () => {} } }, caller => runtime.agentIdFor(caller) === undefined ? undefined : runtime)
   const exec = (agent?: Agent) => ({ agent, signal: new AbortController().signal }) as never
   try {
-    const result = await registered.execute({ brief }, exec(employee.agent))
+    const result = await registered.execute({ roomId, brief }, exec(employee.agent))
     expect(result).toEqual({ draftId: expect.any(String), summary: brief.title, status: 'awaiting-human-confirmation' })
     expect(Object.values(runtime.snapshot().tasks)).toHaveLength(0); expect(Object.values(runtime.snapshot().delegationGrants)).toHaveLength(0)
     expect(runtime.workflowSnapshot().workflow.facts[0]).toMatchObject({ actor: { type: 'employee', id: fixture.agentId } })
-    await expect(registered.execute({ brief }, exec({ id: employee.agent.id } as Agent))).rejects.toThrow('active employee')
-    await expect(registered.execute({ brief }, exec())).rejects.toThrow('active employee')
-    for (const key of ['actor', 'workspaceId', 'occurredAt', 'source', 'operationId', 'expectedAggregateRevision', 'expectedWorkflowRevision']) await expect(registered.execute({ brief, [key]: 'forged' }, exec(employee.agent))).rejects.toThrow()
+    await expect(registered.execute({ roomId, brief }, exec({ id: employee.agent.id } as Agent))).rejects.toThrow('active employee')
+    await expect(registered.execute({ roomId, brief }, exec())).rejects.toThrow('active employee')
+    for (const key of ['actor', 'workspaceId', 'occurredAt', 'source', 'operationId', 'expectedAggregateRevision', 'expectedWorkflowRevision']) await expect(registered.execute({ roomId, brief, [key]: 'forged' }, exec(employee.agent))).rejects.toThrow()
     await fixture.directory.updateAggregate(runtime.workspaceId, state => mutateWorkspace(state, { type: 'agent/depart', agentId: fixture.agentId }).state)
-    await expect(registered.execute({ brief }, exec(employee.agent))).rejects.toThrow('active employee')
+    await expect(registered.execute({ roomId, brief }, exec(employee.agent))).rejects.toThrow('active employee')
     await employee.pool.dispose(fixture.agentId)
-    await expect(registered.execute({ brief }, exec(employee.agent))).rejects.toThrow('active employee')
+    await expect(registered.execute({ roomId, brief }, exec(employee.agent))).rejects.toThrow('active employee')
     expect(runtime.directory.record(runtime.workspaceId).workflow.facts).toHaveLength(1)
   } finally { remove(); await employee.pool.disposeAll() }
 })
@@ -47,12 +48,13 @@ test('same employee IDs in different organizations resolve only the actual pool 
   const first = await workflowRuntime(WorkspaceId('org-one')); const second = await workflowRuntime(WorkspaceId('org-two'))
   expect(first.agentId).toBe(second.agentId)
   const one = await publishEmployee(first.runtime, first.agentId, 'one'); const two = await publishEmployee(second.runtime, second.agentId, 'two')
+  const roomId = await joinWorkflowChat(first.runtime, first.agentId)
   let registered!: Parameters<WorkspaceToolRegistry['register']>[0]
   const remove = registerWorkspaceWorkflowTools({ register: tool => { registered = tool; return () => {} } }, agent => [first.runtime, second.runtime].find(runtime => runtime.agentIdFor(agent) !== undefined))
   try {
-    await registered.execute({ brief }, { agent: one.agent, signal: new AbortController().signal } as never)
+    await registered.execute({ roomId, brief }, { agent: one.agent, signal: new AbortController().signal } as never)
     expect(first.runtime.workflowSnapshot().workflow.revision).toBe(1); expect(second.runtime.workflowSnapshot().workflow.revision).toBe(0)
-    await expect(second.runtime.proposeTask(one.agent, { brief })).rejects.toThrow('active employee')
+    await expect(second.runtime.proposeTask(one.agent, { roomId, brief })).rejects.toThrow('active employee')
   } finally { remove(); await one.pool.disposeAll(); await two.pool.disposeAll() }
 })
 
@@ -77,9 +79,10 @@ test('root service registers proposal under effects and resolves the actual empl
     }
     expect(employeeIds[0]).toBe(employeeIds[1])
     const employee = await publishEmployee(two, employeeIds[1]!, 'scoped-session')
+    const roomId = await joinWorkflowChat(two, employeeIds[1]!)
     const tool = definitions.get('workspace_propose_task')!
     expect(tool).toBeDefined()
-    expect(await tool.execute({ brief }, { agent: employee.agent, signal: new AbortController().signal } as never)).toEqual({ draftId: expect.any(String), summary: brief.title, status: 'awaiting-human-confirmation' })
+    expect(await tool.execute({ roomId, brief }, { agent: employee.agent, signal: new AbortController().signal } as never)).toEqual({ draftId: expect.any(String), summary: brief.title, status: 'awaiting-human-confirmation' })
     expect(one.workflowSnapshot().workflow.revision).toBe(0); expect(two.workflowSnapshot().workflow.revision).toBe(1)
     await host.dispose(); fibers.pop(); expect(definitions.has('workspace_propose_task')).toBe(false)
   } finally { for (const fiber of fibers.toReversed()) await fiber.dispose(); await rm(root, { recursive: true, force: true }) }
@@ -87,11 +90,12 @@ test('root service registers proposal under effects and resolves the actual empl
 
 test('proposal tool bounds its summary with the configured text budget while persisting the full brief', async () => {
   const fixture = await workflowRuntime(); const employee = await publishEmployee(fixture.runtime, fixture.agentId)
+  const roomId = await joinWorkflowChat(fixture.runtime, fixture.agentId)
   let registered!: Parameters<WorkspaceToolRegistry['register']>[0]
   const remove = registerWorkspaceWorkflowTools({ register: tool => { registered = tool; return () => {} } }, () => fixture.runtime)
   try {
     const full = { ...brief, title: 'x'.repeat(5000) }
-    const result = await registered.execute({ brief: full }, { agent: employee.agent, signal: new AbortController().signal } as never) as { draftId: string; summary: string; status: string }
+    const result = await registered.execute({ roomId, brief: full }, { agent: employee.agent, signal: new AbortController().signal } as never) as { draftId: string; summary: string; status: string }
     expect(result.summary).toHaveLength(4000)
     expect(Object.values(fixture.runtime.workflowSnapshot().workflow.drafts)[0]!.brief.title).toBe(full.title)
     expect(Object.keys(result)).toEqual(['draftId', 'summary', 'status'])

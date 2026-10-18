@@ -10,6 +10,8 @@ import { createInitialWorkflowState } from '../packages/host/src/workflow.ts'
 import { EmployeeAgentPool } from '../packages/host/src/runtime.ts'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import AgentWorkspaceDomainService from '../packages/host/src/index.ts'
+import type { ResolvedConfig } from '../packages/host/src/index.ts'
 
 export async function workflowRuntime(workspaceId = WorkspaceId('local')) {
   const rows = new Map<WorkspaceId, StoredWorkspace>([[workspaceId, { recordVersion: 2, descriptor: { id: workspaceId, label: 'Test organization', lifecycle: 'active' }, aggregate: createInitialState(workspaceId), workflow: createInitialWorkflowState() }]])
@@ -29,10 +31,16 @@ export async function workflowRuntime(workspaceId = WorkspaceId('local')) {
     const agent = mutateWorkspace(role.state, { type: 'agent/create', name: 'Alice', definitionId: role.definitionId! })
     agentId = agent.agentId!; return agent.state
   })
-  const runtime = new WorkspaceRuntime(new Context(), { childProvider: 'spawn', memoryCharacterBudget: 4000, memorySearchResultLimit: 10, importMaxBytes: 1000000, importMaxEntities: 10000, importMaxEvents: 10000, importMaxStringBytes: 10000, importMaxDepth: 32 }, directory, workspaceId)
+  const runtime = new WorkspaceRuntime(new Context(), AgentWorkspaceDomainService.Config({}) as ResolvedConfig, directory, workspaceId)
   return { runtime, directory, agentId, rows, table, fail: () => { fail = true }, beforeUpdate: (hook?: () => Promise<void>) => { beforeUpdate = hook }, afterTransform: (hook?: () => void) => { afterTransform = hook } }
 }
 export const brief = { title: 'Ship', instructions: 'Complete all details', expectedArtifacts: ['report'], acceptanceCriteria: ['Reviewed'] }
+export async function joinWorkflowChat(runtime: WorkspaceRuntime, agentId: AgentId) {
+  const room = mutateWorkspace(runtime.snapshot(), { type: 'room/create', kind: 'group', name: 'Work chat' })
+  const joined = mutateWorkspace(room.state, { type: 'room/join', roomId: room.roomId, agentId, memoryStart: { type: 'new-events' } })
+  await runtime.directory.updateAggregate(runtime.workspaceId, () => joined.state)
+  return room.roomId
+}
 export function expected(runtime: WorkspaceRuntime) { const snapshot = runtime.workflowSnapshot(); return { expectedAggregateRevision: snapshot.aggregateRevision, expectedWorkflowRevision: snapshot.workflow.revision } }
 export async function publishEmployee(runtime: WorkspaceRuntime, agentId: AgentId, sessionId = 'employee') {
   const agent = { id: SessionId(sessionId), whenIdle: async () => {} } as Agent

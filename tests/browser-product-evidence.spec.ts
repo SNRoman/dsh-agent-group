@@ -158,7 +158,7 @@ function taskFixture() {
     { type: 'task/completed', subjectId: 'root', actor: { type: 'agent', id: 'Alice' } },
   ].map((event, index) => ({ ...event, id: `e${index}`, sequence: index + 1 }))
   return {
-    agents: { Alice: { id: 'Alice', name: 'Alice' }, Bob: { id: 'Bob', name: 'Bob' } }, sessionBindings: { Alice: 'session-a', Bob: 'session-b' },
+    agents: { Alice: { id: 'Alice', name: 'Alice' }, Bob: { id: 'Bob', name: 'Bob' } }, rooms: { room: { id: 'room', name: 'Release room', kind: 'group' } }, sessionBindings: { Alice: 'session-a', Bob: 'session-b' },
     tasks: { root: { id: 'root', rootTaskId: 'root', title: 'V020_ROOT V020_DELEGATE', status: 'completed' }, derived: { id: 'derived', rootTaskId: 'root', title: 'V020_CHILD', status: 'completed' } },
     taskAssignments: { root: { id: 'assign-root', taskId: 'root', rootTaskId: 'root', assigneeAgentId: 'Alice' }, derived: { id: 'assign-derived', taskId: 'derived', rootTaskId: 'root', assigneeAgentId: 'Bob', grantId: 'grant' } },
     delegationGrants: { grant: { id: 'grant', rootTaskId: 'root', granteeAgentId: 'Alice', grantedByHumanId: 'human', status: 'expired' } },
@@ -166,13 +166,13 @@ function taskFixture() {
   }
 }
 
-function taskSessions(current = false) {
+function taskSessions(current = false, roomId = 'room') {
   const sessions = [
     ...[['session-a', 'root', 'attempt-root', 'msg-root'], ['session-b', 'derived', 'attempt-derived', 'msg-derived']].map(([id, taskId, attempt, message]) => ({ header: { id }, rows: [{ type: 'user/message', data: { id: message, source: { kind: 'agent-workspace-delivery', source: { kind: 'task', taskId }, taskDeliveryAttemptId: attempt } } }] })),
     { header: { id: 'session-child', parentSession: 'session-b', origin: 'subagent' }, rows: [{ type: 'subagent/descriptor', data: { label: 'workspace-child:derived' } }, { type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: 'V020_CHILD_RESULT' }] } } }] },
   ]
   const calls = [
-    { session: 0, id: 'v020-delegate', name: 'workspace_delegate_task', args: { rootTaskId: 'root', assigneeAgentId: 'Bob', title: 'V020_CHILD' } },
+    { session: 0, id: 'v020-delegate', name: 'workspace_delegate_task', args: { roomId, rootTaskId: 'root', assigneeAgentId: 'Bob', title: 'V020_CHILD' } },
     { session: 0, id: 'v020-root-complete', name: 'workspace_complete_task', args: { taskId: 'root', result: 'V020_ROOT_RESULT' } },
     { session: 1, id: 'v020-child-run', name: 'workspace_run_child', args: { taskId: 'derived', prompt: 'V020_CHILD_EXECUTION' } },
     { session: 1, id: 'v020-child-complete', name: 'workspace_complete_task', args: { taskId: 'derived', result: 'V020_CHILD_RESULT' } },
@@ -189,6 +189,9 @@ function taskSessions(current = false) {
 }
 
 describe('Browser task causality evidence', () => {
+  it('rejects a delegated tool call recorded in another conversation', () => {
+    expect(() => evidence.assertTaskCausality(taskFixture(), taskSessions(false, 'other-room'))).toThrow('tool arguments')
+  })
   it('accepts the exact root, grant, derived attempt, parent and child Session', () => {
     expect(evidence.assertTaskCausality(taskFixture(), taskSessions())).toMatchObject({ rootTaskId: 'root', derivedTaskId: 'derived', childRunId: 'child', childSessionId: 'session-child' })
     expect(evidence.assertTaskCausality(taskFixture(), taskSessions(true))).toMatchObject({ rootTaskId: 'root', derivedTaskId: 'derived', childRunId: 'child', childSessionId: 'session-child' })

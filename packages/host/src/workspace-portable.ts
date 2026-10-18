@@ -8,6 +8,7 @@ import { workspaceDescriptorSchema, workspaceRecordSchema, workspaceRecordV2Sche
 import type { CommunicationState, FileBlobId, FileByteSnapshot } from './communication-contract.ts'
 import { communicationStateSchema } from './communication-schema.ts'
 import { assertCommunicationRelationships, createInitialCommunicationState } from './communication.ts'
+import { assertChatWorkOperations } from './chat-work.ts'
 import type { WorkflowState } from './workflow-contract.ts'
 import { workflowStateSchema } from './workflow-schema.ts'
 import { assertWorkflowInvariants, createInitialWorkflowState } from './workflow.ts'
@@ -23,7 +24,7 @@ import { assertWorkspaceInvariants } from './invariant.ts'
 export const WORKSPACE_EXPORT_FORMAT_VERSION_V2 = 2 as const
 /** Portable successor includes complete workflow facts and operation receipts. */
 export const WORKSPACE_EXPORT_FORMAT_VERSION_V3 = 3 as const
-/** Unreleased successor carries communication sources, withdrawals and rebuild status. */
+/** Portable successor carries communication sources, withdrawals and rebuild status. */
 export const WORKSPACE_EXPORT_FORMAT_VERSION_V4 = 4 as const
 
 /** Identity and user metadata portable without creation-operation metadata. */
@@ -163,7 +164,7 @@ export function createWorkspaceExportV3(record: WorkspaceRecordV2, metadata: { r
  * Export communication audit metadata without local Session proofs or file byte storage.
  * @param record Raw successor record; the source remains unchanged.
  * @param metadata Canonical UTC export timestamp.
- * @returns Detached format-four document with descriptive unreleased compatibility metadata.
+ * @returns Detached format-four document with descriptive plugin compatibility metadata.
  */
 export function createWorkspaceExportV4(record: WorkspaceRecordV3, metadata: { readonly exportedAt: string }): { readonly document: WorkspaceExportDocumentV4; readonly json: string } {
   if (!timestampSchema.safeParse(metadata.exportedAt).success) throw new Error('exportedAt must be a canonical UTC timestamp')
@@ -173,10 +174,11 @@ export function createWorkspaceExportV4(record: WorkspaceRecordV3, metadata: { r
   assertWorkflowInvariants(parsed.aggregate, parsed.workflow)
   assertWorkflowOperationDigests(parsed.workflow)
   assertCommunicationRelationships(parsed.aggregate, parsed.communication, parsed.workflow)
+  assertChatWorkOperations(parsed)
   const { workspaceId: _workspaceId, sessionBindings: _sessions, ...aggregate } = parsed.aggregate
   const { id, label, lifecycle } = parsed.descriptor
   const communication = portableCommunication(parsed.communication)
-  const envelope: WorkspaceExportEnvelopeV4 = { format: WORKSPACE_EXPORT_FORMAT, formatVersion: 4, pluginVersion: `${AGENT_WORKSPACE_PLUGIN_VERSION}-unreleased`, compatibleImportRange: 'unreleased: communication format 4 reader required', exportedAt: metadata.exportedAt, workspace: { descriptor: { id, label, lifecycle }, aggregate, workflow: parsed.workflow, communication } }
+  const envelope: WorkspaceExportEnvelopeV4 = { format: WORKSPACE_EXPORT_FORMAT, formatVersion: 4, pluginVersion: AGENT_WORKSPACE_PLUGIN_VERSION, compatibleImportRange: '>=0.5.0 <0.6.0', exportedAt: metadata.exportedAt, workspace: { descriptor: { id, label, lifecycle }, aggregate, workflow: parsed.workflow, communication } }
   const document: WorkspaceExportDocumentV4 = { ...envelope, digest: { algorithm: 'sha-256', canonicalization: 'RFC8785', hex: createHash('sha256').update(canonicalJson(envelope)).digest('hex') } }
   return { document, json: canonicalJson(document) }
 }
@@ -197,6 +199,7 @@ export function prepareWorkspaceImportV4(json: string, options: { readonly works
       assertWorkflowOperationDigests(workflow)
       if (document.formatVersion === 4 && 'communication' in document.workspace) assertCommunicationRelationships(source, document.workspace.communication, workflow)
       assertCommunicationRelationships(target, communication, workflow)
+      assertChatWorkOperations({ recordVersion: 3, descriptor: { id: source.workspaceId, label: prepared.descriptor.label, lifecycle: prepared.descriptor.lifecycle }, aggregate: source, workflow, communication })
     } catch (_error) {
       // Portable contents must not appear in import diagnostics.
       throw new Error('invalid workspace import workflow or communication relationships or counters')

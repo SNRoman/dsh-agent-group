@@ -93,13 +93,15 @@ export class WorkspaceWorkflowApi {
   async previewCompanyTemplate(templateRevisionId: string, expected: WorkflowExpectedRevisions, signal?: AbortSignal): Promise<CompanyTemplatePreview> {
     return this.scope(previewSchema.parse(await this.api.callWorkflow('workflow/company-template/preview', { templateRevisionId: id.parse(templateRevisionId), ...expectedSchema.parse(expected) }, signal)))
   }
-  async mutate<K extends WorkflowEndpoint>(endpoint: K, payload: WorkflowCommandMap[K], expected: WorkflowExpectedRevisions, operationId: string, signal?: AbortSignal): Promise<WorkflowMutationResult<WorkflowMutationValueMap[K]>> {
+  /** @param endpoint Human workflow action. @param payload Semantic command fields. @param expected Both displayed revisions. @param operationId Stable retry identity. @param signal Caller cancellation. @param roomId Actual chat receiving the continuation message. @returns Validated organization-scoped receipt. */
+  async mutate<K extends WorkflowEndpoint>(endpoint: K, payload: WorkflowCommandMap[K], expected: WorkflowExpectedRevisions, operationId: string, signal?: AbortSignal, roomId?: string): Promise<WorkflowMutationResult<WorkflowMutationValueMap[K]>> {
     if (this.api.readOnly) throw new WorkflowApiError({ kind: 'business', code: 'workflow-read-only', message: 'Read-only', details: { workspaceId: this.api.workspaceId ?? '' } })
     const parsed = commands[endpoint].safeParse(payload)
     const revisions = expectedSchema.safeParse(expected)
     const identity = id.safeParse(operationId)
-    if (!parsed.success || !revisions.success || !identity.success) throw new WorkflowInputError()
-    const value = await this.api.callWorkflow(endpoint, { ...parsed.data, ...revisions.data, operationId: identity.data }, signal)
+    const room = id.optional().safeParse(roomId)
+    if (!parsed.success || !revisions.success || !identity.success || !room.success) throw new WorkflowInputError()
+    const value = await this.api.callWorkflow(endpoint, { ...parsed.data, ...revisions.data, operationId: identity.data, ...(room.data === undefined ? {} : { roomId: room.data }) }, signal)
     const envelope = z.strictObject({ workspaceId: id, aggregateRevision: counter, workflowRevision: counter, value: z.unknown(), replayed: z.boolean() }).parse(value)
     const parsedValue = values[endpoint].parse(envelope.value)
     if (endpoint === 'workflow/result/review' && 'decision' in parsed.data && 'reviewId' in parsedValue) {

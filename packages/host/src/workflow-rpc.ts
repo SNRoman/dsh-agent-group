@@ -5,6 +5,7 @@ import { WorkspaceBusinessError } from './errors.ts'
 import type { WorkflowBusinessErrorDetailsMap } from './workflow-contract.ts'
 import { CompanyTemplateRevisionId, WorkflowBusinessError, WorkflowOperationId } from './workflow.ts'
 import { workflowCommandPayloadSchemas, workflowCommandSchema } from './workflow-schema.ts'
+import { RoomId } from './ids.ts'
 
 type WorkflowRpcBusinessError = { readonly [K in keyof WorkflowBusinessErrorDetailsMap]: { readonly kind: 'business'; readonly code: K; readonly message: string; readonly details: WorkflowBusinessErrorDetailsMap[K] } }[keyof WorkflowBusinessErrorDetailsMap]
 /** Workflow values and existing safe failure envelopes, extended with workflow policy failures. */
@@ -15,7 +16,7 @@ const revision = z.number().int().nonnegative()
 const expected = { expectedAggregateRevision: revision, expectedWorkflowRevision: revision }
 const snapshot = z.object({}).strict()
 const preview = z.object({ ...expected, templateRevisionId: z.string().trim().min(1).transform(CompanyTemplateRevisionId) }).strict()
-const write = z.object({ ...expected, operationId: z.string().trim().min(1).transform(WorkflowOperationId) }).passthrough()
+const write = z.object({ ...expected, operationId: z.string().trim().min(1).transform(WorkflowOperationId), roomId: z.string().trim().min(1).transform(RoomId).optional() }).passthrough()
 
 /** @param service Fixed organization runtime. @returns Strict dispatcher; employee proposal has no Browser endpoint. */
 export function createWorkflowRpcHandler(service: WorkspaceRpcService): WorkspaceWorkflowRpcHandler {
@@ -35,11 +36,11 @@ export function createWorkflowRpcHandler(service: WorkspaceRpcService): Workspac
       if (!Object.hasOwn(workflowCommandPayloadSchemas, endpoint)) return invalid([])
       const parsed = write.safeParse(payload)
       if (!parsed.success) return invalid(parsed.error.issues)
-      const { operationId, expectedAggregateRevision, expectedWorkflowRevision, ...body } = parsed.data
+      const { operationId, expectedAggregateRevision, expectedWorkflowRevision, roomId, ...body } = parsed.data
       if (Object.hasOwn(body, 'type')) return invalid([])
       const command = workflowCommandSchema.safeParse({ ...body, type: endpoint })
       if (!command.success) return invalid(command.error.issues)
-      return { ok: true, value: structuredClone(await service.executeWorkflow({ operationId, expectedAggregateRevision, expectedWorkflowRevision }, command.data, signal)) }
+      return { ok: true, value: structuredClone(await service.executeWorkflow({ operationId, expectedAggregateRevision, expectedWorkflowRevision, ...(roomId === undefined ? {} : { roomId }) }, command.data, signal)) }
     } catch (error) {
       // A committed write remains a success even if its request signal changes afterward.
       if (error instanceof WorkflowBusinessError) return { ok: false, error: { kind: 'business', code: error.code, message: error.message, details: structuredClone(error.details) } as WorkflowRpcBusinessError }

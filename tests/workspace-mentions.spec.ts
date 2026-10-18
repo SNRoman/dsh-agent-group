@@ -11,18 +11,18 @@ const snapshot: WorkspaceSnapshot = {
 
 it('highlights only admitted mentions outside code, links and email addresses', () => {
   const text = '请 @小林 查看。邮箱 name@小林.com；`@小林`\n```txt\n<@alice>\n```\n[原链接 @小林](https://example.com)\n<@alice>'
-  const spans = roomMessageMentionSpans(snapshot, text, ['alice'])
+  const spans = roomMessageMentionSpans(snapshot, text, ['alice'], true)
   expect(spans.map(span => text.slice(span.start, span.end))).toEqual(['@小林', '<@alice>'])
   expect(spans.map(span => span.agentId)).toEqual(['alice', 'alice'])
   const markdown = linkRoomMessageMentions(snapshot, text, ['alice'])
-  expect(markdown).toContain('[@小林](#dsh-agent-group-person/alice)')
+  expect(markdown).toContain('[@小林](https://dsh-agent-group.invalid/people/alice)')
   expect(markdown).toContain('`@小林`')
   expect(markdown).toContain('```txt\n<@alice>\n```')
   expect(markdown).toContain('[原链接 @小林](https://example.com)')
 })
 
 it('keeps persisted mention identity after renaming and does not activate unknown ids', () => {
-  expect(linkRoomMessageMentions(snapshot, '<@alice> <@missing>', ['alice', 'missing'])).toBe('[@小林](#dsh-agent-group-person/alice) <@missing>')
+  expect(linkRoomMessageMentions(snapshot, '<@alice> <@missing>', ['alice', 'missing'])).toBe('[@小林](https://dsh-agent-group.invalid/people/alice) <@missing>')
   expect(roomMessageMentionSpans(snapshot, '@小林', [])).toEqual([])
 })
 
@@ -37,4 +37,16 @@ it('does not wake a colleague for code, existing links or an email address', () 
   const joined = mutateWorkspace(room.state, { type: 'room/join', roomId: room.roomId, agentId: colleague.agentId, memoryStart: { type: 'new-events' } }).state
   expect(parseRoomMentionIds(joined, room.roomId, '`@小林` name@小林.com [@小林](https://example.com)\n```txt\n@all\n```')).toEqual([])
   expect(parseRoomMentionIds(joined, room.roomId, '请@小林 看一下')).toEqual([colleague.agentId])
+})
+
+it('does not rebind old display-name mentions when another colleague takes the old name', () => {
+  const renamed: WorkspaceSnapshot = { ...snapshot, agents: {
+    alice: { ...snapshot.agents.alice!, name: '小李' },
+    bob: { ...snapshot.agents.alice!, id: 'bob', name: '小林' },
+  } }
+  expect(roomMessageMentionSpans(renamed, '@小林 @小王 <@alice>', ['alice', 'bob']).map(span => span.agentId)).toEqual(['alice'])
+})
+
+it('uses a renderer-allowlisted reserved target instead of a discarded fragment', () => {
+  expect(linkRoomMessageMentions(snapshot, '<@alice>', ['alice'])).toBe('[@小林](https://dsh-agent-group.invalid/people/alice)')
 })

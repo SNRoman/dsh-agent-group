@@ -90,6 +90,7 @@ export class EmployeeAgentPool {
   private readonly generations = new Map<AgentId, number>()
   private readonly operations = new Map<AgentId, Promise<void>>()
   private readonly roles = new Map<AgentId, EmployeeRoleContribution>()
+  private readonly failedRetirements = new Map<AgentId, AgentHandle>()
   private stopped = false
   private disposal: Promise<void> | undefined
 
@@ -130,6 +131,7 @@ export class EmployeeAgentPool {
   /** Admit the live handle for one agent, creating or resuming it exactly once. */
   async ensure(agentId: AgentId): Promise<AgentHandle> {
     if (this.stopped) throw new Error('employee agent pool is disposed')
+    if (this.failedRetirements.has(agentId)) throw new Error(`agent '${agentId}' retirement has not finished`)
     const existing = this.handles.get(agentId)
     if (existing !== undefined) return existing
     const pending = this.inFlight.get(agentId)
@@ -139,7 +141,7 @@ export class EmployeeAgentPool {
     const promise = this.materialize(agentId, generation).then(async handle => {
       if (this.generationOf(agentId) !== generation) {
         try {
-          await handle.dispose()
+          await this.disposeTracked(agentId, handle)
         } finally {
           this.agentIds.delete(handle.agent)
         }
@@ -237,10 +239,10 @@ export class EmployeeAgentPool {
     return this.roles.get(agentId)?.revisionId
   }
 
-  /** Dispose one agent's handle and invalidate any admission already in flight. */
+  /** Dispose resident and unpublished handles; failed cleanup remains owned for a later retry. */
   async dispose(agentId: AgentId): Promise<void> {
     this.generations.set(agentId, this.generationOf(agentId) + 1)
-    const handle = this.handles.get(agentId)
+    const handle = this.handles.get(agentId) ?? this.failedRetirements.get(agentId)
     const pending = this.inFlight.get(agentId)
     const operation = this.operations.get(agentId)
     this.handles.delete(agentId)
@@ -251,7 +253,7 @@ export class EmployeeAgentPool {
     let disposeError: unknown
     if (handle !== undefined) {
       try {
-        await handle.dispose()
+        await this.disposeTracked(agentId, handle)
       } catch (error) {
         disposeError = error
       }
@@ -259,8 +261,8 @@ export class EmployeeAgentPool {
     if (pending !== undefined) {
       try {
         await pending
-      } catch {
-        // The stale admission rejects after disposing its unpublished handle.
+      } catch (error) {
+        if (!(error instanceof EmployeeAdmissionInvalidatedError)) disposeError ??= error
       }
     }
     await operation
@@ -271,10 +273,10 @@ export class EmployeeAgentPool {
   disposeAll(): Promise<void> {
     if (this.disposal !== undefined) return this.disposal
     this.stopped = true
-    const ids = new Set<AgentId>([...this.handles.keys(), ...this.inFlight.keys(), ...this.operations.keys()])
+    const ids = new Set<AgentId>([...this.handles.keys(), ...this.failedRetirements.keys(), ...this.inFlight.keys(), ...this.operations.keys()])
     for (const agentId of ids) this.generations.set(agentId, this.generationOf(agentId) + 1)
 
-    const handles = [...this.handles.values()]
+    const handles = [...new Set([...this.handles.values(), ...this.failedRetirements.values()])]
     const pending = [...this.inFlight.values()]
     const operations = [...this.operations.values()]
     for (const handle of handles) this.agentIds.delete(handle.agent)
@@ -353,7 +355,7 @@ export class EmployeeAgentPool {
             if (this.admittedControls.get(agentId)?.agent === resumedAgent) this.admittedControls.delete(agentId)
           }
           try {
-            await handle?.dispose()
+            if (handle !== undefined) await this.disposeTracked(agentId, handle)
           } finally {
             await hide?.call(this.source, bound)
           }
@@ -423,7 +425,7 @@ export class EmployeeAgentPool {
       await this.source.recordSessionId(agentId, sessionId)
       this.assertAdmissionActive(agentId, generation)
     } catch (error) {
-      await handle.dispose()
+      await this.disposeTracked(agentId, handle)
       throw error
     }
     return handle
@@ -435,12 +437,22 @@ export class EmployeeAgentPool {
     }
   }
 
+  private async disposeTracked(agentId: AgentId, handle: AgentHandle): Promise<void> {
+    try {
+      await handle.dispose()
+      if (this.failedRetirements.get(agentId) === handle) this.failedRetirements.delete(agentId)
+    } catch (error) {
+      this.failedRetirements.set(agentId, handle)
+      throw error
+    }
+  }
+
   private async retireResident(agentId: AgentId, handle: AgentHandle): Promise<void> {
     if (this.handles.get(agentId) !== handle) return
     this.generations.set(agentId, this.generationOf(agentId) + 1)
     this.handles.delete(agentId)
     this.roles.delete(agentId)
     this.agentIds.delete(handle.agent)
-    await handle.dispose()
+    await this.disposeTracked(agentId, handle)
   }
 }

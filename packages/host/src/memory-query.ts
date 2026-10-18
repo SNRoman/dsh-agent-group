@@ -1,6 +1,8 @@
 /** Pure, snapshot-stable projection of one agent's durable personal memory. */
 
 import { WorkspaceBusinessError } from './errors.ts'
+import type { MemoryProcessingProgress } from './memory-processor.ts'
+import type { MemoryFact } from './scene-memory-contract.ts'
 import type {
   AgentDefinitionId,
   AgentId,
@@ -64,6 +66,7 @@ export interface MemoryItem {
   readonly text?: string | undefined
   readonly childStatus?: ChildRunTerminalStatus | undefined
   readonly definitionRevision: MemoryDefinitionRevision
+  readonly processing?: { readonly status: MemoryProcessingProgress['status'] | 'not-applicable'; readonly available: boolean; readonly ranges: MemoryProcessingProgress['ranges']; readonly facts: readonly MemoryFact[] }
 }
 
 /** Stable filters and snapshot checkpoint for one agent's memory timeline. */

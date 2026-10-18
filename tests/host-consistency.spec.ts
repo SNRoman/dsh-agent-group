@@ -644,11 +644,11 @@ describe('durable service boundary', () => {
     await recoveryPaused.promise
 
     const directory = booted.service.directory
-    const update = directory.updateAggregate.bind(directory)
+    const update = directory.updateRecord.bind(directory)
     const retryCommitted = Promise.withResolvers<void>()
     const allowAdoption = Promise.withResolvers<void>()
     let pauseRetryCommit = true
-    directory.updateAggregate = async (key, mutation) => {
+    directory.updateRecord = async (key, mutation) => {
       const committed = await update(key, mutation)
       if (pauseRetryCommit) {
         pauseRetryCommit = false
@@ -674,7 +674,7 @@ describe('durable service boundary', () => {
     } finally {
       releaseRecovery.resolve()
       allowAdoption.resolve()
-      directory.updateAggregate = update
+      directory.updateRecord = update
       ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator | undefined }).taskDelivery = undefined
       await Promise.allSettled([recovery, retry])
       await booted.dispose()
@@ -713,11 +713,11 @@ describe('durable service boundary', () => {
     })
     ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator | undefined }).taskDelivery = coordinator
     const directory = booted.service.directory
-    const update = directory.updateAggregate.bind(directory)
+    const update = directory.updateRecord.bind(directory)
     const retryCommitted = Promise.withResolvers<void>()
     const allowAdoption = Promise.withResolvers<void>()
     let pauseRetryCommit = true
-    directory.updateAggregate = async (key, mutation) => {
+    directory.updateRecord = async (key, mutation) => {
       const committed = await update(key, mutation)
       if (pauseRetryCommit) {
         pauseRetryCommit = false
@@ -749,7 +749,7 @@ describe('durable service boundary', () => {
       await expect(released.result()).rejects.toThrow(/rolled back/)
     } finally {
       allowAdoption.resolve()
-      directory.updateAggregate = update
+      directory.updateRecord = update
       ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator | undefined }).taskDelivery = undefined
       await Promise.allSettled([retry])
       await booted.dispose()
@@ -1018,9 +1018,9 @@ describe('durable service boundary', () => {
     ;(booted.service as unknown as { taskDelivery: TaskDeliveryCoordinator }).taskDelivery = coordinator
     const before = booted.service.snapshot()
     const directory = booted.service.directory
-    const update = directory.updateAggregate.bind(directory)
-    directory.updateAggregate = async (key, mutation) => {
-      const current = directory.snapshot(key)
+    const update = directory.updateRecord.bind(directory)
+    directory.updateRecord = async (key, mutation) => {
+      const current = directory.record(key)
       mutation(current)
       throw new Error('retry table write failed')
     }
@@ -1029,7 +1029,7 @@ describe('durable service boundary', () => {
       await expect(booted.service.retryTaskDelivery(before.revision, taskId)).rejects.toThrow('retry table write failed')
       expect(booted.service.snapshot()).toEqual(before)
     } finally {
-      directory.updateAggregate = update
+      directory.updateRecord = update
     }
 
     await expect(booted.service.retryTaskDelivery(before.revision, taskId)).resolves.toEqual({
@@ -1053,7 +1053,7 @@ describe('durable service boundary', () => {
       HumanId('web-user'),
       alice.id,
       'must not commit',
-    )).rejects.toThrow(/coordinator is not available/)
+    )).rejects.toThrow(/workflow-reference-invalid/)
 
     expect(booted.service.snapshot()).toEqual(before)
     await booted.dispose()
@@ -1099,7 +1099,6 @@ describe('durable service boundary', () => {
     ['room/join', { expectedRevision: 0, roomId: 'missing', agentId: 'missing', memoryStart: { type: 'new-events' } }],
     ['room/leave', { expectedRevision: 0, membershipId: 'missing' }],
     ['room/post', { expectedRevision: 0, roomId: 'missing', text: 'hello', mentions: [] }],
-    ['task/assign', { expectedRevision: 0, assigneeAgentId: 'missing', title: 'Task' }],
     ['task/grant', { expectedRevision: 0, granteeAgentId: 'missing', rootTaskId: 'missing' }],
     ['task/revoke', { expectedRevision: 0, delegationGrantId: 'missing' }],
     ['task/cancel', { expectedRevision: 0, taskId: 'missing' }],
@@ -1178,7 +1177,8 @@ describe('durable service boundary', () => {
     const assigned = await handler('task/assign', {
       expectedRevision: 2, assigneeAgentId: alice.id, title: 'Root task',
     }, new AbortController().signal)
-    expect(assigned).toMatchObject({ ok: true, value: { revision: 3 } })
+    expect(assigned).toMatchObject({ ok: false, error: { kind: 'bad-request' } })
+    await booted.service.apply(state => assignHumanTask(state, { humanId: HumanId('web-user'), assigneeAgentId: alice.id, title: 'Root task' }).state)
     const rootTaskId = Object.values(booted.service.snapshot().tasks)[0]!.id
 
     const granted = await handler('task/grant', {

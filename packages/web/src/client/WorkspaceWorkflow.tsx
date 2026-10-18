@@ -4,10 +4,12 @@ import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { WorkspaceApiClient } from './api.ts'
 import type { WorkspaceSnapshot } from './contracts.ts'
 import { WorkflowApiError, WorkflowInputError, WorkspaceWorkflowApi } from './workflow-api.ts'
+import { WorkspaceCommunicationApi } from './communication-api.ts'
+import type { CommunicationSnapshot } from './communication-api.ts'
 import type { CompanyTemplateConfig, CompanyTemplatePreview, TaskBrief, WorkflowCommandMap, WorkflowEndpoint, WorkflowSnapshot } from './workflow-contracts.ts'
 import { projectWorkflowResults } from './workflow-view-model.ts'
 
-interface Props { readonly api: WorkspaceApiClient; readonly snapshot: WorkspaceSnapshot; readonly onSnapshot: (value: WorkspaceSnapshot) => void; readonly t: TranslateNS<'agentWorkspace'> }
+interface Props { readonly api: WorkspaceApiClient; readonly snapshot: WorkspaceSnapshot; readonly onSnapshot: (value: WorkspaceSnapshot) => void; readonly onBringToChat?: ((brief: TaskBrief, draft?: { readonly id: string; readonly revision: number }) => void) | undefined; readonly t: TranslateNS<'agentWorkspace'> }
 interface BriefEditor { readonly title: string; readonly instructions: string; readonly expectedArtifacts: string; readonly acceptanceCriteria: string }
 const blankBrief = (): BriefEditor => ({ title: '', instructions: '', expectedArtifacts: '', acceptanceCriteria: '' })
 const editBrief = (value: TaskBrief): BriefEditor => ({ ...value, expectedArtifacts: value.expectedArtifacts.join('\n'), acceptanceCriteria: value.acceptanceCriteria.join('\n') })
@@ -22,12 +24,13 @@ const editCompanyConfig = (value: CompanyTemplateConfig): CompanyEditor => {
   return { colleagues, groups: value.groups.map(g => ({ name: g.name, memberKeys: g.memberNames.map(name => colleagues.find(c => c.name === name)!.key) })) }
 }
 const submitCompanyConfig = (value: CompanyEditor): CompanyTemplateConfig => ({ colleagues: value.colleagues.map(c => ({ name: c.name, definitionRevisionId: c.definitionRevisionId })), groups: value.groups.map(g => ({ name: g.name, memberNames: g.memberKeys.map(key => value.colleagues.find(c => c.key === key)!.name) })) })
-interface Retry { readonly endpoint: WorkflowEndpoint; readonly payload: WorkflowCommandMap[WorkflowEndpoint]; readonly operationId: string }
+interface Retry { readonly endpoint: WorkflowEndpoint; readonly payload: WorkflowCommandMap[WorkflowEndpoint]; readonly operationId: string; readonly roomId?: string | undefined }
 
 /** Render drafts, immutable templates, exact result reviews and selected-artifact handoffs. */
-export function WorkspaceWorkflow({ api, snapshot, onSnapshot, t }: Props) {
+export function WorkspaceWorkflow({ api, snapshot, onSnapshot, onBringToChat, t }: Props) {
   const client = useMemo(() => new WorkspaceWorkflowApi(api), [api])
-  const [pair, setPair] = useState<{ aggregate: WorkspaceSnapshot; workflow: WorkflowSnapshot }>()
+  const communicationClient = useMemo(() => new WorkspaceCommunicationApi(api), [api])
+  const [pair, setPair] = useState<{ aggregate: WorkspaceSnapshot; workflow: WorkflowSnapshot; communication: CommunicationSnapshot }>()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const [retry, setRetry] = useState<Retry>()
@@ -46,6 +49,7 @@ export function WorkspaceWorkflow({ api, snapshot, onSnapshot, t }: Props) {
   const [preview, setPreview] = useState<CompanyTemplatePreview>()
   const [newEvents, setNewEvents] = useState(false)
   const [resultId, setResultId] = useState('')
+  const [continuationRoomId, setContinuationRoomId] = useState('')
   const [artifactLabel, setArtifactLabel] = useState('')
   const [artifactSummary, setArtifactSummary] = useState('')
   const [referenceKind, setReferenceKind] = useState<'none' | 'path' | 'url'>('none')
@@ -73,20 +77,23 @@ export function WorkspaceWorkflow({ api, snapshot, onSnapshot, t }: Props) {
     const flight = request()
     try {
       for (let attempt = 0; attempt < 3; attempt++) {
-        const [aggregate, workflow] = await Promise.all([api.snapshot(flight.controller.signal), client.snapshot(flight.controller.signal)])
-        if (!flight.live() || aggregate.workspaceId !== api.workspaceId || workflow.workspaceId !== api.workspaceId) return undefined
-        if (aggregate.revision !== workflow.aggregateRevision) continue
+        const [aggregate, workflow, communication] = await Promise.all([api.snapshot(flight.controller.signal), client.snapshot(flight.controller.signal), communicationClient.snapshot(flight.controller.signal)])
+        if (!flight.live() || aggregate.workspaceId !== api.workspaceId || workflow.workspaceId !== api.workspaceId || communication.workspaceId !== api.workspaceId) return undefined
+        if (aggregate.revision !== workflow.aggregateRevision || aggregate.revision !== communication.aggregateRevision || workflow.workflow.revision !== communication.workflowRevision) continue
         const current = currentPair.current
-        if (current?.aggregate.workspaceId === aggregate.workspaceId && (aggregate.revision < current.aggregate.revision || workflow.workflow.revision < current.workflow.workflow.revision)) return current
-        const value = { aggregate, workflow }; currentPair.current = value; setPair(value); callback.current(aggregate); return value
+        if (current?.aggregate.workspaceId === aggregate.workspaceId && (aggregate.revision < current.aggregate.revision || workflow.workflow.revision < current.workflow.workflow.revision || communication.communication.revision < current.communication.communication.revision)) return current
+        const value = { aggregate, workflow, communication }; currentPair.current = value; setPair(value); callback.current(aggregate); return value
       }
       throw new Error('Incoherent workflow snapshot')
+    } catch (cause) {
+      if (flight.live()) { currentPair.current = undefined; setPair(undefined) }
+      throw cause
     } finally { flight.done() }
   }
   useEffect(() => {
     const scope = lifecycle.current; scope.generation++; scope.active = true
     setPair(undefined); setBusy(false); setError(undefined); setRetry(undefined); setPreview(undefined); setNewEvents(false)
-    setDraftId(''); setDraftRevision(undefined); setBrief(blankBrief()); setAssignee(''); setTemplateName(''); setTaskTemplateId(''); setTaskRevisionId(''); setCompanyName(''); setCompanyId(''); setCompanyRevisionId(''); setCompanyConfig(blankConfig()); setResultId(''); setSelectedArtifacts([]); setArtifactLabel(''); setArtifactSummary(''); setReferenceKind('none'); setReferenceValue(''); setDecision('accepted'); setComment(''); operations.current.clear()
+    setDraftId(''); setDraftRevision(undefined); setBrief(blankBrief()); setAssignee(''); setTemplateName(''); setTaskTemplateId(''); setTaskRevisionId(''); setCompanyName(''); setCompanyId(''); setCompanyRevisionId(''); setCompanyConfig(blankConfig()); setResultId(''); setContinuationRoomId(''); setSelectedArtifacts([]); setArtifactLabel(''); setArtifactSummary(''); setReferenceKind('none'); setReferenceValue(''); setDecision('accepted'); setComment(''); operations.current.clear()
     const generation = scope.generation
     void refresh().catch(() => { if (scope.active && scope.generation === generation) setError(t('workflow.refreshFailed')) })
     return () => { scope.active = false; scope.generation++; for (const controller of scope.controllers) controller.abort(); scope.controllers.clear() }
@@ -111,7 +118,7 @@ export function WorkspaceWorkflow({ api, snapshot, onSnapshot, t }: Props) {
     }
     return t('workflow.requestFailed')
   }
-  const mutate = async <K extends WorkflowEndpoint>(endpoint: K, payload: WorkflowCommandMap[K], retainedId?: string): Promise<void> => {
+  const mutate = async <K extends WorkflowEndpoint>(endpoint: K, payload: WorkflowCommandMap[K], retainedId?: string, roomId?: string): Promise<void> => {
     const shown = currentPair.current
     if (shown === undefined || api.readOnly || busy) return
     if ('draftId' in payload && 'expectedDraftRevision' in payload) {
@@ -119,13 +126,13 @@ export function WorkspaceWorkflow({ api, snapshot, onSnapshot, t }: Props) {
       if (!target || target.revision !== payload.expectedDraftRevision || target.status !== 'draft') { invalidateRetry(); return }
     }
     const submittedGeneration = formGeneration.current
-    const fingerprint = JSON.stringify([endpoint, payload])
+    const fingerprint = JSON.stringify([endpoint, payload, roomId])
     const operationId = retainedId ?? operations.current.get(fingerprint) ?? crypto.randomUUID()
     operations.current.set(fingerprint, operationId)
     const flight = request(); setBusy(true); setError(undefined); setRetry(undefined)
     let committed = false
     try {
-      await client.mutate(endpoint, payload, expected(shown), operationId, flight.controller.signal)
+      await client.mutate(endpoint, payload, expected(shown), operationId, flight.controller.signal, roomId)
       committed = true
       if (!flight.live()) return
       const refreshed = await refresh()
@@ -151,7 +158,7 @@ export function WorkspaceWorkflow({ api, snapshot, onSnapshot, t }: Props) {
       setError(message)
       const draft = 'draftId' in payload && refreshed ? refreshed.workflow.workflow.drafts[payload.draftId] : undefined
       const changedDraft = 'expectedDraftRevision' in payload && (draft === undefined || draft.revision !== payload.expectedDraftRevision || draft.status !== 'draft')
-      if (!changedDraft && refreshed !== undefined && formGeneration.current === submittedGeneration) setRetry({ endpoint, payload, operationId })
+      if (!changedDraft && refreshed !== undefined && formGeneration.current === submittedGeneration) setRetry({ endpoint, payload, operationId, roomId })
     } finally { flight.done(); if (flight.live()) setBusy(false) }
   }
   const doPreview = async (): Promise<void> => {
@@ -171,18 +178,32 @@ export function WorkspaceWorkflow({ api, snapshot, onSnapshot, t }: Props) {
   const draft = workflow?.drafts[draftId]
   const outdatedDraft = draft !== undefined && draftRevision !== draft.revision
   useEffect(() => {
+    if (workflow === undefined) return
+    if ((draftId !== '' && !Object.hasOwn(workflow.drafts, draftId)) || (taskTemplateId !== '' && !Object.hasOwn(workflow.taskTemplates, taskTemplateId)) || (taskRevisionId !== '' && !Object.hasOwn(workflow.taskTemplateRevisions, taskRevisionId))) {
+      invalidateRetry(); setDraftId(''); setDraftRevision(undefined); setBrief(blankBrief()); setAssignee(''); setTaskTemplateId(''); setTaskRevisionId('')
+    }
+  }, [workflow, draftId, taskTemplateId, taskRevisionId])
+  useEffect(() => {
     if (retry && 'draftId' in retry.payload && 'expectedDraftRevision' in retry.payload) {
       const target = workflow?.drafts[retry.payload.draftId]
       if (!target || target.revision !== retry.payload.expectedDraftRevision || target.status !== 'draft') setRetry(undefined)
     }
   }, [workflow, retry])
-  const results = useMemo(() => workflow ? projectWorkflowResults(aggregate, workflow) : [], [aggregate, workflow])
+  const results = useMemo(() => {
+    if (workflow === undefined || pair === undefined || pair.aggregate.revision < snapshot.revision) return []
+    const resets = Object.values(pair.communication.communication.resets)
+    const invalidEvents = new Set(resets.flatMap(reset => reset.invalidatedEventIds))
+    const invalidTasks = new Set(resets.flatMap(reset => reset.invalidatedTaskIds))
+    return projectWorkflowResults(aggregate, workflow).filter(result => !invalidEvents.has(result.result.eventId) && !invalidTasks.has(result.result.taskId))
+  }, [aggregate, workflow, pair, snapshot.revision])
   const result = results.find(r => r.result.eventId === resultId)
   const disabled = api.readOnly || busy || !pair
   const validBrief = brief.title.trim() !== '' && brief.instructions.trim() !== ''
   const employed = Object.values(aggregate.agents).filter(a => a.employmentStatus === 'employed')
-  const field = (key: Parameters<typeof t>[0], value: string, update: (value: string) => void, multiline = false) => <label className="dsh-agent-group-field"><span>{t(key)}</span>{multiline ? <textarea className="dsh-agent-group-input" value={value} onChange={e => update(e.target.value)} /> : <input className="dsh-agent-group-input" value={value} onChange={e => update(e.target.value)} />}</label>
-  const action = (key: Parameters<typeof t>[0], blocked: boolean, run: () => void) => <button type="button" className="dsh-agent-group-button" disabled={disabled || blocked} onClick={run}>{t(key)}</button>
+  const continuationRooms = Object.values(aggregate.rooms).filter(room => Object.values(aggregate.memberships).some(member => member.roomId === room.id && member.leftEventId === undefined && aggregate.agents[member.agentId]?.employmentStatus === 'employed'))
+  const validContinuationRoom = continuationRooms.some(room => room.id === continuationRoomId)
+  const field = (key: Parameters<typeof t>[0], value: string, update: (value: string) => void, multiline = false) => <label className="dsh-agent-group-field"><span>{t(key)}</span>{multiline ? <textarea className="dsh-agent-group-textarea" value={value} onChange={e => update(e.target.value)} /> : <input className="dsh-agent-group-input" value={value} onChange={e => update(e.target.value)} />}</label>
+  const action = (key: Parameters<typeof t>[0], blocked: boolean, run: () => void) => <button type="button" className="dsh-agent-group-button" data-variant={key === 'workflow.discardDraft' ? 'danger' : key === 'workflow.createDraft' || key === 'workflow.confirmDraft' || key === 'workflow.confirmCompany' ? undefined : 'ghost'} disabled={disabled || blocked} onClick={run}>{t(key)}</button>
   const briefFields = <>
     {field('workflow.title', brief.title, value => setBrief(b => ({ ...b, title: value })))}
     {field('workflow.instructions', brief.instructions, value => setBrief(b => ({ ...b, instructions: value })), true)}
@@ -190,11 +211,14 @@ export function WorkspaceWorkflow({ api, snapshot, onSnapshot, t }: Props) {
     {field('workflow.acceptanceCriteria', brief.acceptanceCriteria, value => setBrief(b => ({ ...b, acceptanceCriteria: value })), true)}
   </>
   return <section className="dsh-agent-group-workflow" aria-label={t('workflow.titleSection')} onChangeCapture={invalidateRetry}>
-    <h3>{t('workflow.titleSection')}</h3>
-    {pair ? <p role="status">{t('workflow.revisions', { aggregate: pair.aggregate.revision, workflow: pair.workflow.workflow.revision })}</p> : <p>{t('workspace.loading')}</p>}
+    <div className="dsh-agent-group-workflow-head">
+      <div><h3>{t('workflow.titleSection')}</h3>
+        {pair ? <p className="dsh-agent-group-muted" role="status">{t('workflow.revisions', { aggregate: pair.aggregate.revision, workflow: pair.workflow.workflow.revision })}</p> : <p className="dsh-agent-group-muted">{t('workspace.loading')}</p>}
+      </div>
+      <button type="button" className="dsh-agent-group-button" data-variant="ghost" disabled={busy} onClick={() => { const generation = lifecycle.current.generation; void refresh().catch(() => { if (lifecycle.current.active && lifecycle.current.generation === generation) setError(t('workflow.refreshFailed')) }) }}>{t('workflow.refresh')}</button>
+    </div>
     {error ? <p role="alert">{error}</p> : null}
-    {retry ? action('workflow.retry', false, () => { void mutate(retry.endpoint, retry.payload, retry.operationId) }) : null}
-    <button type="button" className="dsh-agent-group-button" disabled={busy} onClick={() => { const generation = lifecycle.current.generation; void refresh().catch(() => { if (lifecycle.current.active && lifecycle.current.generation === generation) setError(t('workflow.refreshFailed')) }) }}>{t('workflow.refresh')}</button>
+    {retry ? action('workflow.retry', false, () => { void mutate(retry.endpoint, retry.payload, retry.operationId, retry.roomId) }) : null}
     <details open><summary>{t('workflow.drafts')}</summary><div className="dsh-agent-group-form">
       <label className="dsh-agent-group-field"><span>{t('workflow.draft')}</span><select value={draftId} onChange={e => { const value = e.target.value; const selected = workflow?.drafts[value]; setDraftId(value); setDraftRevision(selected?.revision); setAssignee(''); setRetry(undefined); setBrief(selected ? editBrief(selected.brief) : blankBrief()) }}><option value="">{t('workflow.newDraft')}</option>{Object.values(workflow?.drafts ?? {}).map(d => <option key={d.id} value={d.id}>{t('workflow.draftOption', { title: d.brief.title, id: d.id, status: t(`workflow.status.${d.status}`) })}</option>)}</select></label>
       {draft ? <p>{t('workflow.draftRevision', { revision: draft.revision })}</p> : null}
@@ -208,12 +232,12 @@ export function WorkspaceWorkflow({ api, snapshot, onSnapshot, t }: Props) {
         {draft.handoff.reviewComment ? <p>{t('workflow.reviewContext', { comment: draft.handoff.reviewComment })}</p> : null}
         {draft.handoff.artifacts.map(a => <p key={a.id}>{t('workflow.artifactDisplay', { label: a.label, summary: a.summary })}{a.reference ? <span>{t('workflow.referenceDisplay', { notice: t('workflow.unverified'), value: a.reference.value })}</span> : null}</p>)}
       </div> : null}
-      {briefFields}
+      {draft ? briefFields : <p>{t('work.chatHint')}</p>}
       <label className="dsh-agent-group-field"><span>{t('workflow.assignee')}</span><select value={assignee} onChange={e => setAssignee(e.target.value)}><option value="">{t('task.selectAssignee')}</option>{employed.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
-      {draftId === '' ? action('workflow.createDraft', !validBrief, () => { void mutate('workflow/draft/create', { brief: submitBrief(brief) }) }) : <>
+      {draftId === '' ? null : <>
         {action('workflow.saveDraft', !validBrief || draft?.status !== 'draft' || outdatedDraft, () => { if (draft && draftRevision !== undefined && !outdatedDraft) void mutate('workflow/draft/edit', { draftId, expectedDraftRevision: draftRevision, brief: submitBrief(brief) }) })}
         {action('workflow.discardDraft', draft?.status !== 'draft' || outdatedDraft, () => { if (draft && draftRevision !== undefined && !outdatedDraft) void mutate('workflow/draft/discard', { draftId, expectedDraftRevision: draftRevision }) })}
-        {action('workflow.confirmDraft', draft?.status !== 'draft' || outdatedDraft || assignee === '' || JSON.stringify(submitBrief(brief)) !== JSON.stringify(draft?.brief), () => { if (draft && draftRevision !== undefined && !outdatedDraft) void mutate('workflow/draft/confirm', { draftId, expectedDraftRevision: draftRevision, assigneeAgentId: assignee }) })}
+        {action('chat.confirmInChat', draft?.status !== 'draft' || outdatedDraft || onBringToChat === undefined || JSON.stringify(submitBrief(brief)) !== JSON.stringify(draft?.brief), () => { if (draft && draftRevision !== undefined && !outdatedDraft) onBringToChat?.(draft.brief, { id: draft.id, revision: draftRevision }) })}
       </>}
       <p>{t('workflow.confirmHint')}</p>
     </div></details>
@@ -224,7 +248,7 @@ export function WorkspaceWorkflow({ api, snapshot, onSnapshot, t }: Props) {
       {action('workflow.createTaskTemplate', !validBrief || templateName.trim() === '', () => { void mutate('workflow/task-template/create', { name: templateName, brief: submitBrief(brief) }) })}
       {action('workflow.reviseTaskTemplate', taskTemplateId === '' || !validBrief, () => { void mutate('workflow/task-template/revise', { templateId: taskTemplateId, brief: submitBrief(brief) }) })}
       <label className="dsh-agent-group-field"><span>{t('workflow.templateRevision')}</span><select value={taskRevisionId} onChange={e => setTaskRevisionId(e.target.value)}><option value="">{t('workflow.selectRevision')}</option>{Object.values(workflow?.taskTemplateRevisions ?? {}).map(v => <option key={v.id} value={v.id}>{t('workflow.revisionOption', { name: workflow?.taskTemplates[v.templateId]?.name ?? '', number: v.number, id: v.id })}</option>)}</select></label>
-      {action('workflow.applyTaskTemplate', taskRevisionId === '', () => { void mutate('workflow/task-template/apply', { templateRevisionId: taskRevisionId }) })}
+      {action('chat.templateToChat', taskRevisionId === '' || onBringToChat === undefined, () => { const revision = workflow?.taskTemplateRevisions[taskRevisionId]; if (revision) onBringToChat?.(revision.brief) })}
     </div></details>
     <details><summary>{t('workflow.companyTemplates')}</summary><div className="dsh-agent-group-form">
       {field('workflow.companyName', companyName, value => { invalidateCompanyPreview(); setCompanyName(value) })}
@@ -260,8 +284,9 @@ export function WorkspaceWorkflow({ api, snapshot, onSnapshot, t }: Props) {
         {action('workflow.registerArtifact', artifactLabel.trim() === '' || artifactSummary.trim() === '' || (referenceKind !== 'none' && referenceValue.trim() === ''), () => { void mutate('workflow/artifact/register', { result: result.result, label: artifactLabel, summary: artifactSummary, ...(referenceKind === 'none' ? {} : { reference: { kind: referenceKind, value: referenceValue } }) }) })}
         <label className="dsh-agent-group-field"><span>{t('workflow.decision')}</span><select value={decision} onChange={e => setDecision(e.target.value as typeof decision)}><option value="accepted">{t('workflow.review.accepted')}</option><option value="changes-requested">{t('workflow.review.changes-requested')}</option></select></label>
         {field('workflow.comment', comment, setComment, true)}
-        {action('workflow.reviewResult', decision === 'changes-requested' && comment.trim() === '', () => { void mutate('workflow/result/review', { result: result.result, decision, comment }) })}
-        {action('workflow.handoff', false, () => { void mutate('workflow/result/handoff', { result: result.result, artifactIds: selectedArtifacts }) })}
+        <label className="dsh-agent-group-field"><span>{t('workflow.continuationRoom')}</span><select value={continuationRoomId} onChange={e => setContinuationRoomId(e.target.value)}><option value="">{t('workflow.selectContinuationRoom')}</option>{continuationRooms.map(room => <option key={room.id} value={room.id}>{room.name ?? room.id}</option>)}</select></label>
+        {action('workflow.reviewResult', decision === 'changes-requested' && (comment.trim() === '' || !validContinuationRoom), () => { void mutate('workflow/result/review', { result: result.result, decision, comment }, undefined, decision === 'changes-requested' ? continuationRoomId : undefined) })}
+        {action('workflow.handoff', !validContinuationRoom, () => { void mutate('workflow/result/handoff', { result: result.result, artifactIds: selectedArtifacts }, undefined, continuationRoomId) })}
         <p>{t('workflow.handoffHint')}</p>
       </> : null}
     </div></details>

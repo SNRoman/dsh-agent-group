@@ -81,6 +81,20 @@ describe('employee personal memory tools', () => {
     expect(built.state().events.find(event => event.id === built.firstId)?.text).toBe('release decision: Friday')
   })
 
+  test('attributes search previews and individual read pages to the active turn', async () => {
+    const built = fixture()
+    const observed: Array<{ eventIds: readonly string[]; rendered: string }> = []
+    const host = { ...built.host, recordMemoryToolRead: async (_agent: Agent, eventIds: readonly string[], rendered: string) => {
+      observed.push({ eventIds, rendered })
+    } }
+    const preview = await tools(host, 1000, 1).search().execute({ query: 'release' }, execution(built.aliceCaller))
+    const page = await tools(host, 8, 1).read().execute({ eventId: built.firstId, offset: 8 }, execution(built.aliceCaller))
+    expect(observed).toEqual([
+      { eventIds: [built.secondId], rendered: JSON.stringify(preview) },
+      { eventIds: [built.firstId], rendered: JSON.stringify(page) },
+    ])
+  })
+
   test('uses one opaque error for an unknown event and an event outside personal memory', async () => {
     const built = fixture()
     const read = tools(built.host).read()

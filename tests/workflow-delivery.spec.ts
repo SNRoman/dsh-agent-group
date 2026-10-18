@@ -1,6 +1,6 @@
 import { expect, test, vi } from 'vitest'
 import { workflowTaskInstructions } from '../packages/host/src/workflow-delivery.ts'
-import { workflowRuntime, expected, brief } from './workflow-test-support.ts'
+import { workflowRuntime, joinWorkflowChat, expected, brief } from './workflow-test-support.ts'
 import { WorkflowOperationId } from '../packages/host/src/workflow.ts'
 import { TaskDeliveryCoordinator } from '../packages/host/src/task-delivery-coordinator.ts'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
@@ -15,16 +15,14 @@ import { HumanId } from '../packages/host/src/ids.ts'
 const golden = 'Ship\n\nInstructions\nComplete all details\n\nExpected artifacts\n- report\n\nAcceptance criteria\n- Reviewed'
 async function confirmed() {
   const fixture = await workflowRuntime(); const { runtime, directory, agentId } = fixture
-  const draft = await runtime.executeWorkflow({ ...expected(runtime), operationId: WorkflowOperationId('draft') }, { type: 'workflow/draft/create', brief })
-  const result = await directory.executeWorkflow(runtime.workspaceId, { ...expected(runtime), operationId: WorkflowOperationId('confirm'), command: { type: 'workflow/draft/confirm', draftId: draft.value.draftId, expectedDraftRevision: 0, assigneeAgentId: agentId } }, { humanId: HumanId('owner'), occurredAt: '2026-10-11T00:00:00.000Z' })
+  const roomId = await joinWorkflowChat(runtime, agentId)
+  const result = await runtime.assignChatWork({ ...expected(runtime), roomId, operationId: WorkflowOperationId('assign'), brief, assigneeAgentId: agentId })
   return { ...fixture, taskId: result.value.taskId }
 }
 
 test('persisted confirmation renders the complete brief deterministically', async () => {
-  const { runtime, directory, agentId } = await workflowRuntime()
-  const draft = await runtime.executeWorkflow({ ...expected(runtime), operationId: WorkflowOperationId('draft') }, { type: 'workflow/draft/create', brief })
-  const result = await directory.executeWorkflow(runtime.workspaceId, { ...expected(runtime), operationId: WorkflowOperationId('confirm'), command: { type: 'workflow/draft/confirm', draftId: draft.value.draftId, expectedDraftRevision: 0, assigneeAgentId: agentId } }, { humanId: 'web-workspace-human' as never, occurredAt: new Date().toISOString() })
-  expect(workflowTaskInstructions(directory.record(runtime.workspaceId), result.value.taskId)).toBe(golden)
+  const { runtime, directory, taskId } = await confirmed()
+  expect(workflowTaskInstructions(directory.record(runtime.workspaceId), taskId)).toBe(golden)
 })
 
 test('normal coordinator delivery logs the full brief in real Session user/message while retaining exact identities', async () => {

@@ -1,10 +1,11 @@
 /** Strict readers for successor communication and raw byte checkpoint metadata. */
 import { z } from 'zod'
-import { ToolCallId } from '@deepseek-ai/dsh-llm'
-import { AgentId, HumanId, RoomId, TaskId, WorkspaceEventId } from './ids.ts'
+import { MessageId, ToolCallId } from '@deepseek-ai/dsh-llm'
+import { AgentId, HumanId, MembershipId, RoomId, TaskDeliveryAttemptId, TaskId, WorkspaceEventId } from './ids.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type * as C from './communication-contract.ts'
 import type { TaskArtifactId, TaskDraftId, TaskTemplateRevisionId } from './workflow-contract.ts'
+import { chatWorkOperationSchema } from './chat-work-schema.ts'
 
 const id = z.string().min(1).refine(value => value.trim() === value && !/[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(value))
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
@@ -25,13 +26,14 @@ const timestamp = z.string().refine(value => { const date = new Date(value); ret
 export const chatSourceSchema = z.object({ roomId: id.transform(RoomId), eventId }).strict() satisfies z.ZodType<C.ChatSource>
 
 const target = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('room-input'), eventId }).strict(),
   z.object({ kind: z.literal('event'), eventId }).strict(),
   z.object({ kind: z.literal('task'), taskId }).strict(),
   z.object({ kind: z.literal('draft'), draftId }).strict(),
   z.object({ kind: z.literal('template'), templateRevisionId }).strict(),
   z.object({ kind: z.literal('artifact'), artifactId }).strict(),
 ])
-const input = z.object({ id: inputId, target, agentId, contextGeneration: count, recordedAtSequence: positive, directEventIds: z.array(eventId), recalledEventIds: z.array(eventId), sessionEventIds: z.array(eventId) }).strict()
+const input = z.object({ id: inputId, target, deliveryMessageId: id.transform(MessageId).optional(), taskDeliveryAttemptId: id.transform(TaskDeliveryAttemptId).optional(), agentId, contextGeneration: count, recordedAtSequence: positive, directEventIds: z.array(eventId), recalledEventIds: z.array(eventId), sessionEventIds: z.array(eventId) }).strict()
 const resetBase = {
   id: resetId, source: chatSourceSchema, requestedByHumanId: id.transform(HumanId),
   fromSequence: positive, throughSequence: positive, affectedAgentIds: z.array(agentId), previousGenerations: z.record(agentId, count),
@@ -39,10 +41,16 @@ const resetBase = {
   invalidatedTemplateRevisionIds: z.array(templateRevisionId), invalidatedArtifactIds: z.array(artifactId),
   requestedAt: timestamp, fileRestoreRequested: z.boolean(),
 }
-const reset = z.discriminatedUnion('status', [
+const withdrawalReset = z.discriminatedUnion('status', [
   z.object({ ...resetBase, status: z.enum(['pending', 'completed']), error: z.never().optional() }).strict(),
   z.object({ ...resetBase, status: z.literal('failed'), error: text }).strict(),
 ])
+const forgetBase = { ...resetBase, kind: z.literal('room-memory-forget'), membershipId: id.transform(MembershipId), forgottenEventIds: z.array(eventId), fileRestoreRequested: z.literal(false) }
+const forgetReset = z.discriminatedUnion('status', [
+  z.object({ ...forgetBase, status: z.enum(['pending', 'completed']), error: z.never().optional() }).strict(),
+  z.object({ ...forgetBase, status: z.literal('failed'), error: text }).strict(),
+])
+const reset = z.union([withdrawalReset, forgetReset])
 
 /** Raw snapshots retain bytes in journal-owned blobs, never tool result strings. */
 export const fileByteSnapshotSchema = z.discriminatedUnion('existed', [
@@ -69,6 +77,7 @@ const state = z.object({
   contexts: z.record(agentId, z.object({ generation: count, blockedBy: resetId.optional(), sessionId: id.transform(value => value as SessionId).optional() }).strict()),
   resets: z.record(resetId, reset),
   fileCheckpoints: z.record(checkpointId, checkpoint),
+  operations: z.record(id, chatWorkOperationSchema),
 }).strict() satisfies z.ZodType<C.CommunicationState>
 
 /** Strict persistence reader; pair with assertCommunicationRelationships before use. */

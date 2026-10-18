@@ -31,7 +31,7 @@ describe('formal delivery personal memory', () => {
     const { state, agentId } = fixture()
     const delivery = createUserMessage({ content: [{ type: 'text', text: 'Implement EXPORT requirement' }] })
     const recall = createDeliveryMemory(structuredClone(state), agentId, delivery, 4000)
-    expect(recall?.source).toEqual({ kind: 'agent-workspace-recall' })
+    expect(recall?.source).toMatchObject({ kind: 'agent-workspace-recall', eventIds: expect.arrayContaining([state.events.at(-1)!.id]) })
     expect(JSON.stringify(recall?.content)).toContain('UTF-8')
     expect(JSON.stringify(recall?.content)).toContain('room-membership')
     expect(JSON.stringify(recall?.content)).toContain(state.events.at(-1)!.id)

@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorkspaceActivitySnapshot, WorkspaceSnapshot } from '../packages/web/src/client/contracts.ts'
 import { projectTaskRoots, selectNewerActivitySnapshot } from '../packages/web/src/client/task-view-model.ts'
 import { WorkspaceTasks } from '../packages/web/src/client/WorkspaceTasks.tsx'
@@ -200,28 +200,42 @@ describe('task center projection', () => {
 interface TestElement { readonly type: unknown; readonly props: Readonly<Record<string, unknown>> }
 type TestComponent = (props: Readonly<Record<string, unknown>>) => unknown
 
+const restorers: Array<() => void> = []
+
+afterEach(() => {
+  for (const restore of restorers.splice(0).reverse()) restore()
+})
+
 function componentHarness() {
   const react = createRequire(new URL('../packages/web/package.json', import.meta.url))('react') as { __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: { ReactCurrentDispatcher: { current: unknown } } }
   const dispatcher = react.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED.ReactCurrentDispatcher
   const previous = dispatcher.current
-  const states: unknown[] = []
+  const states = new Map<TestComponent, unknown[]>()
+  let currentState: unknown[] = []
+  restorers.push(() => { dispatcher.current = previous })
   let hook = 0
   dispatcher.current = {
     useState(initial: unknown) {
       const index = hook++
-      if (!(index in states)) states[index] = typeof initial === 'function' ? (initial as () => unknown)() : initial
-      return [states[index], (next: unknown) => { states[index] = typeof next === 'function' ? (next as (value: unknown) => unknown)(states[index]) : next }]
+      if (!(index in currentState)) currentState[index] = typeof initial === 'function' ? (initial as () => unknown)() : initial
+      const owner = currentState
+      return [owner[index], (next: unknown) => { owner[index] = typeof next === 'function' ? (next as (value: unknown) => unknown)(owner[index]) : next }]
     },
     useRef(initial: unknown) {
       const index = hook++
-      if (!(index in states)) states[index] = { current: initial }
-      return states[index]
+      if (!(index in currentState)) currentState[index] = { current: initial }
+      return currentState[index]
     },
     useMemo(factory: () => unknown) { hook += 1; return factory() },
     useEffect(effect: () => void) { hook += 1; effect() },
     useLayoutEffect(effect: () => void) { hook += 1; effect() },
   }
-  const render = (component: TestComponent, props: Readonly<Record<string, unknown>>) => { hook = 0; return component(props) }
+  const render = (component: TestComponent, props: Readonly<Record<string, unknown>>) => {
+    currentState = states.get(component) ?? []
+    states.set(component, currentState)
+    hook = 0
+    return component(props)
+  }
   const all = (root: unknown, predicate: (element: TestElement) => boolean): TestElement[] => {
     if (Array.isArray(root)) return root.flatMap(item => all(item, predicate))
     if (typeof root !== 'object' || root === null || !('type' in root) || !('props' in root)) return []
@@ -251,15 +265,8 @@ describe('task center interactions', () => {
     const props = { snapshot: state, activity: stream, api, onSnapshot: vi.fn(), onActivity: vi.fn(), t: (key: string) => key }
     let tree = harness.render(WorkspaceTasks as unknown as TestComponent, props)
     const elements = () => harness.all(tree, () => true)
-    const input = elements().find(element => element.type === 'input')!
-    ;(input.props['onChange'] as (event: unknown) => void)({ target: { value: 'New root' } })
-    tree = harness.render(WorkspaceTasks as unknown as TestComponent, props)
-    const select = elements().find(element => element.type === 'select')!
-    ;(select.props['onChange'] as (event: unknown) => void)({ target: { value: 'alice' } })
-    tree = harness.render(WorkspaceTasks as unknown as TestComponent, props)
     const button = (label: string, occurrence = 0) => elements().filter(element => element.type === 'button' && element.props['children'] === label)[occurrence]!
 
-    ;(button('task.assign').props['onClick'] as () => void)()
     ;(button('task.grant').props['onClick'] as () => void)()
     ;(button('task.revoke').props['onClick'] as () => void)()
     ;(button('task.cancel', 2).props['onClick'] as () => void)()
@@ -268,7 +275,7 @@ describe('task center interactions', () => {
     ;(button('task.stopChild').props['onClick'] as () => void)()
     await vi.waitFor(() => expect(api.stopChildRun).toHaveBeenCalledOnce())
 
-    expect(api.assignTask).toHaveBeenCalledWith('alice', 'New root', 12)
+    expect(api.assignTask).not.toHaveBeenCalled()
     expect(api.grantTask).toHaveBeenCalledWith('bob', 'root-first', 12)
     expect(api.revokeTask).toHaveBeenCalledWith('grant-active', 12)
     expect(api.cancelTask).toHaveBeenCalledWith('derived', 12)
@@ -303,7 +310,7 @@ describe('task center interactions', () => {
     harness.restore()
   })
 
-  it('preserves root assignment input after stale refresh and retries manually with the new revision', async () => {
+  it('retries an exact task state action manually with the refreshed revision', async () => {
     const state = snapshot()
     const refreshed: WorkspaceSnapshot = { ...state, revision: 13 }
     const stream = activity()
@@ -311,7 +318,7 @@ describe('task center interactions', () => {
       kind: 'business', code: 'stale-revision', message: 'stale', details: { expectedRevision: 12, actualRevision: 13 },
     })
     const api = {
-      assignTask: vi.fn().mockRejectedValueOnce(stale).mockResolvedValueOnce({ revision: 14, value: { state: refreshed, taskId: 'new-task', taskAssignmentId: 'new-assignment' } }),
+      cancelTask: vi.fn().mockRejectedValueOnce(stale).mockResolvedValueOnce(refreshed),
       snapshot: vi.fn().mockResolvedValue(refreshed), activitySnapshot: vi.fn().mockResolvedValue(stream),
     }
     const harness = componentHarness()
@@ -319,25 +326,14 @@ describe('task center interactions', () => {
     const baseProps = { activity: stream, api, onSnapshot, onActivity: vi.fn(), t: (key: string) => key }
     let tree = harness.render(WorkspaceTasks as unknown as TestComponent, { ...baseProps, snapshot: state })
     let elements = harness.all(tree, () => true)
-    ;(elements.find(element => element.type === 'input')!.props['onChange'] as (event: unknown) => void)({ target: { value: 'Preserved title' } })
-    tree = harness.render(WorkspaceTasks as unknown as TestComponent, { ...baseProps, snapshot: state })
-    elements = harness.all(tree, () => true)
-    ;(elements.find(element => element.type === 'select')!.props['onChange'] as (event: unknown) => void)({ target: { value: 'alice' } })
-    tree = harness.render(WorkspaceTasks as unknown as TestComponent, { ...baseProps, snapshot: state })
-    elements = harness.all(tree, () => true)
-    ;(elements.find(element => element.type === 'button' && element.props['children'] === 'task.assign')!.props['onClick'] as () => void)()
+    ;(elements.find(element => element.type === 'button' && element.props['children'] === 'task.cancel')!.props['onClick'] as () => void)()
     await vi.waitFor(() => expect(onSnapshot).toHaveBeenCalledWith(refreshed))
 
     tree = harness.render(WorkspaceTasks as unknown as TestComponent, { ...baseProps, snapshot: refreshed })
     elements = harness.all(tree, () => true)
-    expect(elements.find(element => element.type === 'input')?.props['value']).toBe('Preserved title')
     ;(elements.find(element => element.type === 'button' && element.props['children'] === 'workspace.retry')!.props['onClick'] as () => void)()
-    await vi.waitFor(() => expect(api.assignTask).toHaveBeenCalledTimes(2))
-    expect(api.assignTask.mock.calls.map(call => call[2])).toEqual([12, 13])
-    await vi.waitFor(() => {
-      tree = harness.render(WorkspaceTasks as unknown as TestComponent, { ...baseProps, snapshot: refreshed })
-      expect(harness.all(tree, element => element.type === 'input')[0]?.props['value']).toBe('')
-    })
+    await vi.waitFor(() => expect(api.cancelTask).toHaveBeenCalledTimes(2))
+    expect(api.cancelTask.mock.calls.map(call => call[1])).toEqual([12, 13])
     harness.restore()
   })
 

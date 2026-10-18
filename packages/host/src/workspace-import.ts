@@ -284,7 +284,7 @@ function assertCollectionLimits(input: unknown, limits: WorkspaceImportLimits): 
   }
   if (Object.hasOwn(workspace, 'communication')) {
     const communication = requireRecord(workspace.communication)
-    for (const field of ['messages', 'taskSources', 'draftSources', 'inputs', 'contexts', 'resets', 'fileCheckpoints']) {
+    for (const field of ['messages', 'taskSources', 'draftSources', 'inputs', 'contexts', 'resets', 'fileCheckpoints', 'operations']) {
       entities += Object.keys(requireRecord(communication[field])).length
       if (entities > limits.maxEntities) throw new Error('workspace import exceeds maxEntities')
     }

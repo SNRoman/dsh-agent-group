@@ -234,8 +234,9 @@ export class WorkspaceTurnTracker {
     delivery: UserMessage,
     source: WorkspaceActivitySource,
     hooks?: WorkspaceDeliveryHooks,
+    recall?: UserMessage,
   ): Promise<WorkspaceTurnOutcome> {
-    return this.register(delivery, undefined, source, hooks).promise
+    return this.register(delivery, recall, source, hooks).promise
   }
 
   private register(

@@ -6,3 +6,4 @@ release/
 *.tgz
 .release-smoke/
 .worktrees/
+output/

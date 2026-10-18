@@ -1,6 +1,7 @@
 /** Strict JSON-only Browser mirror of the Agent Workspace Host contracts. */
 
 export type WorkspaceId = string
+export type { ChatSource, ChatAssignmentRequest, ChatConfirmationRequest, ChatWorkResult, CommunicationSnapshot, CommunicationState } from './communication-api.ts'
 
 /** Browser projection of directory metadata; creation-operation metadata stays on the Host. */
 export interface WorkspaceDescriptor { readonly id: WorkspaceId; readonly label: string; readonly lifecycle: 'active' | 'archived' }
@@ -112,7 +113,13 @@ export interface GrantTaskDelegationResultView { readonly state: WorkspaceSnapsh
 
 export type MemorySource = { readonly kind: 'room'; readonly id: RoomId; readonly label: string } | { readonly kind: 'task'; readonly id: TaskId; readonly label: string } | { readonly kind: 'child'; readonly id: ChildRunId; readonly label: string; readonly taskId: TaskId; readonly taskLabel: string }
 export type MemoryDefinitionRevision = { readonly status: 'active'; readonly id: DefinitionRevisionId; readonly number: number } | { readonly status: 'unresolved' }
-export interface MemoryItem { readonly eventId: WorkspaceEventId; readonly sequence: number; readonly type: WorkspaceEventType; readonly provenance: MemoryProvenance; readonly source?: MemorySource | undefined; readonly actor?: (WorkspaceActorView & { readonly label: string }) | undefined; readonly subject?: { readonly id: string; readonly label: string } | undefined; readonly text?: string | undefined; readonly childStatus?: ChildRunTerminalStatus | undefined; readonly definitionRevision: MemoryDefinitionRevision }
+interface MemoryProcessingFactBase { readonly id: string; readonly category: 'address' | 'communication' | 'preference' | 'agreement' | 'task' | 'other'; readonly subject: string; readonly key: string; readonly value: string; readonly scope: { readonly organizationId: WorkspaceId; readonly roomId?: RoomId; readonly taskId?: TaskId }; readonly application: 'organization' | 'source-room' | 'source-task' | 'unresolved'; readonly temporal: 'current' | 'historical' | 'unresolved'; readonly operation: 'set' | 'remove' | 'clear'; readonly sourceEventIds: readonly WorkspaceEventId[]; readonly sourceQuote: string; readonly assertionKind: 'human-explicit' | 'inferred'; readonly validFromSequence: number; readonly validThroughSequence?: number; readonly status: 'candidate' | 'current' | 'default' | 'conditional' | 'historical' | 'removed' | 'unresolved'; readonly supersedesFactIds: readonly string[] }
+export type MemoryProcessingFact = MemoryProcessingFactBase & (
+  | { readonly kind: 'controlled'; readonly property: 'person.address' | 'communication.language'; readonly qualifier?: { readonly kind: 'use-language'; readonly tag: string; readonly sourceQuote: string } }
+  | { readonly kind: 'anchored'; readonly anchoredKind: 'preference' | 'standing-agreement'; readonly topic?: string; readonly facet?: string; readonly conditions: readonly string[]; readonly alignment: 'exact' | 'unresolved' }
+  | { readonly kind: 'context' })
+export interface MemoryProcessingView { readonly status: 'unprocessed' | 'pending' | 'partial' | 'complete' | 'failed' | 'not-applicable'; readonly available: boolean; readonly ranges: readonly { readonly start: number; readonly end: number }[]; readonly facts: readonly MemoryProcessingFact[] }
+export interface MemoryItem { readonly eventId: WorkspaceEventId; readonly sequence: number; readonly type: WorkspaceEventType; readonly provenance: MemoryProvenance; readonly source?: MemorySource | undefined; readonly actor?: (WorkspaceActorView & { readonly label: string }) | undefined; readonly subject?: { readonly id: string; readonly label: string } | undefined; readonly text?: string | undefined; readonly childStatus?: ChildRunTerminalStatus | undefined; readonly definitionRevision: MemoryDefinitionRevision; readonly processing?: MemoryProcessingView | undefined }
 export interface MemoryQuery { readonly agentId: AgentId; readonly sourceKind?: MemorySource['kind'] | undefined; readonly sourceId?: string | undefined; readonly provenance?: MemoryProvenance | undefined; readonly eventTypes?: readonly WorkspaceEventType[] | undefined; readonly minimumSequence?: number | undefined; readonly maximumSequence?: number | undefined; readonly text?: string | undefined; readonly limit: number; readonly cursor?: string | undefined; readonly snapshotRevision: number }
 export interface MemoryPage { readonly snapshotRevision: number; readonly items: readonly MemoryItem[]; readonly nextCursor?: string | undefined }
 export type DefinitionRevisionCreationEvent = { readonly status: 'exact' | 'derived'; readonly sequence: number } | { readonly status: 'unresolved' }
@@ -159,6 +166,7 @@ export interface WorkspaceMutationRequestMap {
   readonly 'room/direct/open': { readonly agentId: AgentId }
   readonly 'room/join': { readonly roomId: RoomId; readonly agentId: AgentId; readonly memoryStart: MembershipMemoryStart }
   readonly 'room/leave': { readonly membershipId: MembershipId }
+  readonly 'room/leave-and-forget': { readonly membershipId: MembershipId; readonly operationId: string }
   readonly 'room/post': { readonly roomId: RoomId; readonly text: string; readonly mentions: readonly AgentId[] }
   readonly 'task/assign': { readonly assigneeAgentId: AgentId; readonly title: string }
   readonly 'task/grant': { readonly granteeAgentId: AgentId; readonly rootTaskId: TaskId }
@@ -184,6 +192,7 @@ export interface WorkspaceMutationValueMap {
   readonly 'room/direct/open': WorkspaceDirectRoomValue
   readonly 'room/join': WorkspaceSnapshot
   readonly 'room/leave': WorkspaceSnapshot
+  readonly 'room/leave-and-forget': WorkspaceSnapshot
   readonly 'room/post': WorkspaceSnapshot
   readonly 'task/assign': AssignHumanTaskResultView
   readonly 'task/grant': GrantTaskDelegationResultView

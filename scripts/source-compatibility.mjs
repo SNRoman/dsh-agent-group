@@ -10,7 +10,7 @@ const publishableManifests = [
   'packages/web/package.json',
   'packages/bundle/package.json',
 ]
-const excludedCopyDirectories = new Set(['.git', 'node_modules', 'release', '.superpowers'])
+const excludedCopyDirectories = new Set(['.git', 'node_modules', 'release', '.superpowers', 'output', '.worktrees', '.release-smoke'])
 const sensitiveEnvironmentName = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH/i
 
 /**

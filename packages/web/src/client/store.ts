@@ -2,7 +2,7 @@
 
 import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-store'
 import type { WorkspaceApiError } from './api.ts'
-import type { AgentDefinitionId, AgentId, RoomId, WorkspaceActivityId, WorkspaceSnapshot } from './contracts.ts'
+import type { AgentDefinitionId, AgentId, RoomId, WorkspaceEventId, WorkspaceActivityId, WorkspaceSnapshot } from './contracts.ts'
 import { selectNewerWorkspaceSnapshot } from './task-view-model.ts'
 
 export type WorkspaceViewMode = 'conversations' | 'colleagues' | 'tasks' | 'memory'
@@ -12,6 +12,7 @@ export interface WorkspaceUiState {
   mode: WorkspaceViewMode
   selectedWorkspaceId?: string
   selectedRoomId?: RoomId
+  selectedEventId?: WorkspaceEventId
   selectedDefinitionId?: AgentDefinitionId
   selectedAgentId?: AgentId
   activityDrawerOpen?: boolean
@@ -34,6 +35,7 @@ type WorkspaceUiActions = {
   close: (draft: WorkspaceUiState) => void
   setMode: (draft: WorkspaceUiState, mode: WorkspaceViewMode) => void
   selectRoom: (draft: WorkspaceUiState, roomId: RoomId | undefined) => void
+  selectMessage: (draft: WorkspaceUiState, eventId: WorkspaceEventId | undefined) => void
   selectDefinition: (draft: WorkspaceUiState, definitionId: AgentDefinitionId | undefined) => void
   selectAgent: (draft: WorkspaceUiState, agentId: AgentId | undefined) => void
   openActivityDrawer: (draft: WorkspaceUiState, activityId?: WorkspaceActivityId | undefined) => void
@@ -55,6 +57,7 @@ export function createWorkspaceUiStore(): EngineStoreHandle<WorkspaceUiState, Wo
         draft.selectedWorkspaceId = workspaceId
         delete draft.snapshot
         delete draft.selectedRoomId
+        delete draft.selectedEventId
         delete draft.selectedDefinitionId
         delete draft.selectedAgentId
         delete draft.selectedActivityId
@@ -68,8 +71,13 @@ export function createWorkspaceUiStore(): EngineStoreHandle<WorkspaceUiState, Wo
       close: draft => { draft.open = false },
       setMode: (draft, mode) => { draft.mode = mode },
       selectRoom: (draft, roomId) => {
+        if (draft.selectedRoomId !== roomId) delete draft.selectedEventId
         if (roomId === undefined) delete draft.selectedRoomId
         else draft.selectedRoomId = roomId
+      },
+      selectMessage: (draft, eventId) => {
+        if (eventId === undefined) delete draft.selectedEventId
+        else draft.selectedEventId = eventId
       },
       selectDefinition: (draft, definitionId) => {
         if (definitionId === undefined) delete draft.selectedDefinitionId

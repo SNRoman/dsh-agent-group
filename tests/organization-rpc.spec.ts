@@ -4,11 +4,13 @@ import type { OrganizationRpcService } from '../packages/host/src/organization-r
 import type { WorkspaceRpcService } from '../packages/host/src/rpc.ts'
 import { WorkspaceId } from '../packages/host/src/ids.ts'
 import { createInitialState } from '../packages/host/src/state.ts'
-import type { WorkspaceOperationId, WorkspaceRecordV1 } from '../packages/host/src/workspace-record.ts'
+import type { WorkspaceOperationId, WorkspaceRecordV3 } from '../packages/host/src/workspace-record.ts'
+import { createInitialCommunicationState } from '../packages/host/src/communication.ts'
+import { createInitialWorkflowState } from '../packages/host/src/workflow.ts'
 
-function record(label = '公司甲'): WorkspaceRecordV1 {
+function record(label = '公司甲'): WorkspaceRecordV3 {
   const id = WorkspaceId('org-a')
-  return { recordVersion: 1, descriptor: { id, label, lifecycle: 'active' }, aggregate: createInitialState(id) }
+  return { recordVersion: 3, descriptor: { id, label, lifecycle: 'active' }, aggregate: createInitialState(id), workflow: createInitialWorkflowState(), communication: createInitialCommunicationState() }
 }
 
 function fixture() {

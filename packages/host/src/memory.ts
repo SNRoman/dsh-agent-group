@@ -2,6 +2,8 @@
 
 import type { AgentId, WorkspaceEventId } from './ids.ts'
 import { queryAgentMemory } from './memory-query.ts'
+import { memoryQueryTerms, rankMemoryCandidateScores } from './memory-retrieval.ts'
+import { personalMemorySources } from './scene-memory-retrieval.ts'
 import type { MemoryPage, MemoryQuery } from './memory-query.ts'
 import { appendMemoryEntries, mutateWorkspace } from './state.ts'
 import type {
@@ -60,18 +62,11 @@ export function joinRoomWithMemory(state: WorkspaceState, command: JoinRoomComma
 /** Select acquired personal events by keyword relevance, then recency, within a character budget. */
 export function recallAgentEvents(state: WorkspaceState, request: RecallAgentEventsRequest): AgentEventRecall {
   if (request.characterBudget < 0) throw new Error('recall character budget must not be negative')
-  const entryByEventId = rememberedEntries(state, request.agentId)
-  const eventById = new Map(state.events.map(event => [event.id, event]))
-  const keywords = queryKeywords(request.query)
-  const candidates = [...entryByEventId.entries()]
-    .map(([eventId, entry]) => {
-      const event = eventById.get(eventId)
-      if (event === undefined) return undefined
-      const text = `${event.type} ${event.text ?? ''}`.toLocaleLowerCase('en-US')
-      return { event, entry, relevance: keywords.filter(keyword => text.includes(keyword)).length }
-    })
-    .filter((candidate): candidate is RecallCandidate => candidate !== undefined && (!request.matchingOnly || candidate.relevance > 0))
-    .sort((left, right) => right.relevance - left.relevance || compareRecent(left, right))
+  const keywords = memoryQueryTerms(request.query)
+  const firstByEvent = new Map<WorkspaceEventId, ReturnType<typeof personalMemorySources>[number]>()
+  for (const source of personalMemorySources(state, request.agentId)) if (!firstByEvent.has(source.event.id)) firstByEvent.set(source.event.id, source)
+  const candidates = rankMemoryCandidateScores([...firstByEvent.values()], request.query)
+    .filter(candidate => !request.matchingOnly || candidate.relevance > 0)
   return fitRecall(candidates, keywords, request)
 }
 
@@ -99,32 +94,10 @@ function uniqueAgentIds(agentIds: readonly AgentId[]): readonly AgentId[] {
   return agentIds.filter((agentId, index) => agentIds.indexOf(agentId) === index)
 }
 
-function rememberedEntries(state: WorkspaceState, agentId: AgentId): ReadonlyMap<WorkspaceEventId, AgentMemoryEntry> {
-  const entries = new Map<WorkspaceEventId, AgentMemoryEntry>()
-  for (const entry of state.memoryEntries) {
-    if (entry.agentId === agentId && !entries.has(entry.eventId)) entries.set(entry.eventId, entry)
-  }
-  return entries
-}
-
 interface RecallCandidate {
   readonly event: WorkspaceEvent
   readonly entry: AgentMemoryEntry
   readonly relevance: number
-}
-
-function queryKeywords(query: string): readonly string[] {
-  const segmenter = new Intl.Segmenter('zh-CN', { granularity: 'word' })
-  return [...new Set([...segmenter.segment(query.toLocaleLowerCase('en-US'))]
-    .filter(segment => segment.isWordLike)
-    .map(segment => segment.segment))]
-}
-
-function compareRecent(
-  left: { readonly event: WorkspaceEvent },
-  right: { readonly event: WorkspaceEvent },
-): number {
-  return right.event.sequence - left.event.sequence || left.event.id.localeCompare(right.event.id)
 }
 
 function fitRecall(

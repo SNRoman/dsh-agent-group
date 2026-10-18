@@ -26,6 +26,9 @@ import { acceptTaskDelivery, startTaskDelivery } from '../packages/host/src/task
 import { assignHumanTask } from '../packages/host/src/tasks.ts'
 import { WorkspaceTurnTracker } from '../packages/host/src/turn-tracker.ts'
 import { WorkspaceActivityStream } from '../packages/host/src/activity-stream.ts'
+import { createInitialWorkflowState } from '../packages/host/src/workflow.ts'
+import { createInitialCommunicationState } from '../packages/host/src/communication.ts'
+import type { WorkspaceRecordV3 } from '../packages/host/src/workspace-record.ts'
 
 function handle(dispose = vi.fn(async () => {})): AgentHandle {
   return { agent: { id: SessionId('agent') } as Agent, dispose }
@@ -67,12 +70,18 @@ function text(text: string): UserMessage {
 
 function runtime(ctx = new Context(), initial = createInitialState(WorkspaceId('local'))): WorkspaceRuntime {
   let state = initial
+  let record: WorkspaceRecordV3 = { recordVersion: 3, descriptor: { id: initial.workspaceId, label: 'Test', lifecycle: 'active' }, aggregate: state, workflow: createInitialWorkflowState(), communication: createInitialCommunicationState() }
   const directory = {
-    record: () => ({ descriptor: { lifecycle: 'active' } }),
+    record: () => structuredClone({ ...record, aggregate: state }),
     snapshot: () => structuredClone(state),
     updateAggregate: async (_id: WorkspaceId, mutation: (current: WorkspaceState) => WorkspaceState) => {
       state = mutation(state)
       return structuredClone(state)
+    },
+    updateRecord: async <Value>(_id: WorkspaceId, mutation: (current: WorkspaceRecordV3) => { readonly record: WorkspaceRecordV3; readonly value: Value }) => {
+      const changed = mutation(structuredClone({ ...record, aggregate: state }))
+      record = changed.record; state = record.aggregate
+      return structuredClone(changed)
     },
   } as WorkspaceDirectory
   return new WorkspaceRuntime(ctx, AgentWorkspaceDomainService.Config({}) as ResolvedConfig, directory, initial.workspaceId)

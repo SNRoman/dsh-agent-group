@@ -51,7 +51,12 @@ export interface TaskDeliveryCoordinatorHost {
     delivery: UserMessage,
     source: WorkspaceActivitySource,
     hooks?: WorkspaceDeliveryHooks,
+    recall?: UserMessage,
   ): Promise<WorkspaceTurnOutcome>
+  /** Durably reconstruct the exact pending input before the resumed inbox driver is published. */
+  prepareRecoveredDelivery?(agentId: AgentId, handle: Pick<AgentHandle, 'agent'>, delivery: UserMessage, source: WorkspaceActivitySource): Promise<UserMessage | undefined>
+  /** Release a prepared input when its recovered inbox message cannot be published. */
+  discardRecoveredDelivery?(handle: Pick<AgentHandle, 'agent'>, delivery: UserMessage): void
 }
 
 /** Durable recovery classification for one open delivery attempt. */
@@ -101,9 +106,18 @@ export interface TaskDeliveryReservation {
 
 /** Coordinates one durable inbox delivery attempt per task. */
 export class TaskDeliveryCoordinator {
-  /** Stop all flights owned by this organization; task records remain retryable. */
+  /** Stop owned flights and remove recovered pending inbox messages, including unpublished resume work. */
   cancelAllDeliveries(): void {
+    this.recoveryGeneration.abort()
     for (const flight of this.taskFlights.values()) flight.cancellation.abort()
+    for (const pending of this.recoveredPending.values()) pending.handle.agent.inbox.remove(pending.messageId)
+  }
+
+  /** Permit new recovery only after the stopped generation's flights and inbox cleanup have drained. */
+  reopenDeliveries(): void {
+    if (!this.recoveryGeneration.signal.aborted) return
+    if (this.recoveryFlights.size > 0 || this.taskFlights.size > 0 || this.cleanupFlights.size > 0 || this.recoveredPending.size > 0) throw new Error('Stopped task deliveries have not settled.')
+    this.recoveryGeneration = new AbortController()
   }
 
   /** Wait through complete task/recovery flight settlement and cleanup. */
@@ -119,6 +133,8 @@ export class TaskDeliveryCoordinator {
   private readonly taskFlights = new Map<TaskId, TaskFlight>()
   private readonly recoveryFlights = new Map<AgentId, Promise<readonly TaskDeliveryRecoveryOutcome[]>>()
   private readonly cleanupFlights = new Set<Promise<void>>()
+  private readonly recoveredPending = new Map<TaskId, { readonly handle: Pick<AgentHandle, 'agent'>; readonly messageId: MessageId }>()
+  private recoveryGeneration = new AbortController()
 
   constructor(private readonly host: TaskDeliveryCoordinatorHost) {}
 
@@ -235,7 +251,8 @@ export class TaskDeliveryCoordinator {
   async recoverAgent(agentId: AgentId, handle: Pick<AgentHandle, 'agent'>): Promise<readonly TaskDeliveryRecoveryOutcome[]> {
     const existing = this.recoveryFlights.get(agentId)
     if (existing !== undefined) return await existing
-    const flight = this.recover(agentId, handle)
+    if (this.recoveryGeneration.signal.aborted) throw new Error('Task recovery was stopped.')
+    const flight = this.recover(agentId, handle, this.recoveryGeneration.signal)
     this.recoveryFlights.set(agentId, flight)
     try {
       return await flight
@@ -342,12 +359,13 @@ export class TaskDeliveryCoordinator {
     return completedTaskResult(this.host.snapshot(), identity) ?? result
   }
 
-  private async recover(agentId: AgentId, handle: Pick<AgentHandle, 'agent'>): Promise<readonly TaskDeliveryRecoveryOutcome[]> {
+  private async recover(agentId: AgentId, handle: Pick<AgentHandle, 'agent'>, recoverySignal: AbortSignal): Promise<readonly TaskDeliveryRecoveryOutcome[]> {
     const outcomes: TaskDeliveryRecoveryOutcome[] = []
     const snapshot = this.host.snapshot()
     const assignments = Object.values(snapshot.taskAssignments)
       .filter(assignment => assignment.assigneeAgentId === agentId)
     for (const assignment of assignments) {
+      throwIfTaskDeliveryCancelled(recoverySignal, assignment.taskId)
       const inspection = inspectTaskDelivery(this.host.snapshot(), assignment.taskId)
       if (inspection.attemptId === undefined || (inspection.phase !== 'started' && inspection.phase !== 'accepted')) continue
       if (this.taskFlights.get(assignment.taskId)?.ownedAttemptId === inspection.attemptId) continue
@@ -367,31 +385,44 @@ export class TaskDeliveryCoordinator {
           outcomes.push({ taskId: assignment.taskId, status: 'interrupted' })
           continue
         }
-        const cancellation = new AbortController()
-        const completion = this.finishRecovered(
-          assignment,
-          identity,
-          inspection.phase === 'accepted'
-            ? this.revisionForAcceptedAttempt(snapshot, assignment, identity)
-            : snapshot.agents[agentId]?.definitionRevisionId,
-          inspection.phase === 'accepted',
-          recoverDelivery(
-            agentId,
-            handle,
-            evidence.message,
-            { kind: 'task', taskId: assignment.taskId, attemptId: inspection.attemptId },
-            {
-              onClaim: async definitionRevisionId => await this.acceptIfStarted(
-                identity,
-                definitionRevisionId ?? snapshot.agents[agentId]?.definitionRevisionId,
-                cancellation.signal,
-              ),
-            },
-          ),
-          cancellation.signal,
-        )
-        this.publishRecoveredFlight(assignment.taskId, completion, cancellation)
-        outcomes.push({ taskId: assignment.taskId, status: 'pending' })
+        const source = { kind: 'task' as const, taskId: assignment.taskId, attemptId: inspection.attemptId }
+        const pending = { handle, messageId: evidence.message.id }
+        this.recoveredPending.set(assignment.taskId, pending)
+        try {
+          const recall = await this.host.prepareRecoveredDelivery?.(agentId, handle, evidence.message, source)
+          throwIfTaskDeliveryCancelled(recoverySignal, assignment.taskId)
+          const cancellation = new AbortController()
+          const completion = this.finishRecovered(
+            assignment,
+            identity,
+            inspection.phase === 'accepted'
+              ? this.revisionForAcceptedAttempt(snapshot, assignment, identity)
+              : snapshot.agents[agentId]?.definitionRevisionId,
+            inspection.phase === 'accepted',
+            recoverDelivery(
+              agentId,
+              handle,
+              evidence.message,
+              source,
+              {
+                onClaim: async definitionRevisionId => await this.acceptIfStarted(
+                  identity,
+                  definitionRevisionId ?? snapshot.agents[agentId]?.definitionRevisionId,
+                  cancellation.signal,
+                ),
+              }, recall,
+            ),
+            cancellation.signal,
+          )
+          this.publishRecoveredFlight(assignment.taskId, completion, cancellation, pending)
+          outcomes.push({ taskId: assignment.taskId, status: 'pending' })
+        } catch (error) {
+          if (this.recoveredPending.get(assignment.taskId) === pending) this.recoveredPending.delete(assignment.taskId)
+          this.host.discardRecoveredDelivery?.(handle, evidence.message)
+          try { await this.convergeRejectedFlight(assignment.taskId) }
+          catch (convergenceError) { throw new AggregateError([error, convergenceError], `task '${assignment.taskId}' recovery and failure convergence both failed`) }
+          throw error
+        }
         continue
       }
 
@@ -418,7 +449,7 @@ export class TaskDeliveryCoordinator {
     return outcomes
   }
 
-  private publishRecoveredFlight(taskId: TaskId, promise: Promise<string>, cancellation: AbortController): void {
+  private publishRecoveredFlight(taskId: TaskId, promise: Promise<string>, cancellation: AbortController, pending: { readonly handle: Pick<AgentHandle, 'agent'>; readonly messageId: MessageId }): void {
     const displaced = this.taskFlights.get(taskId)
     const converged = promise.catch(async error => {
       try { await this.convergeRejectedFlight(taskId) }
@@ -429,12 +460,12 @@ export class TaskDeliveryCoordinator {
     })
     const recovered = { owner: {}, promise: converged, cancellation }
     this.taskFlights.set(taskId, recovered)
-    const cleanup = this.releaseRecoveredFlight(taskId, recovered, displaced)
+    const cleanup = this.releaseRecoveredFlight(taskId, recovered, displaced, pending)
     this.cleanupFlights.add(cleanup)
     void cleanup.finally(() => this.cleanupFlights.delete(cleanup))
   }
 
-  private async releaseRecoveredFlight(taskId: TaskId, recovered: TaskFlight, displaced: TaskFlight | undefined): Promise<void> {
+  private async releaseRecoveredFlight(taskId: TaskId, recovered: TaskFlight, displaced: TaskFlight | undefined, pending: { readonly handle: Pick<AgentHandle, 'agent'>; readonly messageId: MessageId }): Promise<void> {
     try {
       await recovered.promise
     } catch (_error) {
@@ -448,6 +479,7 @@ export class TaskDeliveryCoordinator {
       }
     }
     if (this.taskFlights.get(taskId) === recovered) this.taskFlights.delete(taskId)
+    if (this.recoveredPending.get(taskId) === pending) this.recoveredPending.delete(taskId)
   }
 
   private async finishRecovered(

@@ -19,6 +19,8 @@ import { TaskDeliveryCoordinator } from '../packages/host/src/task-delivery-coor
 import { acceptTaskDelivery, inspectTaskDelivery, startTaskDelivery } from '../packages/host/src/task-delivery.ts'
 import { createInitialWorkflowState } from '../packages/host/src/workflow.ts'
 import type { WorkspaceTurnOutcome } from '../packages/host/src/turn-tracker.ts'
+import type { ContextResetId } from '../packages/host/src/communication-contract.ts'
+import { mutateWorkspace } from '../packages/host/src/state.ts'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -39,6 +41,42 @@ async function boot(root?: string, configure?: (ctx: Context) => void) {
 }
 
 describe('durable independent organizations', () => {
+  test.each(['pending', 'failed'] as const)('restarts and imports %s withdrawal without dropping audit metadata or starting work', async status => {
+    const host = await boot()
+    const resetId = 'reset-1' as ContextResetId
+    let original!: ReturnType<WorkspaceRuntime['directory']['record']>
+    let importedId!: WorkspaceId
+    try {
+      const runtime = host.service.forWorkspace(WorkspaceId('local'))
+      const { roomId, agentId } = await seedRoom(runtime)
+      await runtime.directory.updateRecord(runtime.workspaceId, current => {
+        const message = mutateWorkspace(current.aggregate, { type: 'room/message', roomId, actor: { type: 'human', id: HumanId('owner') }, text: 'WITHDRAWN_UNIQUE_STORAGE', mentions: [] })
+        const task = assignHumanTask(message.state, { humanId: HumanId('owner'), assigneeAgentId: agentId, title: 'Withdrawn work' })
+        const source = { roomId, eventId: message.eventId }
+        const commonReset = { id: resetId, source, requestedByHumanId: HumanId('owner'), fromSequence: message.state.events.find(event => event.id === message.eventId)!.sequence, throughSequence: task.state.nextSequence - 1, affectedAgentIds: [agentId], previousGenerations: { [agentId]: 0 }, invalidatedEventIds: [], invalidatedTaskIds: [], invalidatedDraftIds: [], invalidatedTemplateRevisionIds: [], invalidatedArtifactIds: [], requestedAt: '2026-10-13T00:00:00.000Z', fileRestoreRequested: false }
+        const reset = status === 'failed' ? { ...commonReset, status: 'failed' as const, error: 'rebuild failed' } : { ...commonReset, status: 'pending' as const }
+        return { record: { ...current, aggregate: task.state, communication: { ...current.communication, revision: 1, messages: { [message.eventId]: { eventId: message.eventId, intent: 'assignment', withdrawnBy: resetId } }, taskSources: { [task.taskId]: source }, contexts: { [agentId]: { generation: 1, blockedBy: resetId } }, resets: { [resetId]: reset } } }, value: undefined }
+      })
+      original = runtime.directory.record(runtime.workspaceId)
+      const exported = await host.service.exportOrganization(runtime.workspaceId)
+      expect(host.service.previewImport(exported.json)).toMatchObject({ eventCount: original.aggregate.events.length, taskCount: 1 })
+      const restored = await host.service.importOrganization(WorkspaceOperationId('withdrawal-copy'), exported.json, 'Imported withdrawal')
+      importedId = restored.descriptor.id
+      expect(restored.communication).toEqual(original.communication)
+      expect(restored.aggregate.events).toEqual(original.aggregate.events)
+      expect(restored.aggregate.sessionBindings).toEqual({})
+      expect(restored.aggregate.events.some(event => event.type === 'task/delivery-started')).toBe(false)
+    } finally { await host.dispose() }
+    const restarted = await boot(host.root)
+    try {
+      const local = restarted.service.forWorkspace(WorkspaceId('local')).directory.record(WorkspaceId('local'))
+      const imported = restarted.service.forWorkspace(importedId).directory.record(importedId)
+      expect(local.communication).toEqual(original.communication)
+      expect(imported.communication).toEqual(original.communication)
+      expect(imported.aggregate.events).toEqual(original.aggregate.events)
+      expect(imported.aggregate.events.some(event => event.type === 'task/delivery-started')).toBe(false)
+    } finally { await restarted.dispose() }
+  })
   test('Host disposal waits for child disposal and durable settlement before closing storage', async () => {
     let closed = false
     const host = await boot(undefined, ctx => {
@@ -350,11 +388,11 @@ describe('durable independent organizations', () => {
       const childId = Object.values(runtime.snapshot().childRuns)[0]!.id
       let retrying = false
       let entered = false
-      const update = runtime.directory.updateAggregate.bind(runtime.directory)
-      vi.spyOn(runtime.directory, 'updateAggregate').mockImplementation(async (id, mutation) => {
-        const state = runtime.directory.snapshot(id)
-        const candidate = mutation(state)
-        if (state.childRuns[childId]?.status === 'running' && candidate.childRuns[childId]?.status !== 'running') {
+      const update = runtime.directory.updateRecord.bind(runtime.directory)
+      vi.spyOn(runtime.directory, 'updateRecord').mockImplementation(async (id, mutation) => {
+        const record = runtime.directory.record(id)
+        const candidate = mutation(record)
+        if (record.aggregate.childRuns[childId]?.status === 'running' && candidate.record.aggregate.childRuns[childId]?.status !== 'running') {
           if (!retrying) throw new Error('CHILD_TERMINAL_WRITE_FAILED')
           entered = true
           await release.promise
@@ -446,10 +484,10 @@ describe('durable independent organizations', () => {
       for (const child of children) void child.catch(() => {})
       await started.promise
       const firstId = Object.values(runtime.snapshot().childRuns)[0]!.id
-      const update = runtime.directory.updateAggregate.bind(runtime.directory)
-      vi.spyOn(runtime.directory, 'updateAggregate').mockImplementation(async (id, mutation) => update(id, state => {
-        const next = mutation(state)
-        if (state.childRuns[firstId]?.status === 'running' && next.childRuns[firstId]?.status !== 'running') {
+      const update = runtime.directory.updateRecord.bind(runtime.directory)
+      vi.spyOn(runtime.directory, 'updateRecord').mockImplementation(async (id, mutation) => update(id, record => {
+        const next = mutation(record)
+        if (record.aggregate.childRuns[firstId]?.status === 'running' && next.record.aggregate.childRuns[firstId]?.status !== 'running') {
           failed.resolve()
           throw new Error('child terminal persistence failed')
         }
@@ -500,7 +538,7 @@ describe('durable independent organizations', () => {
     await first.dispose()
     const stored = JSON.parse(await readFile(join(first.root, 'agent_workspace.json'), 'utf8'))
     expect(stored.unit.version).toBe(0)
-    expect(stored.tables.workspaces[created.descriptor.id]).toMatchObject({ recordVersion: 2, descriptor: { label: '新名字' }, aggregate: { workspaceId: created.descriptor.id }, workflow: createInitialWorkflowState() })
+    expect(stored.tables.workspaces[created.descriptor.id]).toMatchObject({ recordVersion: 3, descriptor: { label: '新名字' }, aggregate: { workspaceId: created.descriptor.id }, workflow: createInitialWorkflowState() })
     const restarted = await boot(first.root)
     try { expect(restarted.service.listOrganizations().find(entry => entry.descriptor.id === created.descriptor.id)?.descriptor.label).toBe('新名字') }
     finally { await restarted.dispose() }
@@ -582,8 +620,8 @@ describe('durable independent organizations', () => {
     const release = Promise.withResolvers<void>()
     try {
       const runtime = host.service.forWorkspace(WorkspaceId('local'))
-      const update = runtime.directory.updateAggregate.bind(runtime.directory)
-      vi.spyOn(runtime.directory, 'updateAggregate').mockImplementationOnce(async (...args) => { entered.resolve(); await release.promise; return await update(...args) })
+      const update = runtime.directory.updateRecord.bind(runtime.directory)
+      vi.spyOn(runtime.directory, 'updateRecord').mockImplementationOnce(async (...args) => { entered.resolve(); await release.promise; return await update(...args) })
       const mutation = runtime.execute(0, { type: 'room/create', kind: 'group', name: '已接收' })
       await entered.promise
       expect(runtime.admission.pending).toBe(1)
@@ -636,8 +674,14 @@ describe('durable independent organizations', () => {
         deliver: async () => { throw new Error('unused') },
         recoverDelivery: async () => await tracked.promise,
       })
+      const pendingInbox = [started.message]
       const resumed = { agent: {
-        id: SessionId('recovered'), inbox: { nextTurn: [started.message], nextStep: [] }, session: { snapshotEvents: () => [] },
+        id: SessionId('recovered'), inbox: { nextTurn: pendingInbox, nextStep: [], remove: (messageId: typeof started.message.id) => {
+          const index = pendingInbox.findIndex(message => message.id === messageId)
+          if (index < 0) return false
+          pendingInbox.splice(index, 1)
+          return true
+        } }, session: { snapshotEvents: () => [] },
       } } as Pick<AgentHandle, 'agent'>
       await coordinator.recoverAgent(agentId, resumed)
       Reflect.set(runtime, 'taskDelivery', coordinator)
@@ -648,6 +692,7 @@ describe('durable independent organizations', () => {
       })
       await expect(host.service.archiveOrganization(runtime.workspaceId, 'stop')).rejects.toThrow(/unfinished task delivery/)
       expect(terminalWriteFailures).toBe(1)
+      expect(pendingInbox).toEqual([])
       expect(runtime.directory.record(runtime.workspaceId).descriptor.lifecycle).toBe('archived')
       expect(inspectTaskDelivery(runtime.snapshot(), assigned.taskId).phase).toBe('accepted')
       await expect(runtime.execute(runtime.snapshot().revision, { type: 'room/create', kind: 'group', name: 'still closed' })).rejects.toThrow(/closed/)

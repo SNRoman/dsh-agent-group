@@ -6,6 +6,8 @@ import { WorkspaceApiClient } from '../packages/web/src/client/api.ts'
 import { createWorkspaceUiStore, type WorkspaceUiState } from '../packages/web/src/client/store.ts'
 import type { WorkspaceDescriptor, WorkspaceDirectoryEntry, WorkspaceSnapshot } from '../packages/web/src/client/contracts.ts'
 import { en, zh } from '../packages/web/src/client/locales.ts'
+import { createInitialCommunicationState } from '../packages/host/src/communication.ts'
+import { createInitialWorkflowState } from '../packages/host/src/workflow.ts'
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({ MarkdownText: ({ text }: { text: string }) => text, DisclosureRow: ({ title, children }: { title: string; children: never }) => createElement('section', null, title, children) }))
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { configurable: true, value: true })
@@ -47,6 +49,8 @@ async function mount(initial = [entry(descriptor('alpha')), entry(descriptor('be
       case 'organization/import-preview': return { ok: true, value: { operationId: '1f3d3231-8b51-409c-960d-2275deed056b', sourceWorkspaceId: 'source', sourcePluginVersion: '0.1.0', exportedAt: '2026-10-10T00:00:00.000Z', label: 'Portable', lifecycle: 'active', eventCount: 12, agentCount: 2, taskCount: 3, sessionBindingsExcluded: true } }
       case 'organization/import-confirm': { const imported = { ...descriptor('imported'), label: String(payload['label']) }; directory = [...directory, entry(imported)]; return { ok: true, value: imported } }
       case 'snapshot': return { ok: true, value: snapshot(workspaceId) }
+      case 'communication/snapshot': return { ok: true, value: { workspaceId, aggregateRevision: snapshot(workspaceId).revision, workflowRevision: 0, communication: createInitialCommunicationState() } }
+      case 'workflow/snapshot': return { ok: true, value: { workspaceId, aggregateRevision: snapshot(workspaceId).revision, workflow: createInitialWorkflowState() } }
       case 'runtime/activity/snapshot': return { ok: true, value: { version: 0, workspaceRevision: snapshot(workspaceId).revision, agents: [], activities: [] } }
       case 'runtime/activity/wait': {
         if (signal !== undefined) signals.push(signal)
@@ -77,6 +81,45 @@ async function change(control: HTMLInputElement | HTMLSelectElement, value: stri
 async function chooseFile(container: HTMLElement, content = '{}') { const input = field(container, 'Import organization'); const file = new File([content], 'organization.json', { type: 'application/json' }); Object.defineProperty(file, 'text', { value: async () => content }); Object.defineProperty(input, 'files', { configurable: true, value: [file] }); await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))) }
 
 describe('organization shell real DOM', () => {
+  it('keeps management collapsed while organization selection stays available', async () => {
+    const { container, calls } = await mount()
+    const management = container.querySelector('details.dsh-agent-group-organization-management')
+    expect(management).toBeInstanceOf(HTMLDetailsElement)
+    expect(management?.hasAttribute('open')).toBe(false)
+    expect(field(container, 'Organization').closest('details')).toBeNull()
+    const writesBefore = calls.filter(call => /organization\/(create|rename|archive|reopen|export|import)/u.test(call.endpoint)).length
+    await act(async () => management!.querySelector('summary')!.click())
+    expect(management?.hasAttribute('open')).toBe(true)
+    expect(field(container, 'Organization label').closest('details')).toBe(management)
+    expect(calls.filter(call => /organization\/(create|rename|archive|reopen|export|import)/u.test(call.endpoint))).toHaveLength(writesBefore)
+  })
+
+  it('opens management for an empty directory without creating an organization', async () => {
+    const { container, calls } = await mount([])
+    const management = container.querySelector('details.dsh-agent-group-organization-management')
+    expect(management?.hasAttribute('open')).toBe(true)
+    expect(button(container, 'Create organization').disabled).toBe(true)
+    expect(calls.some(call => call.endpoint === 'organization/create')).toBe(false)
+  })
+
+  it('closes management so the export confirmation is not covered by the popup', async () => {
+    const { container } = await mount()
+    const management = container.querySelector('details.dsh-agent-group-organization-management')!
+    await act(async () => management.querySelector('summary')!.click())
+    await click(container, 'Export organization')
+    expect(management.hasAttribute('open')).toBe(false)
+    expect(button(container, 'Confirm export and download')).toBeInstanceOf(HTMLButtonElement)
+  })
+
+  it('closes management when a validated import preview appears', async () => {
+    const { container } = await mount()
+    const management = container.querySelector('details.dsh-agent-group-organization-management')!
+    await act(async () => management.querySelector('summary')!.click())
+    await chooseFile(container)
+    expect(management.hasAttribute('open')).toBe(false)
+    expect(field(container, 'Imported organization label').value).toBe('Portable')
+  })
+
   it('selects the first directory organization explicitly and switches equal entity ids without retaining drafts', async () => {
     const { container, calls, signals, states } = await mount()
     expect(calls.filter(call => call.endpoint === 'snapshot').every(call => call.payload['workspaceId'] === 'alpha')).toBe(true)

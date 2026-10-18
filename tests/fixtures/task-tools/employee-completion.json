@@ -5,6 +5,10 @@
       "parameters": {
         "type": "object",
         "properties": {
+          "roomId": {
+            "type": "string",
+            "description": "Selected chat with both the caller and the peer colleague as active members."
+          },
           "rootTaskId": {
             "type": "string",
             "description": "Durable Agent Workspace task id."
@@ -18,7 +22,7 @@
             "description": "Complete title and instruction for the delegated task."
           }
         },
-        "required": ["rootTaskId", "assigneeAgentId", "title"]
+        "required": ["roomId", "rootTaskId", "assigneeAgentId", "title"]
       }
     },
     {
@@ -60,6 +64,10 @@
       "parameters": {
         "type": "object",
         "properties": {
+          "roomId": {
+            "type": "string",
+            "description": "Chat in which the caller is an active member and the proposal will be recorded."
+          },
           "brief": {
             "type": "object",
             "additionalProperties": false,
@@ -76,7 +84,7 @@
             "description": "Optional employed colleague suggestion; no assignment is made."
           }
         },
-        "required": ["brief"]
+        "required": ["roomId", "brief"]
       }
     },
     {
