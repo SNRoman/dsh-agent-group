@@ -185,6 +185,7 @@ export function createWorkspaceExportV4(record: WorkspaceRecordV3, metadata: { r
 
 /**
  * Read frozen predecessors or communication successor without persistence or task execution.
+ * Attributed task inputs follow rebased delivery messages; other input identities remain intact.
  * @param json Untrusted portable JSON.
  * @param options New organization identity and explicit resource budgets.
  * @returns Detached raw aggregate, workflow and communication with no local Session proofs.
@@ -198,13 +199,21 @@ export function prepareWorkspaceImportV4(json: string, options: { readonly works
       assertWorkflowInvariants(target, workflow)
       assertWorkflowOperationDigests(workflow)
       if (document.formatVersion === 4 && 'communication' in document.workspace) assertCommunicationRelationships(source, document.workspace.communication, workflow)
-      assertCommunicationRelationships(target, communication, workflow)
       assertChatWorkOperations({ recordVersion: 3, descriptor: { id: source.workspaceId, label: prepared.descriptor.label, lifecycle: prepared.descriptor.lifecycle }, aggregate: source, workflow, communication })
+      const targetCommunication = { ...communication, inputs: Object.fromEntries(Object.entries(communication.inputs).map(([id, input]) => {
+        if (input.target.kind !== 'task' || input.deliveryMessageId === undefined) return [id, input]
+        const taskId = input.target.taskId
+        const delivery = target.events.find(event => event.type === 'task/delivery-started' && event.taskId === taskId && event.taskDeliveryAttemptId === input.taskDeliveryAttemptId)
+        if (delivery?.type !== 'task/delivery-started') throw new Error('imported task input has no matching delivery attempt')
+        return [id, { ...input, deliveryMessageId: delivery.messageId }]
+      })) }
+      assertCommunicationRelationships(target, targetCommunication, workflow)
+      assertChatWorkOperations({ recordVersion: 3, descriptor: prepared.descriptor, aggregate: target, workflow, communication: targetCommunication })
+      return { ...prepared, workflow, communication: targetCommunication }
     } catch (_error) {
       // Portable contents must not appear in import diagnostics.
       throw new Error('invalid workspace import workflow or communication relationships or counters')
     }
-    return { ...prepared, workflow, communication }
   })
 }
 

@@ -252,9 +252,12 @@ class ScriptedWorkspaceAdapter extends LlmAdapter {
     const request = currentText(options)
     if (request.includes('WF_PROPOSE_REQUEST')) {
       if (!options.tools?.some(tool => tool.name === 'workspace_propose_task')) throw new Error('workflow proposal tool is missing')
+      const source = currentRequest(options).source
+      if (options.sessionId === undefined || source.kind !== 'agent-workspace-delivery' || source.source.kind !== 'room') throw new Error('scripted proposal requires session and room delivery identity')
+      const roomId = source.source.roomId
       const calls = options.messages.slice(options.messages.indexOf(currentRequest(options)) + 1).filter(message => message.role === 'tool')
       if (calls.length === 0) {
-        const tool = { id: ToolCallId('wf-propose-task'), name: 'workspace_propose_task', arguments: JSON.stringify({ brief: { title: 'WF_EMPLOYEE_PROPOSAL', instructions: 'WF_EMPLOYEE_FULL_INSTRUCTIONS', expectedArtifacts: ['WF_EMPLOYEE_ARTIFACT'], acceptanceCriteria: ['WF_EMPLOYEE_CRITERION'] } }) }
+        const tool = { id: ToolCallId('wf-propose-task'), name: 'workspace_propose_task', arguments: JSON.stringify({ roomId, brief: { title: 'WF_EMPLOYEE_PROPOSAL', instructions: 'WF_EMPLOYEE_FULL_INSTRUCTIONS', expectedArtifacts: ['WF_EMPLOYEE_ARTIFACT'], acceptanceCriteria: ['WF_EMPLOYEE_CRITERION'] } }) }
         yield { type: 'block-start', index: 0, blockType: 'tool-call' }
         yield { type: 'tool-call-delta', index: 0, id: tool.id, name: tool.name, argumentsDelta: tool.arguments }
         yield { type: 'block-end', index: 0, block: { type: 'tool-call', ...tool } }

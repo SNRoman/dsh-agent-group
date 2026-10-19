@@ -1,6 +1,74 @@
 import { describe, expect, it } from 'vitest'
 import * as evidence from '../scripts/release-smoke-contract.mjs'
 
+function agentMessageFixture() {
+  return {
+    agents: { Alice: { id: 'Alice', name: 'Alice' }, Bob: { id: 'Bob', name: 'Bob' }, Charlie: { id: 'Charlie', name: 'Charlie' } },
+    rooms: { release: { id: 'release', name: 'Release room', kind: 'group' }, direct: { id: 'direct', kind: 'direct' } },
+    tasks: { root: { id: 'root', rootTaskId: 'root', title: 'V020_ROOT V020_DELEGATE' }, derived: { id: 'derived', rootTaskId: 'root', title: 'V020_CHILD' } },
+    taskAssignments: { derived: { id: 'assignment-derived', taskId: 'derived', rootTaskId: 'root', assigneeAgentId: 'Bob', grantId: 'grant' } },
+    delegationGrants: { grant: { id: 'grant', rootTaskId: 'root', granteeAgentId: 'Alice', grantedByHumanId: 'human' } },
+    events: [
+      { id: 'grant-event', sequence: 1, type: 'task/delegation-granted', subjectId: 'grant', actor: { type: 'human', id: 'human' }, text: '', mentions: [] },
+      { id: 'delegation-message', sequence: 2, type: 'room/message', subjectId: 'release', actor: { type: 'agent', id: 'Alice' }, text: 'V020_CHILD', mentions: ['Bob'] },
+      { id: 'delegated-event', sequence: 3, type: 'task/delegated', subjectId: 'assignment-derived', actor: { type: 'agent', id: 'Alice' }, text: 'V020_CHILD', mentions: [] },
+      ...[
+        ['NAMED_REPLY Alice', 'Alice', 'release'],
+        ['ALL_REPLY Alice', 'Alice', 'release'],
+        ['ALL_REPLY Bob', 'Bob', 'release'],
+        ['ALL_REPLY Charlie', 'Charlie', 'release'],
+        ['DIRECT_REPLY Alice', 'Alice', 'direct'],
+        ['HOLD_REPLY Alice', 'Alice', 'direct'],
+        ['MEMORY_OK Alice', 'Alice', 'direct'],
+      ].map(([text, id, room], index) => ({ id: `reply-${index}`, sequence: 4 + index, type: 'room/message', subjectId: room!, actor: { type: 'agent', id: id! }, text: text!, mentions: [] })),
+    ],
+  }
+}
+
+describe('Browser agent message evidence', () => {
+  it('accepts seven exact replies and one human-authorized chat delegation', () => {
+    expect(() => evidence.assertBrowserAgentMessages(agentMessageFixture())).not.toThrow()
+  })
+
+  it.each(['actor', 'room', 'mentions', 'assignment', 'root', 'grant', 'grant-actor', 'delegated-actor', 'delegated-source', 'delegated-text', 'sequence', 'adjacency'] as const)('rejects a delegation with a wrong %s association', mutation => {
+    const state = agentMessageFixture()
+    const message = state.events[1]!
+    const delegated = state.events[2]!
+    switch (mutation) {
+      case 'actor': message.actor.id = 'Charlie'; break
+      case 'room': message.subjectId = 'direct'; break
+      case 'mentions': message.mentions = ['Charlie']; break
+      case 'assignment': state.taskAssignments.derived.assigneeAgentId = 'Charlie'; break
+      case 'root': state.tasks.derived.rootTaskId = 'other'; break
+      case 'grant': state.taskAssignments.derived.grantId = 'other'; break
+      case 'grant-actor': state.events[0]!.actor = { type: 'agent', id: 'Alice' }; break
+      case 'delegated-actor': delegated.actor.id = 'Charlie'; break
+      case 'delegated-source': delegated.subjectId = 'other-assignment'; break
+      case 'delegated-text': delegated.text = 'other work'; break
+      case 'sequence': delegated.sequence += 1; break
+      case 'adjacency': state.events.splice(2, 0, { ...state.events[0]!, id: 'intervening', type: 'unrelated' }); break
+    }
+    expect(() => evidence.assertBrowserAgentMessages(state)).toThrow()
+  })
+
+  it('rejects missing or duplicate delegation messages and unrelated extra messages', () => {
+    const state = agentMessageFixture()
+    expect(() => evidence.assertBrowserAgentMessages({ ...state, events: state.events.filter(event => event.id !== 'delegation-message') })).toThrow()
+    expect(() => evidence.assertBrowserAgentMessages({ ...state, events: [...state.events, { ...state.events[1]!, id: 'duplicate-delegation' }] })).toThrow()
+    for (const text of ['SCRIPTED_REPLY Alice', 'an unrelated message']) {
+      expect(() => evidence.assertBrowserAgentMessages({ ...state, events: [...state.events, { ...state.events[1]!, id: 'extra', text }] })).toThrow()
+    }
+  })
+
+  it.each([0, 1, 2, 3, 4, 5, 6])('rejects missing, duplicate or misattributed expected reply %i', index => {
+    const state = agentMessageFixture()
+    const reply = state.events[index + 3]!
+    expect(() => evidence.assertBrowserAgentMessages({ ...state, events: state.events.filter(event => event.id !== reply.id) })).toThrow()
+    expect(() => evidence.assertBrowserAgentMessages({ ...state, events: [...state.events, { ...reply, id: 'duplicate-reply' }] })).toThrow()
+    expect(() => evidence.assertBrowserAgentMessages({ ...state, events: state.events.map(event => event.id === reply.id ? { ...event, actor: { type: 'agent', id: 'outsider' } } : event) })).toThrow()
+  })
+})
+
 function revisionFixture() {
   return {
     definitions: { role: { id: 'role', name: 'Release engineer', currentRevisionId: 'rev1', revisionIds: ['rev1'] } },

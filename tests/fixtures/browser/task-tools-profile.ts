@@ -1,7 +1,7 @@
 /** Profile-only human-task seed for the real task-tool release smoke. */
 
 import { access, writeFile } from 'node:fs/promises'
-import { watch } from 'node:fs'
+import { appendFileSync, watch } from 'node:fs'
 import { basename, dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { WorkspaceRuntime } from '../../../packages/host/src/workspace-runtime.ts'
@@ -19,6 +19,16 @@ export const inject = ['agentWorkspace', 'agents', 'tools']
 /** Seed one human-owned task after the loaded Host and its tool registry are available. */
 export async function apply(ctx: Context): Promise<void> {
   const fixturePath = requireTaskToolsFixturePath()
+  const trace = (phase: string, sessionId: string, turn: number): void => {
+    appendFileSync(`${fixturePath}.runtime.jsonl`, `${JSON.stringify({ phase, sessionId, turn, time: Date.now() })}\n`, 'utf8')
+  }
+  ctx.on('session/event', (session, event) => {
+    if (event.type === 'turn/start' || event.type === 'step/end' || event.type === 'turn/end') {
+      trace(event.type, session.id, event.data.turn)
+    }
+  })
+  ctx.on('agent/turn-stopping', ({ agent, turn }) => { trace('turn-stopping/enter', agent.id, turn) }, { prepend: true })
+  ctx.on('agent/turn-stopping', ({ agent, turn }) => { trace('turn-stopping/leave', agent.id, turn) })
   await waitForScriptedLlmAdapter(fixturePath)
   const service: WorkspaceRuntime = ctx.agentWorkspace.forWorkspace(WorkspaceId('local'))
   await service.execute(service.snapshot().revision, {

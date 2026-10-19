@@ -23,6 +23,7 @@ import {
   isCompletePackedSmoke,
   removeTaskToolsProfileSeed,
   registryProfileCommands,
+  sourceProfileInvocation,
   uninstallProfileCommand,
 } from './release-smoke-contract.mjs'
 import { verifyReleaseArtifacts, writeReleaseSmokeReceipt } from './release-artifacts.mjs'
@@ -449,14 +450,25 @@ async function main() {
   const agentsHome = join(scratch, 'agents-home')
   const gate = join(scratch, 'release-gate')
   const coreWorkspace = join(scratch, 'core-workspace')
+  const inspectProfile = async (fixture, environment) => {
+    const invocation = sourceProfileInvocation(options.dsh, coreWorkspace,
+      ['--profile', 'web', '--patch', fixture, '--dump-config'])
+    return await run(invocation.command, invocation.args, {
+      cwd: invocation.cwd,
+      env: { ...environment, ...invocation.env },
+      stdio: 'pipe',
+    })
+  }
   let server
   let hostLogFinished = Promise.resolve()
   const hostLifecycle = []
   const failures = []
   const startServer = async (fixture, environment, logName) => {
-    server = execa('pnpm', ['dsh', '--profile', 'web', '--patch', fixture.path, '--no-open', '--port', '0'], {
-      cwd: options.dsh,
-      env: environment,
+    const invocation = sourceProfileInvocation(options.dsh, coreWorkspace,
+      ['--profile', 'web', '--patch', fixture.path, '--no-open', '--port', '0'])
+    server = execa(invocation.command, invocation.args, {
+      cwd: invocation.cwd,
+      env: { ...environment, ...invocation.env },
       detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
       reject: false,
@@ -502,6 +514,7 @@ async function main() {
     })
     const fixture = await stageFixture(scratch)
     await mkdir(coreWorkspace, { recursive: true })
+    await run('git', ['init', '--quiet'], { cwd: coreWorkspace })
     if (!options.installationOnly) {
       await verifyForwardExportPeerIsolation(
         scratch,
@@ -534,11 +547,7 @@ async function main() {
         stopServer,
       )
     }
-    const config = await run('pnpm', ['dsh', '--profile', 'web', '--patch', fixture.path, '--dump-config'], {
-      cwd: options.dsh,
-      env: environment,
-      stdio: 'pipe',
-    })
+    const config = await inspectProfile(fixture.path, environment)
     await writeFile(join(artifactsRoot, 'assembled-config.yml'), config.stdout, 'utf8')
     assertAssembledConfig(config.stdout, fixture.adapter, fixture.taskToolsProfile)
     await copyProfileEvidence(dshHome, join(artifactsRoot, 'installed'))
@@ -594,11 +603,7 @@ async function main() {
       await run('pnpm', uninstallCommand, { cwd: options.dsh, env: environment })
 
       const uninstalledManifest = JSON.parse(await readFile(join(profile, 'package.json'), 'utf8'))
-      const uninstalledConfig = await run('pnpm', ['dsh', '--profile', 'web', '--patch', fixture.uninstalledPath, '--dump-config'], {
-        cwd: options.dsh,
-        env: environment,
-        stdio: 'pipe',
-      })
+      const uninstalledConfig = await inspectProfile(fixture.uninstalledPath, environment)
       assertUninstalledProfile(uninstalledManifest, uninstalledConfig.stdout, fixture.adapter)
       await writeFile(join(artifactsRoot, 'uninstalled-assembled-config.yml'), uninstalledConfig.stdout, 'utf8')
       await writeFile(join(artifactsRoot, 'uninstall.json'), `${JSON.stringify({

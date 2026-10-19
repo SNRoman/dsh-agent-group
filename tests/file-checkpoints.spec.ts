@@ -22,7 +22,8 @@ vi.mock('node:fs/promises', async importOriginal => {
 })
 
 const roots: string[] = []
-afterEach(async () => { fileRace.beforeOpen = undefined; fileRace.afterOpen = undefined; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+const FILE_IO_TEST_TIMEOUT_MS = 15_000
+afterEach(async () => { fileRace.beforeOpen = undefined; fileRace.afterOpen = undefined; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) }, FILE_IO_TEST_TIMEOUT_MS)
 
 async function fixture(limits = { maxFileBytes: 1024, maxFiles: 20, maxTotalBytes: 4096 }) {
   const root = await mkdtemp(join(tmpdir(), 'colleague-checkpoint-')); roots.push(root)
@@ -99,7 +100,8 @@ test('keeps later manual writes while restoring an independent file', async () =
   await writeFile(join(f.cwd, 'manual.txt'), 'human')
   expect(await f.journal.restore(f.input, new Set([f.input.inputId]))).toMatchObject([{ status: 'restored' }, { status: 'conflict' }])
   expect(await readFile(join(f.cwd, 'manual.txt'), 'utf8')).toBe('human')
-})
+  expect(await readFile(join(f.cwd, 'other.txt'), 'utf8')).toBe('old')
+}, FILE_IO_TEST_TIMEOUT_MS)
 
 test('skips the whole earlier chain when a conflicting manual write matches an older snapshot', async () => {
   const f = await fixture(); await writeFile(join(f.cwd, 'chain.txt'), 'old'); await f.mutate('chain.txt', 'first'); await f.mutate('chain.txt', 'second'); await writeFile(join(f.cwd, 'chain.txt'), 'first')

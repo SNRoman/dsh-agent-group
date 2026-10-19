@@ -1,9 +1,28 @@
 /** Checks and deterministic evidence helpers for the release smoke. */
 
 import { createHash } from 'node:crypto'
+import { createRequire } from 'node:module'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, relative } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import canonicalize from 'canonicalize'
+
+/**
+ * Launch the verified DSH source profile without inheriting its source repository as employee cwd.
+ * @param dsh Verified source checkout with its installed tsx loader.
+ * @param workspace Owned runtime workspace.
+ * @param args Public dsh profile arguments.
+ * @returns Node invocation with source resolution and runtime cwd configured independently.
+ */
+export function sourceProfileInvocation(dsh, workspace, args) {
+  const loader = createRequire(join(dsh, 'package.json')).resolve('tsx/esm')
+  return {
+    command: process.execPath,
+    args: ['--import', pathToFileURL(loader).href, join(dsh, 'apps', 'cli', 'src', 'bin.ts'), ...args],
+    cwd: workspace,
+    env: { TSX_TSCONFIG_PATH: join(dsh, 'tsconfig.json') },
+  }
+}
 
 /**
  * Identify packed runs eligible to certify release artifacts for publishing.
@@ -251,41 +270,36 @@ export async function manifestFileTree(root) {
   return manifest.sort((left, right) => left.path.localeCompare(right.path))
 }
 
-/** Reject Browser evidence that does not prove selected membership memory and settled durable replies. */
+/** Require default all-history membership, exact historical acquisitions, and settled durable replies. */
 export function assertBrowserDurableEvidence(durable) {
   const agents = Object.values(durable.agents)
   const group = Object.values(durable.rooms).find(room => room.kind === 'group' && room.name === 'Release room')
   if (group === undefined) throw new Error('durable Browser evidence omitted Release room')
   const alice = agents.find(agent => agent.name === 'Alice')
-  const bob = agents.find(agent => agent.name === 'Bob')
-  const membershipFor = agent => agent === undefined
-    ? undefined
-    : Object.values(durable.memberships).find(candidate => candidate.roomId === group.id && candidate.agentId === agent.id)
-  const aliceMembership = membershipFor(alice)
-  if (aliceMembership?.memoryStart?.type !== 'new-events'
-    || Object.keys(aliceMembership.memoryStart).length !== 1) {
-    throw new Error('Alice Release room membership did not preserve the selected new-events memory start')
-  }
   const historyEvents = durable.events.filter(event => event.type === 'room/message'
     && event.subjectId === group.id
     && event.actor?.type === 'human'
     && event.text === 'HISTORY_BEFORE_JOIN')
   if (historyEvents.length !== 1) throw new Error(`expected exactly one durable HISTORY_BEFORE_JOIN; found ${historyEvents.length}`)
   const history = historyEvents[0]
-  const bobMembership = membershipFor(bob)
-  const bobMemoryStart = bobMembership?.memoryStart
-  if (bobMemoryStart?.type !== 'event-range'
-    || bobMemoryStart.startSequence !== history.sequence
-    || bobMemoryStart.endSequence !== history.sequence
-    || Object.keys(bobMemoryStart).length !== 3) {
-    throw new Error('Bob Release room membership did not preserve the selected historical event range')
-  }
   const historyMemories = durable.memoryEntries.filter(entry => entry.eventId === history.id)
-  const aliceHistoryCount = historyMemories.filter(entry => entry.agentId === alice?.id).length
-  if (aliceHistoryCount !== 0) throw new Error(`expected Alice to omit historical event memory; found ${aliceHistoryCount}`)
-  const bobHistory = historyMemories.filter(entry => entry.agentId === bob?.id)
-  if (bobHistory.length !== 1 || bobHistory[0].acquiredBy !== 'history-sync') {
-    throw new Error(`expected Bob to have exactly one historical event memory; found ${bobHistory.length}`)
+  for (const name of ['Alice', 'Bob', 'Charlie']) {
+    const agent = agents.find(candidate => candidate.name === name)
+    const memberships = Object.values(durable.memberships).filter(candidate => candidate.roomId === group.id && candidate.agentId === agent?.id)
+    const membership = memberships[0]
+    const joined = durable.events.filter(event => event.id === membership?.joinedEventId
+      && event.type === 'room/member-joined' && event.subjectId === membership?.id)
+    const memoryStart = membership?.memoryStart
+    if (agent === undefined || memberships.length !== 1 || joined.length !== 1
+      || !Number.isSafeInteger(joined[0].sequence) || joined[0].sequence <= history.sequence
+      || memoryStart?.type !== 'event-range' || memoryStart.startSequence !== 1
+      || memoryStart.endSequence !== joined[0].sequence - 1 || Object.keys(memoryStart).length !== 3) {
+      throw new Error(`${name} Release room membership did not preserve the default all-history range before joining`)
+    }
+    const acquired = historyMemories.filter(entry => entry.agentId === agent.id)
+    if (acquired.length !== 1 || acquired[0].acquiredBy !== 'history-sync') {
+      throw new Error(`expected ${name} to have exactly one historical event memory from ${history.id}; found ${acquired.length}`)
+    }
   }
   const agentMessages = durable.events.filter(event => event.type === 'room/message' && event.actor?.type === 'agent')
   for (const text of ['DIRECT_REPLY Alice', 'HOLD_REPLY Alice', 'MEMORY_OK Alice']) {
@@ -295,6 +309,49 @@ export function assertBrowserDurableEvidence(durable) {
   if (JSON.stringify(durable).includes('LIVE_PARTIAL')) {
     throw new Error('durable Browser evidence contains LIVE_PARTIAL')
   }
+}
+
+/** Require seven exact replies and the human-granted chat message immediately preceding its delegated assignment. */
+export function assertBrowserAgentMessages(durable) {
+  const agents = Object.values(durable.agents)
+  const agentMessages = durable.events.filter(event => event.type === 'room/message' && event.actor?.type === 'agent')
+  if (agentMessages.some(event => event.text?.startsWith('SCRIPTED_REPLY '))) throw new Error('an unmentioned agent produced a durable fallback reply')
+  const room = exactlyOne(Object.values(durable.rooms).filter(candidate => candidate.kind === 'group' && candidate.name === 'Release room'), 'Release room')
+  const alice = exactlyOne(agents.filter(agent => agent.name === 'Alice'), 'Alice')
+  const bob = exactlyOne(agents.filter(agent => agent.name === 'Bob'), 'Bob')
+  const charlie = exactlyOne(agents.filter(agent => agent.name === 'Charlie'), 'Charlie')
+  const replies = [
+    ['NAMED_REPLY Alice', alice, 'group'],
+    ['ALL_REPLY Alice', alice, 'group'],
+    ['ALL_REPLY Bob', bob, 'group'],
+    ['ALL_REPLY Charlie', charlie, 'group'],
+    ['DIRECT_REPLY Alice', alice, 'direct'],
+    ['HOLD_REPLY Alice', alice, 'direct'],
+    ['MEMORY_OK Alice', alice, 'direct'],
+  ].map(([text, agent, kind]) => {
+    const reply = exactlyOne(agentMessages.filter(event => event.text === text), text)
+    equalEvidence(reply.actor, { type: 'agent', id: agent.id }, `${text} actor changed`)
+    if (kind === 'group' ? reply.subjectId !== room.id : durable.rooms[reply.subjectId]?.kind !== 'direct') throw new Error(`${text} conversation changed`)
+    return reply
+  })
+  const root = exactlyOne(Object.values(durable.tasks).filter(task => task.title === 'V020_ROOT V020_DELEGATE'), 'delegation root task')
+  const derived = exactlyOne(Object.values(durable.tasks).filter(task => task.title === 'V020_CHILD'), 'delegated task')
+  const assignment = exactlyOne(Object.values(durable.taskAssignments).filter(item => item.taskId === derived.id), 'delegated task assignment')
+  const grant = exactlyOne(Object.values(durable.delegationGrants).filter(item => item.id === assignment.grantId), 'delegation grant')
+  if (root.rootTaskId !== root.id || derived.rootTaskId !== root.id || assignment.rootTaskId !== root.id
+    || assignment.assigneeAgentId !== bob.id || grant.rootTaskId !== root.id || grant.granteeAgentId !== alice.id) throw new Error('delegation assignment or grant association changed')
+  const granted = exactlyOne(durable.events.filter(event => event.type === 'task/delegation-granted' && event.subjectId === grant.id), 'human delegation grant event')
+  equalEvidence(granted.actor, { type: 'human', id: grant.grantedByHumanId }, 'delegation grant actor changed')
+  const delegated = exactlyOne(durable.events.filter(event => event.type === 'task/delegated' && event.subjectId === assignment.id), 'delegated assignment event')
+  equalEvidence(delegated.actor, { type: 'agent', id: alice.id }, 'delegated assignment actor changed')
+  if (delegated.text !== derived.title) throw new Error('delegated assignment instruction changed')
+  const message = exactlyOne(agentMessages.filter(event => event.text === derived.title), 'delegation chat message')
+  equalEvidence(message.actor, { type: 'agent', id: alice.id }, 'delegation chat actor changed')
+  equalEvidence(message.mentions, [bob.id], 'delegation chat mentions changed')
+  if (message.subjectId !== room.id || !(granted.sequence < message.sequence)
+    || delegated.sequence !== message.sequence + 1 || durable.events.indexOf(delegated) !== durable.events.indexOf(message) + 1) throw new Error('delegation chat conversation or assignment order changed')
+  const accepted = new Set([...replies, message])
+  if (agentMessages.some(event => !accepted.has(event))) throw new Error('durable Browser evidence contains an unexpected agent message')
 }
 
 /** Whether one recorded row is the exact safe error for a tool call. */

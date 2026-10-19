@@ -1,10 +1,15 @@
 import { chromium, type Browser } from 'playwright'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { WORKSPACE_UI_CSS } from '../packages/web/src/client/styles.ts'
 
+const BROWSER_TEST_TIMEOUT_MS = 15_000
+const BROWSER_LAUNCH_TIMEOUT_MS = 10_000
+const BROWSER_HOOK_TIMEOUT_MS = 15_000
+
 let browser: Browser | undefined
-beforeAll(async () => { browser = await chromium.launch() })
-afterAll(async () => { await browser?.close() })
+beforeAll(async () => { browser = await chromium.launch({ timeout: BROWSER_LAUNCH_TIMEOUT_MS }) }, BROWSER_HOOK_TIMEOUT_MS)
+afterEach(async () => { await Promise.all(browser?.contexts().map(context => context.close()) ?? []) }, BROWSER_HOOK_TIMEOUT_MS)
+afterAll(async () => { await browser?.close(); browser = undefined }, BROWSER_HOOK_TIMEOUT_MS)
 
 // Owned layout fixtures exercise the shipped stylesheet without a Host, model or network listener.
 const content = (mode: string): string => `<style>
@@ -35,7 +40,7 @@ const toolbarContent = (withDrawer = false): string => `${content('conversations
 ${withDrawer ? '<aside class="dsh-agent-group-activity-drawer" role="dialog" aria-label="Activity"><div class="dsh-agent-group-section-head"><strong>Activity</strong><button class="dsh-agent-group-icon-button dsh-agent-group-right" aria-label="Close activity">×</button></div><div class="dsh-agent-group-activity-layout">Activity detail</div></aside>' : ''}
 </section></div></div>`
 
-describe('organization workbench real Chromium layout', () => {
+describe('organization workbench real Chromium layout', { timeout: BROWSER_TEST_TIMEOUT_MS }, () => {
   it.each([{ foreground: '#141414', background: '#ffffff' }, { foreground: '#e5e7eb', background: '#16181d' }])('keeps small employment labels readable on $background', async theme => {
     const context = await browser!.newContext({ viewport: { width: 800, height: 600 } })
     try {

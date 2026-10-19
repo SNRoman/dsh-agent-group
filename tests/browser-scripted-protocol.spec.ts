@@ -8,10 +8,12 @@ import { apply, protocolStep, taskIdentity, waitForObservedStop } from './fixtur
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { HumanId, TaskDeliveryAttemptId, WorkspaceEventId, WorkspaceId } from '../packages/host/src/ids.ts'
+import { HumanId, RoomId, TaskDeliveryAttemptId, WorkspaceEventId, WorkspaceId } from '../packages/host/src/ids.ts'
 import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
 import { assignDelegatedTask, assignHumanTask, grantTaskDelegation } from '../packages/host/src/tasks.ts'
 import { registerWorkspaceTaskTools, type WorkspaceTaskToolHost } from '../packages/host/src/task-tools.ts'
+import { registerWorkspaceWorkflowTools } from '../packages/host/src/workflow-tools.ts'
+import { workflowRuntime, publishEmployee, joinWorkflowChat } from './workflow-test-support.ts'
 
 function adapter(): LlmAdapter {
   let registered: LlmAdapter | undefined
@@ -34,6 +36,41 @@ async function output(options: GenerateOptions): Promise<StreamChunk[]> {
 }
 
 describe('Browser scripted request protocol', () => {
+  it('records the scripted employee proposal in its current delivered room without executing work', async () => {
+    const fixture = await workflowRuntime()
+    const employee = await publishEmployee(fixture.runtime, fixture.agentId)
+    const roomId = await joinWorkflowChat(fixture.runtime, fixture.agentId)
+    const tools: ToolDefinition[] = []
+    const dispose = registerWorkspaceWorkflowTools({ register: tool => { tools.push(tool); return () => {} } }, () => fixture.runtime)
+    const brief = { title: 'WF_EMPLOYEE_PROPOSAL', instructions: 'WF_EMPLOYEE_FULL_INSTRUCTIONS', expectedArtifacts: ['WF_EMPLOYEE_ARTIFACT'], acceptanceCriteria: ['WF_EMPLOYEE_CRITERION'] }
+    try {
+      const delivery = (deliveredRoomId: ReturnType<typeof RoomId>) => createUserMessage({ content: [{ type: 'text', text: 'WF_PROPOSE_REQUEST' }], source: {
+        kind: 'agent-workspace-delivery', workspaceId: fixture.runtime.workspaceId, source: { kind: 'room', roomId: deliveredRoomId }, sourceEventId: WorkspaceEventId('request-event'),
+      } })
+      const options: GenerateOptions = { ...request('WF_PROPOSE_REQUEST'), sessionId: employee.agent.id, tools, messages: [delivery(RoomId('historical-room')), delivery(roomId)] }
+      const chunk = (await output(options)).find(chunk => chunk.type === 'block-end' && chunk.block.type === 'tool-call')
+      if (chunk?.type !== 'block-end' || chunk.block.type !== 'tool-call') throw new Error('scripted proposal call is missing')
+      expect(chunk.block.name).toBe('workspace_propose_task')
+      const args: unknown = JSON.parse(chunk.block.arguments)
+      const tool = tools.find(tool => tool.name === chunk.block.name)!
+      assertObjectJsonSchema(tool.parameters)
+      expect(validateJsonSchemaValue(tool.parameters, args)).toEqual([])
+      expect(args).toEqual({ roomId, brief })
+      const before = fixture.directory.record(fixture.runtime.workspaceId)
+      await expect(tool.execute(args, { agent: employee.agent, signal: new AbortController().signal } as never)).resolves.toMatchObject({ summary: brief.title, status: 'awaiting-human-confirmation' })
+      const after = fixture.directory.record(fixture.runtime.workspaceId)
+      const draft = Object.values(after.workflow.drafts)[0]!
+      expect(draft).toMatchObject({ status: 'draft', brief, source: { type: 'employee', id: fixture.agentId } })
+      expect(draft).not.toHaveProperty('taskId')
+      const source = after.communication.draftSources[draft.id]!
+      expect(source.roomId).toBe(roomId)
+      expect(after.aggregate.events.find(event => event.id === source.eventId)).toMatchObject({ type: 'room/message', subjectId: roomId, actor: { type: 'agent', id: fixture.agentId }, text: brief.instructions, mentions: [] })
+      for (const key of ['tasks', 'taskAssignments', 'delegationGrants', 'childRuns', 'sessionBindings'] as const) expect(after.aggregate[key]).toEqual(before.aggregate[key])
+      options.messages.push(createToolResultMessage({ callId: ToolCallId('wf-propose-task'), content: [{ type: 'text', text: `Draft ${draft.id}: ${brief.title}\nAwaiting human confirmation.` }], isError: false }))
+      expect((await output(options)).filter(chunk => chunk.type === 'text-delta')).toEqual([{ type: 'text-delta', index: 0, text: 'WF_PROPOSAL_READY' }])
+    } finally { dispose(); await employee.pool.disposeAll(); await fixture.runtime.dispose() }
+  })
+
   it.each(['v020-safe-failure', 'v020-hold-tool', 'v020-delegate'] as const)('routes %s through the selected chat schema and delegation authority', async callId => {
     const directory = await mkdtemp(join(tmpdir(), 'browser-delegation-protocol-'))
     const definition = mutateWorkspace(createInitialState(WorkspaceId('local')), { type: 'definition/create', name: 'Release engineer', description: 'Release', instructions: 'Run the fixture' })

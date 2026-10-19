@@ -6,9 +6,9 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { chromium } from 'playwright'
 import { collectTaskToolEvidence } from './task-tools-profile.mjs'
-import { waitForRecoveredReply } from './recovery-observation.mjs'
-import { readDurableRecord, readDurableOrganizations, runWorkflowScenario, assertWorkflowImport, assertWorkflowProposal, assertWorkflowRestartQuiescence, waitForOrganizationReady, observeDirectRpcResponses } from './workflow-browser.mjs'
-import { assertBrowserDurableEvidence, inspectSafeDelegationDenial, assertTaskCausality, assertMemoryRows, assertSubsetRevisionEvidence, assertExactStopEvidence, assertRestartPersistence } from '../../scripts/release-smoke-contract.mjs'
+import { waitForRecoveredReply, waitForAriaContent } from './recovery-observation.mjs'
+import { readDurableRecord, readDurableOrganizations, runWorkflowScenario, openWorkflowSettings, assertWorkflowImport, assertWorkflowProposal, assertWorkflowRestartQuiescence, waitForOrganizationReady, observeDirectRpcResponses } from './workflow-browser.mjs'
+import { assertBrowserDurableEvidence, assertBrowserAgentMessages, inspectSafeDelegationDenial, assertTaskCausality, assertMemoryRows, assertSubsetRevisionEvidence, assertExactStopEvidence, assertRestartPersistence } from '../../scripts/release-smoke-contract.mjs'
 
 const STEP_TIMEOUT_MS = 30_000
 const CORE_SESSION_SENTINEL = 'CORE_SESSION_SENTINEL'
@@ -39,20 +39,8 @@ function redact(value) {
   return value.replace(/([?&]token=)[^\s&)]+/gu, '$1<redacted>')
 }
 
-async function stableAria(locator) {
-  await locator.waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS })
-  return await locator.ariaSnapshot()
-}
-
-function toMatchAriaSnapshot(actual, required) {
-  for (const token of required) {
-    if (!actual.includes(token)) throw new Error(`ARIA snapshot is missing ${JSON.stringify(token)}`)
-  }
-}
-
 async function capture(state, label, locator, required = []) {
-  const aria = await stableAria(locator)
-  toMatchAriaSnapshot(aria, required)
+  const aria = await waitForAriaContent(locator, required, STEP_TIMEOUT_MS)
   state.snapshots.push({ label, aria })
   await writeFile(join(state.evidence, `${state.prefix}aria-snapshots.json`), `${JSON.stringify(state.snapshots, null, 2)}\n`, 'utf8')
 }
@@ -225,7 +213,7 @@ async function assertTaskToolEvidence(durable, args) {
 }
 
 async function send(dialog, text) {
-  const composer = dialog.getByPlaceholder(/Write (?:a message|a direct message)/u)
+  const composer = dialog.getByRole('textbox', { name: 'Send message', exact: true })
   await composer.pressSequentially(text)
   await dialog.page().waitForFunction(({ element, expected }) => element.value === expected,
     { element: await composer.elementHandle(), expected: text }, { timeout: STEP_TIMEOUT_MS })
@@ -483,8 +471,8 @@ async function selectReleaseDefinition(dialog) {
 }
 
 async function selectColleague(dialog, name) {
-  await dialog.locator('[data-colleague-list] button').filter({ has: dialog.getByText(name, { exact: true }) }).click()
-  const profile = dialog.locator('[data-colleague-id]').filter({ has: dialog.getByRole('heading', { name, exact: true }) })
+  await dialog.locator('[data-colleague-list] button').filter({ has: dialog.page().getByText(name, { exact: true }) }).click()
+  const profile = dialog.locator('[data-colleague-id]').filter({ has: dialog.page().getByRole('heading', { name, exact: true }) })
   await profile.waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS })
   return profile
 }
@@ -492,12 +480,6 @@ async function selectColleague(dialog, name) {
 async function openOrganizationManagement(dialog) {
   const management = dialog.locator('.dsh-agent-group-organization-management')
   if (await management.getAttribute('open') === null) await management.locator(':scope > summary').click()
-}
-
-async function openWorkflowSettings(dialog) {
-  await dialog.getByRole('button', { name: /^(?:Tasks|任务)$/u }).click()
-  const settings = dialog.locator('.dsh-agent-group-work-settings')
-  if (await settings.getAttribute('open') === null) await settings.locator(':scope > summary').click()
 }
 
 async function createGroupAndJoin(dialog, dshHome) {
@@ -829,6 +811,8 @@ async function runInstalledScenario(page, args, state) {
   await dialog.getByRole('button', { name: 'Show group members', exact: true }).click()
   await membersPanel.waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS })
   await agentRow(membersPanel, 'Alice').getByRole('button', { name: 'Direct', exact: true }).click()
+  await dialog.page().waitForFunction(element => element.dataset.active === 'true',
+    await dialog.getByRole('button', { name: 'Alice Direct', exact: true }).elementHandle(), { timeout: STEP_TIMEOUT_MS })
   await dialog.getByRole('textbox', { name: 'Send message', exact: true })
     .waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS })
   await send(dialog, 'DIRECT_WAKE')
@@ -852,8 +836,9 @@ async function runInstalledScenario(page, args, state) {
   await page.getByRole('button', { name: 'Open Agent Organization', exact: true }).click()
   dialog = page.getByRole('dialog', { name: 'Agent Organization', exact: true })
   await dialog.getByRole('button', { name: /^Alice Responding Direct$/u }).click()
-  await capture(state, '03-reloaded', dialog, ['HOLD_WAKE'])
+  await dialog.getByRole('main').getByText('HOLD_WAKE', { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS })
   await dialog.getByText('LIVE_PARTIAL', { exact: false }).waitFor({ timeout: STEP_TIMEOUT_MS })
+  await capture(state, '03-reloaded', dialog, ['HOLD_WAKE', 'LIVE_PARTIAL'])
   await writeFile(args.gate, 'release\n', { encoding: 'utf8', flag: 'wx' })
   await dialog.getByText('HOLD_REPLY Alice', { exact: true }).last().waitFor({ timeout: STEP_TIMEOUT_MS })
   await waitForIdle(dialog)
@@ -907,21 +892,7 @@ async function runInstalledScenario(page, args, state) {
     throw new Error('Alice did not retain her personal session across departure and re-employment')
   }
   assertBrowserDurableEvidence(durable)
-  const agentMessages = durable.events.filter(event => event.type === 'room/message' && event.actor?.type === 'agent')
-  const replyCount = (text, name) => agentMessages.filter(event => (
-    event.text === `${text} ${name}`
-      && agents.find(agent => agent.id === event.actor.id)?.name === name
-  )).length
-  if (agentMessages.some(event => event.text?.startsWith('SCRIPTED_REPLY '))) {
-    throw new Error('an unmentioned agent produced a durable fallback reply')
-  }
-  if (replyCount('NAMED_REPLY', 'Alice') !== 1 || replyCount('NAMED_REPLY', 'Bob') !== 0 || replyCount('NAMED_REPLY', 'Charlie') !== 0) {
-    throw new Error('durable named-mention replies do not contain exactly Alice')
-  }
-  if (replyCount('ALL_REPLY', 'Alice') !== 1 || replyCount('ALL_REPLY', 'Bob') !== 1 || replyCount('ALL_REPLY', 'Charlie') !== 1) {
-    throw new Error('durable @all replies do not contain each employed member exactly once')
-  }
-  if (agentMessages.length !== 7) throw new Error(`expected 7 durable agent replies, found ${agentMessages.length}`)
+  assertBrowserAgentMessages(durable)
   const workflowEvidence = await runWorkflowScenario(dialog, {
     read: () => readDurableRecord(args['dsh-home']),
     wait: (predicate, description) => waitForDurableWorkspace(args['dsh-home'], predicate, description, 'local', true),

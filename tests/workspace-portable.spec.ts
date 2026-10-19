@@ -2,18 +2,21 @@ import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import canonicalize from 'canonicalize'
 import { describe, expect, test } from 'vitest'
-import { createWorkspaceExportV2, prepareWorkspaceImport } from '../packages/host/src/workspace-portable.ts'
+import { createWorkspaceExportV2, createWorkspaceExportV4, prepareWorkspaceImport, prepareWorkspaceImportV4 } from '../packages/host/src/workspace-portable.ts'
 import { createForwardWorkspaceExportV1 } from '../packages/host/src/forward-export.ts'
 import { prepareWorkspaceImportV1 } from '../packages/host/src/workspace-import.ts'
 import { workspaceStateSchema } from '../packages/host/src/workspace-state-schema.ts'
 import { WorkspaceId } from '../packages/host/src/ids.ts'
 import { WorkspaceOperationId } from '../packages/host/src/workspace-record.ts'
-import type { WorkspaceRecordV1 } from '../packages/host/src/workspace-record.ts'
+import type { WorkspaceRecordV1, WorkspaceRecordV3 } from '../packages/host/src/workspace-record.ts'
 import { assertWorkspaceInvariants } from '../packages/host/src/invariant.ts'
 import { assignHumanTask, recordChildRunStarted } from '../packages/host/src/tasks.ts'
-import { startTaskDelivery } from '../packages/host/src/task-delivery.ts'
+import { startTaskDelivery, acceptTaskDelivery, terminalizeTask } from '../packages/host/src/task-delivery.ts'
 import { HumanId } from '../packages/host/src/ids.ts'
 import { createInitialWorkflowState } from '../packages/host/src/workflow.ts'
+import { createInitialState, mutateWorkspace } from '../packages/host/src/state.ts'
+import { createInitialCommunicationState } from '../packages/host/src/communication.ts'
+import { communicationStateSchema } from '../packages/host/src/communication-schema.ts'
 
 const exportedAt = '2026-10-10T00:00:00.000Z'
 const workspaceId = WorkspaceId('org-target')
@@ -29,6 +32,67 @@ function signed(document: Record<string, unknown>): string {
   const { digest: _digest, ...envelope } = document
   return JSON.stringify({ ...envelope, digest: { algorithm: 'sha-256', canonicalization: 'RFC8785', hex: createHash('sha256').update(canonicalize(envelope)!).digest('hex') } })
 }
+
+function attributedTaskSource(): WorkspaceRecordV3 {
+  const role = mutateWorkspace(createInitialState(WorkspaceId('org-source')), { type: 'definition/create', name: 'Writer', description: '', instructions: 'Write' })
+  const employee = mutateWorkspace(role.state, { type: 'agent/create', name: 'Writer', definitionId: role.definitionId })
+  const assigned = assignHumanTask(employee.state, { humanId: HumanId('owner'), assigneeAgentId: employee.agentId, title: 'Report' })
+  const started = startTaskDelivery(assigned.state, { taskId: assigned.taskId })
+  const accepted = acceptTaskDelivery(started.state, { taskId: assigned.taskId, attemptId: started.attemptId, messageId: started.message.id })
+  const completed = terminalizeTask(accepted.state, { actorAgentId: employee.agentId, taskId: assigned.taskId, attemptId: started.attemptId, definitionRevisionId: employee.state.agents[employee.agentId]!.definitionRevisionId, result: 'Done' })
+  const room = mutateWorkspace(completed.state, { type: 'room/create', kind: 'group', name: 'Review' })
+  const joined = mutateWorkspace(room.state, { type: 'room/join', roomId: room.roomId, agentId: employee.agentId, memoryStart: { type: 'new-events' } })
+  const message = mutateWorkspace(joined.state, { type: 'room/message', roomId: room.roomId, actor: { type: 'human', id: HumanId('owner') }, text: started.message.id, mentions: [] })
+  const input = { agentId: employee.agentId, contextGeneration: 0, recordedAtSequence: message.state.nextSequence - 1, directEventIds: [], recalledEventIds: [], sessionEventIds: [] }
+  return {
+    recordVersion: 3, descriptor: { id: message.state.workspaceId, label: 'Task inputs', lifecycle: 'active' }, aggregate: message.state, workflow: createInitialWorkflowState(),
+    communication: communicationStateSchema.parse({ ...createInitialCommunicationState(), inputs: {
+      task: { ...input, id: 'task', target: { kind: 'task', taskId: assigned.taskId }, deliveryMessageId: started.message.id, taskDeliveryAttemptId: started.attemptId },
+      legacy: { ...input, id: 'legacy', target: { kind: 'task', taskId: assigned.taskId } },
+      room: { ...input, id: 'room', target: { kind: 'room-input', eventId: message.eventId }, directEventIds: [message.eventId], deliveryMessageId: 'agent-workspace-task:org-source:literal-room-input' },
+    } }),
+  }
+}
+
+describe('portable workspace version four task input attribution', () => {
+  test('rebases only attributed task delivery ids across repeated export and import', () => {
+    const original = attributedTaskSource()
+    const before = structuredClone(original)
+    const exported = createWorkspaceExportV4(original, { exportedAt })
+    const imported = prepareWorkspaceImportV4(exported.json, { workspaceId, limits })
+    const taskInput = original.communication.inputs.task!
+    expect(imported.communication).toEqual({ ...original.communication, inputs: { ...original.communication.inputs, task: { ...taskInput, deliveryMessageId: `agent-workspace-task:org-target:${taskInput.taskDeliveryAttemptId}` } } })
+    expect(imported.state.events).toEqual(original.aggregate.events.map(event => 'messageId' in event ? { ...event, messageId: `agent-workspace-task:org-target:${event.taskDeliveryAttemptId}` } : event))
+    const second = createWorkspaceExportV4({ recordVersion: 3, descriptor: imported.descriptor, aggregate: imported.state, workflow: imported.workflow, communication: imported.communication }, { exportedAt })
+    const copied = prepareWorkspaceImportV4(second.json, { workspaceId: WorkspaceId('org-copy'), limits })
+    expect(copied.communication.inputs.task!.deliveryMessageId).toBe(`agent-workspace-task:org-copy:${taskInput.taskDeliveryAttemptId}`)
+    expect(copied.communication.inputs.room).toEqual(original.communication.inputs.room)
+    expect(copied.communication.inputs.legacy).toEqual(original.communication.inputs.legacy)
+    expect(original).toEqual(before)
+  })
+
+  test.each(['delivery-id', 'attempt-id', 'task-id', 'counter', 'future', 'unknown'])('rejects re-signed invalid source %s before rebasing', kind => {
+    const exported = createWorkspaceExportV4(attributedTaskSource(), { exportedAt })
+    const document = structuredClone(exported.document)
+    const input = document.workspace.communication.inputs.task!
+    switch (kind) {
+      case 'delivery-id': Reflect.set(input, 'deliveryMessageId', `agent-workspace-task:org-target:${input.taskDeliveryAttemptId}`); break
+      case 'attempt-id': Reflect.set(input, 'taskDeliveryAttemptId', 'task-delivery-attempt-missing'); break
+      case 'task-id': Reflect.set(input.target, 'taskId', 'task-missing'); break
+      case 'counter': Reflect.set(document.workspace.aggregate, 'nextSequence', 1); break
+      case 'future': Reflect.set(document, 'formatVersion', 5); break
+      case 'unknown': Reflect.set(input, 'private', 'not-an-input-field'); break
+    }
+    expect(() => prepareWorkspaceImportV4(signed({ ...document }), { workspaceId, limits })).toThrow()
+  })
+
+  test('rejects an unsigned change to task input attribution', () => {
+    const exported = createWorkspaceExportV4(attributedTaskSource(), { exportedAt })
+    const document = structuredClone(exported.document)
+    Reflect.set(document.workspace.communication.inputs.task!, 'deliveryMessageId', 'changed')
+    expect(() => prepareWorkspaceImportV4(JSON.stringify(document), { workspaceId, limits })).toThrow(/digest/i)
+  })
+})
 
 describe('portable workspace version two', () => {
   test.each(['toString', 'constructor', 'hasOwnProperty'])('rejects re-signed inherited memory agent referent %s without imported content in errors', async agentId => {

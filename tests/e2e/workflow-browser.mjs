@@ -9,6 +9,13 @@ export const WORKFLOW_BRIEF = { title: 'WF_REPORT', instructions: 'WF_FULL_INSTR
 export const SELECTED_REFERENCE = 'https://example.invalid/WF_SELECTED'
 export const UNSELECTED_REFERENCE = 'E:/WF_UNSELECTED.txt'
 
+/** Open the workflow disclosure through the selected locale's work tab. */
+export async function openWorkflowSettings(dialog) {
+  await dialog.getByRole('button', { name: /^(?:Tasks|工作|任务)$/u }).click()
+  const settings = dialog.locator('.dsh-agent-group-work-settings')
+  if (await settings.getAttribute('open') === null) await settings.locator(':scope > summary').click()
+}
+
 /** Observe only Direct unary replies; drain reads before closing the page or saving failure evidence. */
 export function observeDirectRpcResponses(page, evidence) {
   const pending = new Set()
@@ -138,6 +145,14 @@ export function assertWorkflowImport(before, after, request) {
   assert.deepEqual(after.workflow, before.workflow, 'import changed workflow history')
   const expectedCommunication = structuredClone(before.communication)
   for (const context of Object.values(expectedCommunication.contexts)) delete context.sessionId
+  for (const input of Object.values(expectedCommunication.inputs)) {
+    if (input.target.kind !== 'task' || input.deliveryMessageId === undefined) continue
+    const starts = before.aggregate.events.filter(event => event.type === 'task/delivery-started'
+      && event.taskId === input.target.taskId && event.taskDeliveryAttemptId === input.taskDeliveryAttemptId)
+    assert.equal(starts.length, 1, 'import source input lacks its exact task attempt')
+    assert.equal(input.deliveryMessageId, starts[0].messageId, 'import source input belongs to another delivery')
+    input.deliveryMessageId = `agent-workspace-task:${after.descriptor.id}:${input.taskDeliveryAttemptId}`
+  }
   for (const checkpoint of Object.values(expectedCommunication.fileCheckpoints)) {
     for (const field of ['before', 'after']) if (checkpoint[field].existed) checkpoint[field].blobId = `portable-unavailable:${checkpoint[field].sha256}`
     checkpoint.restore = { status: 'unavailable', reason: 'checkpoint bytes are not included in portable backups' }
@@ -179,8 +194,11 @@ export function assertWorkflowDelivery(record, sessions, taskId, attemptId, incl
 /** Authenticate a pending draft against its live employee's recorded proposal call and result. */
 export function assertWorkflowProposal(before, after, agentId, rows, expected) {
   assert.deepEqual(after.aggregate.tasks, before.aggregate.tasks, 'employee proposal assigned work')
+  assert.deepEqual(after.aggregate.taskAssignments, before.aggregate.taskAssignments, 'employee proposal changed assignments')
   assert.deepEqual(after.aggregate.delegationGrants, before.aggregate.delegationGrants, 'employee proposal delegated authority')
+  assert.deepEqual(after.aggregate.childRuns, before.aggregate.childRuns, 'employee proposal started a child')
   assert.deepEqual(after.aggregate.sessionBindings, before.aggregate.sessionBindings, 'employee proposal materialized another employee')
+  assert.deepEqual(after.communication.contexts, before.communication.contexts, 'employee proposal changed colleague context')
   assert.equal(after.workflow.revision, before.workflow.revision + 1)
   const facts = after.workflow.facts.slice(before.workflow.facts.length)
   assert.equal(facts.length, 1)
@@ -194,19 +212,72 @@ export function assertWorkflowProposal(before, after, agentId, rows, expected) {
   assert.equal(draft.status, expected.status)
   assert.deepEqual(draft.source, { type: 'employee', id: agentId })
   assert.equal(Object.hasOwn(draft, 'taskId'), false)
+  assert.deepEqual(after.workflow.drafts, { ...before.workflow.drafts, [draft.id]: draft }, 'employee proposal changed other drafts')
+  assert.deepEqual(after.workflow.taskBriefs, before.workflow.taskBriefs, 'employee proposal changed confirmed work')
+  const deliveries = rows.filter(row => row.type === 'user/message' && row.data.source?.kind === 'agent-workspace-delivery' && row.data.content.some(block => block.type === 'text' && block.text === 'WF_PROPOSE_REQUEST'))
+  assert.equal(deliveries.length, 1, 'missing unique real proposal request delivery')
+  const delivery = deliveries[0].data
+  assert.equal(delivery.source.workspaceId, after.aggregate.workspaceId, 'proposal request belongs to another organization')
+  assert.equal(delivery.source.source.kind, 'room', 'proposal request is not a chat input')
+  const roomId = delivery.source.source.roomId
+  const requests = after.aggregate.events.filter(event => event.id === delivery.source.sourceEventId)
+  assert.equal(requests.length, 1, 'proposal request source event is missing')
+  const request = requests[0]
+  assert.equal(request.type, 'room/message')
+  assert.equal(request.subjectId, roomId, 'proposal request delivery differs from its chat')
+  assert.equal(request.actor.type, 'human')
+  assert.equal(request.text, 'WF_PROPOSE_REQUEST')
+  assert.equal(before.aggregate.events.some(event => event.id === request.id), false, 'proposal reused an old chat input')
+  const inputs = Object.values(after.communication.inputs).filter(input => input.deliveryMessageId === delivery.id)
+  assert.equal(inputs.length, 1, 'missing unique recorded proposal room input')
+  assert.equal(inputs[0].agentId, agentId, 'proposal room input belongs to another colleague')
+  assert.deepEqual(inputs[0].target, { kind: 'room-input', eventId: request.id }, 'proposal room input differs from its delivery')
+  assert.deepEqual(inputs[0].directEventIds, [request.id], 'proposal room input omitted its source')
+  assert.equal(Object.hasOwn(before.communication.inputs, inputs[0].id), false, 'proposal reused a historical admission')
+  const source = after.communication.draftSources[draft.id]
+  assert.ok(source, 'employee proposal omitted its source chat')
+  assert.equal(source.roomId, roomId, 'employee proposal was recorded in another chat')
+  assert.deepEqual(after.communication.draftSources, { ...before.communication.draftSources, [draft.id]: source }, 'employee proposal changed other draft sources')
+  const proposals = after.aggregate.events.filter(event => event.id === source.eventId)
+  assert.equal(proposals.length, 1, 'employee proposal source event is missing')
+  const { id: eventId, sequence, ...proposalEvent } = proposals[0]
+  assert.deepEqual(proposalEvent, { type: 'room/message', subjectId: roomId, actor: { type: 'agent', id: agentId }, text: expected.brief.instructions, mentions: [] }, 'employee proposal source differs from its author, chat or full brief')
+  assert.ok(sequence > request.sequence && !before.aggregate.events.some(event => event.id === eventId), 'employee proposal source is not new after its request')
+  assert.deepEqual(after.communication.messages[eventId], { eventId, intent: 'proposal' }, 'employee proposal source lost its pending-human intent')
   const calls = rows.filter(row => row.type === 'assistant/message').flatMap(row => row.data?.message?.content ?? []).filter(block => block.type === 'tool-call' && block.id === 'wf-propose-task')
   const results = rows.filter(row => row.type === 'tool/result' && (row.data?.message?.toolCallId === 'wf-propose-task' || row.data?.message?.source?.callId === 'wf-propose-task'))
   assert.equal(calls.length, 1, 'missing unique real proposal call')
   assert.equal(calls[0].name, expected.tool)
-  assert.deepEqual(JSON.parse(calls[0].arguments), { brief: expected.brief })
+  assert.deepEqual(JSON.parse(calls[0].arguments), { roomId, brief: expected.brief }, 'proposal tool arguments differ from the actual room input')
   assert.equal(results.length, 1, 'missing unique proposal receipt')
   const result = results[0].data.message
   const payload = result.toolCallId === undefined ? result.content[0] : result
   assert.equal(payload.toolCallId, 'wf-propose-task')
   assert.notEqual(payload.isError, true, 'proposal receipt failed')
   assert.deepEqual(payload.content, [{ type: 'text', text: `Draft ${draft.id}: ${expected.brief.title}\n${expected.receiptHint}` }], 'proposal receipt exposed data beyond its bounded pending-human summary')
-  assert.ok(rows.indexOf(results[0]) > rows.findIndex(row => row.type === 'assistant/message' && row.data.message.content.some(block => block.id === calls[0].id)), 'proposal result preceded its call')
+  const callIndex = rows.findIndex(row => row.type === 'assistant/message' && row.data.message.content.some(block => block.id === calls[0].id))
+  assert.ok(rows.indexOf(deliveries[0]) < callIndex && rows.indexOf(results[0]) > callIndex, 'proposal call/result order differs from its request')
   return { draft, calls, results }
+}
+
+/** Require a pending continuation's source chat and member memories without starting work. */
+export function assertWorkflowPendingChat(before, after, expected) {
+  const prior = before.aggregate
+  assert.ok(prior.rooms[expected.roomId], 'pending continuation source room is missing')
+  const event = { id: `event-${prior.nextSequence}`, sequence: prior.nextSequence, type: 'room/message', subjectId: expected.roomId, actor: { type: 'human', id: expected.humanId }, text: expected.text, mentions: [] }
+  const recipients = [...new Set(Object.values(prior.memberships).filter(member => member.roomId === expected.roomId && member.leftEventId === undefined).map(member => member.agentId))]
+  const memories = recipients.map((agentId, index) => ({ id: `memory-${prior.nextId + index}`, agentId, eventId: event.id, acquiredBy: 'room-membership' }))
+  assert.deepEqual(after.aggregate, { ...prior, revision: prior.revision + 1, nextId: prior.nextId + memories.length, nextSequence: prior.nextSequence + 1, events: [...prior.events, event], memoryEntries: [...prior.memoryEntries, ...memories] }, 'pending continuation changed more than its source chat and member memories')
+  assert.equal(Object.hasOwn(before.workflow.drafts, expected.draftId), false, 'pending continuation reused an old draft')
+  const draft = after.workflow.drafts[expected.draftId]
+  assert.ok(draft, 'pending continuation draft is missing')
+  assert.equal(draft.status, 'draft', 'pending continuation was confirmed')
+  assert.equal(Object.hasOwn(draft, 'taskId'), false, 'pending continuation assigned work')
+  assert.equal(draft.source.type, expected.sourceType, 'pending continuation source differs from its action')
+  assert.deepEqual(after.workflow.drafts, { ...before.workflow.drafts, [expected.draftId]: draft }, 'pending continuation changed other drafts')
+  assert.deepEqual(after.workflow.taskBriefs, before.workflow.taskBriefs, 'pending continuation changed confirmed work')
+  assert.deepEqual(after.communication, { ...before.communication, revision: before.communication.revision + 1, messages: { ...before.communication.messages, [event.id]: { eventId: event.id, intent: 'proposal' } }, draftSources: { ...before.communication.draftSources, [expected.draftId]: { roomId: expected.roomId, eventId: event.id } } }, 'pending continuation changed more than its exact chat source')
+  assert.deepEqual({ ...after, aggregate: before.aggregate, workflow: before.workflow, communication: before.communication }, before, 'pending continuation changed organization metadata')
 }
 
 /** Exercise human workflow controls using two passive profile-seeded drafts; durable reads determine completion. */
@@ -239,11 +310,18 @@ export async function runWorkflowScenario(dialog, io) {
     const operation = Object.values(after.workflow.operations).find(value => value.workflowRevision === after.workflow.revision)
     assert.ok(operation, 'missing durable operation receipt')
     assert.deepEqual(operation.receipt, { type: endpoint, value: facts[0].receipt })
+    if (!['workflow/result/review', 'workflow/result/handoff', 'workflow/company-template/confirm'].includes(endpoint)) {
+      assert.deepEqual(after.aggregate, before.aggregate, `${endpoint} assigned or woke work`)
+      assert.deepEqual(after.communication, before.communication, `${endpoint} changed chat or employee context`)
+    }
     await refresh()
     return { record: after, value: facts[0].receipt }
   }
   const open = async name => { const summary = view.locator('summary').filter({ hasText: new RegExp(`^${name}$`, 'u') }); if (await summary.locator('..').getAttribute('open') === null) await summary.click() }
   const baseline = await io.read()
+  const releaseRooms = Object.values(baseline.aggregate.rooms).filter(room => room.kind === 'group' && room.name === 'Release room')
+  assert.equal(releaseRooms.length, 1, 'missing unique Release room')
+  const releaseRoomId = releaseRooms[0].id
   const initialDraft = Object.values(baseline.workflow.drafts).find(draft => draft.brief.title === WORKFLOW_BRIEF.title && draft.brief.instructions === 'WF_BEFORE_EDIT')
   const disposable = Object.values(baseline.workflow.drafts).find(draft => draft.brief.title === 'WF_DISCARD')
   assert.ok(initialDraft && disposable, 'profile passive drafts are missing')
@@ -305,7 +383,7 @@ export async function runWorkflowScenario(dialog, io) {
   await view.getByRole('textbox', { name: 'Review comment', exact: true }).fill('WF_REWORK_COMMENT')
   const rework = await mutate('Submit review for this result', 'workflow/result/review')
   assert.deepEqual(rework.record.workflow.reviews[rework.value.reviewId].result, first.result)
-  assert.deepEqual(rework.record.aggregate, unselected.record.aggregate, 'changes request executed without confirmation')
+  assertWorkflowPendingChat(unselected.record, rework.record, { roomId: releaseRoomId, humanId: 'web-user', draftId: rework.value.draftId, sourceType: 'changes-requested', text: 'WF_REWORK_COMMENT' })
   const second = await confirm(rework.value.draftId)
   assert.notEqual(second.result.taskId, first.result.taskId)
   assert.notEqual(second.result.attemptId, first.result.attemptId)
@@ -317,12 +395,15 @@ export async function runWorkflowScenario(dialog, io) {
   await view.getByRole('textbox', { name: 'Review comment', exact: true }).fill('WF_ACCEPTED')
   const accepted = await mutate('Submit review for this result', 'workflow/result/review')
   assert.deepEqual(accepted.record.workflow.reviews[accepted.value.reviewId].result, second.result)
+  assert.deepEqual(accepted.record.aggregate, latestArtifacts.record.aggregate, 'accepted review assigned or woke work')
+  assert.deepEqual(accepted.record.communication, latestArtifacts.record.communication, 'accepted review changed chat or employee context')
   await view.getByRole('checkbox', { name: /^WF_SELECTED ·/u }).check()
   assert.equal(await view.getByRole('checkbox', { name: /^WF_UNSELECTED ·/u }).isChecked(), false)
   await select('Continuation source chat').selectOption({ label: 'Release room' })
   const handoff = await mutate('Create handoff draft with selected artifacts', 'workflow/result/handoff')
   assert.deepEqual(handoff.record.workflow.drafts[handoff.value.draftId].source.artifactIds, [selectedSuccessor.value.artifactId])
   assert.deepEqual(handoff.record.workflow.drafts[handoff.value.draftId].source.result, second.result)
+  assertWorkflowPendingChat(accepted.record, handoff.record, { roomId: releaseRoomId, humanId: 'web-user', draftId: handoff.value.draftId, sourceType: 'handoff', text: WORKFLOW_BRIEF.instructions })
   const successor = await confirm(handoff.value.draftId)
   const deliveries = await io.sessionEvidence(sessions => [assertWorkflowDelivery(successor.record, sessions, first.result.taskId, first.result.attemptId), assertWorkflowDelivery(successor.record, sessions, second.result.taskId, second.result.attemptId, ['WF_REWORK_COMMENT']), assertWorkflowDelivery(successor.record, sessions, successor.result.taskId, successor.result.attemptId, [SELECTED_REFERENCE], [UNSELECTED_REFERENCE, 'WF_UNSELECTED'])])
 
@@ -381,7 +462,9 @@ export async function runWorkflowScenario(dialog, io) {
   await view.getByRole('checkbox', { name: 'I confirm: observe only new events after joining, without copying history or waking colleagues.', exact: true }).check()
   const configured = await mutate('Confirm company configuration', 'workflow/company-template/confirm')
   assert.deepEqual(configured.record.aggregate.tasks, passive.aggregate.tasks)
+  assert.deepEqual(configured.record.aggregate.taskAssignments, passive.aggregate.taskAssignments)
   assert.deepEqual(configured.record.aggregate.delegationGrants, passive.aggregate.delegationGrants)
+  assert.deepEqual(configured.record.aggregate.childRuns, passive.aggregate.childRuns)
   assert.deepEqual(configured.record.aggregate.sessionBindings, passive.aggregate.sessionBindings)
   assert.equal(configured.value.agentIds.length, 1)
   assert.equal(configured.value.roomIds.length, 1)

@@ -43,7 +43,7 @@ describe('public release contract', () => {
   it('preserves the public forward-export compatibility constant after runtime extraction', async () => {
     const host = await import('../packages/host/src/index.ts')
     expect(Reflect.get(host, 'WORKSPACE_EXPORT_COMPATIBLE_IMPORT_RANGE')).toBe('>=0.3.0 <0.4.0')
-  })
+  }, CONCURRENT_LANE_TEST_TIMEOUT_MS)
 
   it('reads task evidence through legacy and wrapped organization storage layouts', async () => {
     const { readDurableWorkspace } = await import('./e2e/task-tools-profile.mjs')
@@ -273,7 +273,6 @@ describe('public release contract', () => {
       expect(workflow).toContain(`- '${path}'`)
     }
     const driver = readText('scripts/release-smoke.mjs')
-    expect(driver).toContain("['dsh', '--profile', 'web'")
     expect(driver).toContain("'--port', '0'")
     expect(driver).toContain("'--scratch-root'")
     expect(driver).toContain("DSH_AGENT_GROUP_SCRATCH_ROOT")
@@ -420,7 +419,6 @@ describe('public release contract', () => {
     expect(smoke).toContain('element.value === expected')
     expect(smoke).toContain('groups.length !== 2 || directs.length !== 2')
     expect(smoke).toContain('playwright')
-    expect(smoke).toContain('toMatchAriaSnapshot')
     expect(smoke).toContain('@all')
     expect(smoke).toContain("waitForFixtureReceipt(`${args.gate}.denial-result-ready`)")
     expect(smoke).toContain('name: /^Release room \\d+$/u')
@@ -711,60 +709,63 @@ packages:
       agents: {
         alice: { id: 'alice', name: 'Alice' },
         bob: { id: 'bob', name: 'Bob' },
+        charlie: { id: 'charlie', name: 'Charlie' },
       },
       rooms: {
         release: { id: 'release', kind: 'group', name: 'Release room' },
       },
       memberships: {
-        alice: { id: 'membership-alice', roomId: 'release', agentId: 'alice', memoryStart: { type: 'new-events' } },
-        bob: { id: 'membership-bob', roomId: 'release', agentId: 'bob', memoryStart: { type: 'event-range', startSequence: 7, endSequence: 7 } },
+        alice: { id: 'membership-alice', roomId: 'release', agentId: 'alice', joinedEventId: 'joined-alice', memoryStart: { type: 'event-range', startSequence: 1, endSequence: 7 } },
+        bob: { id: 'membership-bob', roomId: 'release', agentId: 'bob', joinedEventId: 'joined-bob', memoryStart: { type: 'event-range', startSequence: 1, endSequence: 8 } },
+        charlie: { id: 'membership-charlie', roomId: 'release', agentId: 'charlie', joinedEventId: 'joined-charlie', memoryStart: { type: 'event-range', startSequence: 1, endSequence: 9 } },
       },
       events: [
         { id: 'history', sequence: 7, type: 'room/message', subjectId: 'release', actor: { type: 'human', id: 'web-user' }, text: 'HISTORY_BEFORE_JOIN' },
+        { id: 'joined-alice', sequence: 8, type: 'room/member-joined', subjectId: 'membership-alice' },
+        { id: 'joined-bob', sequence: 9, type: 'room/member-joined', subjectId: 'membership-bob' },
+        { id: 'joined-charlie', sequence: 10, type: 'room/member-joined', subjectId: 'membership-charlie' },
         { id: 'direct', type: 'room/message', actor: { type: 'agent', id: 'alice' }, text: 'DIRECT_REPLY Alice' },
         { id: 'hold', type: 'room/message', actor: { type: 'agent', id: 'alice' }, text: 'HOLD_REPLY Alice' },
         { id: 'memory', type: 'room/message', actor: { type: 'agent', id: 'alice' }, text: 'MEMORY_OK Alice' },
       ],
       memoryEntries: [
+        { id: 'alice-history', agentId: 'alice', eventId: 'history', acquiredBy: 'history-sync' },
         { id: 'bob-history', agentId: 'bob', eventId: 'history', acquiredBy: 'history-sync' },
+        { id: 'charlie-history', agentId: 'charlie', eventId: 'history', acquiredBy: 'history-sync' },
       ],
     }
 
     expect(() => assertBrowserDurableEvidence(durable)).not.toThrow()
-    expect(() => assertBrowserDurableEvidence({
-      ...durable,
-      memberships: {
-        ...durable.memberships,
-        alice: { ...durable.memberships.alice, memoryStart: { type: 'event-range', startSequence: 1, endSequence: 1 } },
-      },
-    })).toThrow('new-events')
-    expect(() => assertBrowserDurableEvidence({
-      ...durable,
-      memberships: {
-        ...durable.memberships,
-        bob: { ...durable.memberships.bob, memoryStart: { type: 'new-events' } },
-      },
-    })).toThrow('historical')
-    expect(() => assertBrowserDurableEvidence({
-      ...durable,
-      memberships: {
-        ...durable.memberships,
-        bob: { ...durable.memberships.bob, memoryStart: { type: 'event-range', startSequence: 6, endSequence: 7 } },
-      },
-    })).toThrow('historical')
-    expect(() => assertBrowserDurableEvidence({
-      ...durable,
-      memoryEntries: [...durable.memoryEntries, { id: 'alice-history', agentId: 'alice', eventId: 'history', acquiredBy: 'history-sync' }],
-    })).toThrow('Alice')
-    expect(() => assertBrowserDurableEvidence({ ...durable, memoryEntries: [] })).toThrow('Bob')
-    expect(() => assertBrowserDurableEvidence({
-      ...durable,
-      memoryEntries: [...durable.memoryEntries, { id: 'duplicate-bob-history', agentId: 'bob', eventId: 'history', acquiredBy: 'history-sync' }],
-    })).toThrow('Bob')
-    expect(() => assertBrowserDurableEvidence({
-      ...durable,
-      memoryEntries: [...durable.memoryEntries, { id: 'wrong-bob-history', agentId: 'bob', eventId: 'history', acquiredBy: 'room-membership' }],
-    })).toThrow('Bob')
+    for (const name of ['alice', 'bob', 'charlie'] as const) {
+      const membership = durable.memberships[name]
+      for (const memoryStart of [
+        { type: 'new-events' },
+        { ...membership.memoryStart, startSequence: 2 },
+        { ...membership.memoryStart, endSequence: membership.memoryStart.endSequence - 1 },
+        { ...membership.memoryStart, endSequence: membership.memoryStart.endSequence + 1 },
+      ]) {
+        expect(() => assertBrowserDurableEvidence({
+          ...durable, memberships: { ...durable.memberships, [name]: { ...membership, memoryStart } },
+        })).toThrow('all-history')
+      }
+      expect(() => assertBrowserDurableEvidence({
+        ...durable, memoryEntries: durable.memoryEntries.filter(entry => entry.agentId !== name),
+      })).toThrow(durable.agents[name].name)
+      expect(() => assertBrowserDurableEvidence({
+        ...durable, memoryEntries: [...durable.memoryEntries, { id: `duplicate-${name}-history`, agentId: name, eventId: 'history', acquiredBy: 'history-sync' }],
+      })).toThrow(durable.agents[name].name)
+      expect(() => assertBrowserDurableEvidence({
+        ...durable, memoryEntries: durable.memoryEntries.map(entry => entry.agentId === name ? { ...entry, acquiredBy: 'room-membership' } : entry),
+      })).toThrow(durable.agents[name].name)
+      expect(() => assertBrowserDurableEvidence({
+        ...durable,
+        events: [...durable.events, { id: 'other-history', sequence: 6, type: 'room/message', subjectId: 'other-room', actor: { type: 'human', id: 'web-user' }, text: 'HISTORY_BEFORE_JOIN' }],
+        memoryEntries: durable.memoryEntries.map(entry => entry.agentId === name ? { ...entry, eventId: 'other-history' } : entry),
+      })).toThrow(durable.agents[name].name)
+      expect(() => assertBrowserDurableEvidence({
+        ...durable, events: durable.events.filter(event => event.id !== membership.joinedEventId),
+      })).toThrow('all-history')
+    }
     for (const text of ['DIRECT_REPLY Alice', 'HOLD_REPLY Alice', 'MEMORY_OK Alice']) {
       expect(() => assertBrowserDurableEvidence({
         ...durable,
